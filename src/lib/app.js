@@ -266,15 +266,42 @@ export function createAppController(deps = {}) {
 
     // "What to expect" line: temp / rain / side wind at the arrival window.
     let expect = null;
+    let debug = null;
     if (next) {
       const baseSpeed = speedFromBaseline(route.totalDistance, route.baselineTimeSec);
       const times = segmentTimes(route.segments, baseSpeed, { useGradient: true });
       const windFn = makeWindFn(stationSeries);
       const departMs = conservative ? conservative.departureMs : next.arrivalMs - verdict.predictedSec * 1000;
       expect = whatToExpect({ segments: route.segments, times, windFn, departMs });
+
+      // Diagnostics: representative wind, route bearing, signed components.
+      const mid = route.segments[Math.floor(route.segments.length / 2)];
+      const w = windFn(mid.lat, mid.lon, departMs);
+      // average route bearing (circular mean) and the time-weighted head/cross
+      let sx = 0, sy = 0, head = 0, cross = 0, tt = 0;
+      const DEG = Math.PI / 180;
+      route.segments.forEach((s, i) => {
+        sx += Math.cos(s.bearing * DEG); sy += Math.sin(s.bearing * DEG);
+        const h = w.speed * Math.cos((w.fromDeg - s.bearing) * DEG);
+        const c = w.speed * Math.sin((w.fromDeg - s.bearing) * DEG);
+        head += h * times[i]; cross += Math.abs(c) * times[i]; tt += times[i];
+      });
+      const avgBearing = (Math.atan2(sy / route.segments.length, sx / route.segments.length) / DEG + 360) % 360;
+      debug = {
+        windFromDeg: Math.round(w.fromDeg),
+        windSpeedKmh: Math.round(w.speed),
+        avgBearingDeg: Math.round(avgBearing),
+        meanHeadwindKmh: +(head / tt).toFixed(1), // + = headwind, − = tailwind
+        meanCrosswindKmh: +(cross / tt).toFixed(1),
+        windFactor: +(verdict.windFactor ?? 0).toFixed(3),
+        baselineSec: Math.round(route.baselineTimeSec),
+        predictedSec: Math.round(verdict.predictedSec),
+        slowSec: range ? Math.round(range.highSec) : null,
+        fastSec: range ? Math.round(range.lowSec) : null,
+      };
     }
 
-    return { route, verdict, range, conservative, confidence: conf, expect, model };
+    return { route, verdict, range, conservative, confidence: conf, expect, debug, model };
   }
 
   async function listRoutesWithVerdict() {
