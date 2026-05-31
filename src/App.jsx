@@ -40,10 +40,11 @@ const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "
 // loMin/hiMin are (predicted − baseline) at the fast/slow ends; + = slower.
 function windEffectPhrase(we) {
   if (!we) return "";
-  const fmt = (m) => `${m >= 0 ? "+" : ""}${m}`;
+  // sign only on non-zero; zero is plain "0"
+  const fmt = (m) => (m > 0 ? `+${m}` : `${m}`); // m<0 already carries "-", m===0 → "0"
   const lo = we.loMin, hi = we.hiMin;
   const rangeStr = lo === hi ? `${fmt(lo)} min` : `${fmt(lo)} to ${fmt(hi)} min`;
-  if (we.direction === "calm") return "Calm — negligible wind effect";
+  if (we.direction === "calm") return "No wind";
   if (we.direction === "mixed") return `${we.headPct}% chance headwind: ${rangeStr}`;
   const label = we.direction === "headwind" ? "Headwind" : "Tailwind";
   return `${label}: ${rangeStr}`;
@@ -241,7 +242,7 @@ function Home({ active, routes, setActiveRouteId }) {
         animation: "rise 0.8s 0.12s both",
       }}>
         <RowLine label="Still-air baseline" value={fmtMin(verdict.baselineSec)} />
-        <RowLine label="Wind effect" value={`${verdict.deltaMin >= 0 ? "+" : ""}${verdict.deltaMin} min`} color={accent} />
+        <RowLine label="Wind effect" value={`${verdict.deltaMin > 0 ? "+" : ""}${verdict.deltaMin} min`} color={accent} />
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.12)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <ConfidenceDots confidence={confidence} />
           <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>k = {verdict.k?.toFixed(2) ?? "—"}</span>
