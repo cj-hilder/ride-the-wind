@@ -134,7 +134,7 @@ export default function App() {
  * ========================================================================== */
 function Home({ active, routes, setActiveRouteId }) {
   if (!active) return <Empty />;
-  const { route, verdict, range, confidence } = active;
+  const { route, verdict, range, confidence, expect } = active;
   if (!verdict) return <Empty name={route.name} />;
 
   const accent = ACCENT[verdict.verdict];
@@ -184,6 +184,11 @@ function Home({ active, routes, setActiveRouteId }) {
               to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}
               {rangeMin >= 2 && <span style={{ color: "rgba(255,255,255,0.5)" }}> · ±{rangeMin} min spread</span>}
             </div>
+            {expect && expect.line && (
+              <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 8, letterSpacing: "0.01em" }}>
+                {expect.line}
+              </div>
+            )}
           </div>
         </div>
       </div>
