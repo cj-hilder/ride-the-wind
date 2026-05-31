@@ -23,6 +23,7 @@ import {
   parseForecast,
   makeWindFn,
   segmentTimes,
+  seriesCovers,
 } from "./windModel.js";
 import * as learning from "./learning.js";
 import {
@@ -197,6 +198,18 @@ export function createAppController(deps = {}) {
     const seed = await seedFor(route, model);
     const stationSeries = await stationSeriesFor(route);
 
+    const nowMs = now();
+    const next = nextActiveArrival(route, nowMs);
+
+    // Guard: does the fetched forecast actually reach the ride day? A ride up to
+    // a week out must not silently use clamped (stale) end-of-forecast data. If
+    // any station's series doesn't cover the arrival, we treat the forecast as
+    // unavailable for this ride rather than predicting from the wrong day.
+    const forecastReaches =
+      next &&
+      stationSeries.length > 0 &&
+      stationSeries.every((st) => seriesCovers(st.series, next.arrivalMs));
+
     const predictForArrival = makePredictor({
       route,
       modelState: model ? model.regressionState : learning.createModelState(),
@@ -204,27 +217,33 @@ export function createAppController(deps = {}) {
       stationSeries,
     });
 
-    const nowMs = now();
     const verdict = evaluateAlert(route, predictForArrival, { nowMs });
     if (!verdict) return { route, verdict: null };
 
     // Forecast spread: ALWAYS from the real ensemble. No synthetic ±% range.
-    // If the ensemble is unavailable, we do not invent a spread — we fall back
-    // to the central deterministic prediction with no padding, and flag it.
-    const next = nextActiveArrival(route, nowMs);
+    // If the ensemble is unavailable OR the forecast doesn't reach the ride day,
+    // we do not invent a spread — central prediction, flagged.
     let range = null;
     let rangeUnavailable = false;
-    if (next) {
+    if (next && forecastReaches) {
       const rangeArgs = {
         route,
         modelState: model ? model.regressionState : learning.createModelState(),
         seed,
       };
       const ensembleStations = await ensembleStationsFor(route);
-      if (ensembleStations) {
+      // ensemble must also cover the arrival day
+      const ensembleReaches =
+        ensembleStations &&
+        ensembleStations.every((st) =>
+          st.members.every((m) => seriesCovers(m, next.arrivalMs))
+        );
+      if (ensembleReaches) {
         range = predictEnsembleRange({ ...rangeArgs, ensembleStations }, next.arrivalMs);
       }
       if (!range) rangeUnavailable = true;
+    } else if (next) {
+      rangeUnavailable = true; // forecast horizon doesn't reach the ride
     }
 
     const conf = learning.confidence(

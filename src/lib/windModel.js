@@ -211,6 +211,16 @@ export function interpAngle(a, b, t) {
   return ((a + diff * t) % 360 + 360) % 360;
 }
 
+/**
+ * Whether a forecast series actually covers an instant (with a small grace at
+ * the end for the final hour). Lets callers detect a ride beyond the forecast
+ * horizon instead of silently using clamped, stale data.
+ */
+export function seriesCovers(series, atMs, graceMs = 3600 * 1000) {
+  if (!series || series.length === 0) return false;
+  return atMs >= series[0].time && atMs <= series[series.length - 1].time + graceMs;
+}
+
 /* ------------------------------------------------------------------ *
  * Full wind_factor with arrival-time-aware wind + convergence pass
  * ------------------------------------------------------------------ */
@@ -276,7 +286,7 @@ export function windFactorTimed({
  * @returns {Promise<Array<{time:number, speed:number, fromDeg:number}>>}
  */
 export async function fetchForecast(lat, lon, opts = {}) {
-  const { forecastDays = 2, fetchImpl } = opts;
+  const { forecastDays = 8, fetchImpl } = opts;
   const f = fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
   if (!f) throw new Error("No fetch available; inject opts.fetchImpl.");
 
@@ -301,7 +311,7 @@ export async function fetchForecast(lat, lon, opts = {}) {
  *          array of members, each a sorted series
  */
 export async function fetchEnsemble(lat, lon, opts = {}) {
-  const { forecastDays = 2, fetchImpl, model = "ecmwf_ifs025" } = opts;
+  const { forecastDays = 8, fetchImpl, model = "ecmwf_ifs025" } = opts;
   const f = fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
   if (!f) throw new Error("No fetch available; inject opts.fetchImpl.");
 
