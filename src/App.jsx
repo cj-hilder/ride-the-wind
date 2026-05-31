@@ -35,6 +35,20 @@ const fmtMin = (sec) => `${Math.round(sec / 60)} min`;
 
 // Label the forecast day: "today"/"tomorrow" when close, else the weekday name.
 const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+// Wind-effect description: direction word + effect as a range of minutes.
+// loMin/hiMin are (predicted − baseline) at the fast/slow ends; + = slower.
+function windEffectPhrase(we) {
+  if (!we) return "";
+  const fmt = (m) => `${m >= 0 ? "+" : ""}${m}`;
+  const lo = we.loMin, hi = we.hiMin;
+  const rangeStr = lo === hi ? `${fmt(lo)} min` : `${fmt(lo)} to ${fmt(hi)} min`;
+  if (we.direction === "calm") return "Calm — negligible wind effect";
+  if (we.direction === "mixed") return `${we.headPct}% chance headwind: ${rangeStr}`;
+  const label = we.direction === "headwind" ? "Headwind" : "Tailwind";
+  return `${label}: ${rangeStr}`;
+}
+
 function dayLabel(arrivalMs) {
   if (!arrivalMs) return "";
   const arr = new Date(arrivalMs);
@@ -135,7 +149,7 @@ export default function App() {
 function Home({ active, routes, setActiveRouteId }) {
   const [showDebug, setShowDebug] = useState(false);
   if (!active) return <Empty />;
-  const { route, verdict, range, conservative, confidence, expect, debug } = active;
+  const { route, verdict, range, conservative, windEffect, rangeUnavailable, confidence, expect, debug } = active;
   if (!verdict) return <Empty name={route.name} />;
 
   const accent = ACCENT[verdict.verdict];
@@ -187,6 +201,16 @@ function Home({ active, routes, setActiveRouteId }) {
                 ? <>to arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
                 : <>to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}</>}
             </div>
+            {windEffect && (
+              <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 6 }}>
+                {windEffectPhrase(windEffect)}
+              </div>
+            )}
+            {rangeUnavailable && (
+              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.45)", marginTop: 6, fontStyle: "italic" }}>
+                forecast range unavailable — showing best estimate
+              </div>
+            )}
             {expect && expect.line && (
               <div onClick={() => setShowDebug((v) => !v)} style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 8, letterSpacing: "0.01em", cursor: "pointer" }}>
                 {expect.line}
