@@ -134,7 +134,7 @@ export default function App() {
  * ========================================================================== */
 function Home({ active, routes, setActiveRouteId }) {
   if (!active) return <Empty />;
-  const { route, verdict, range, confidence, expect } = active;
+  const { route, verdict, range, conservative, confidence, expect } = active;
   if (!verdict) return <Empty name={route.name} />;
 
   const accent = ACCENT[verdict.verdict];
@@ -144,7 +144,8 @@ function Home({ active, routes, setActiveRouteId }) {
     tailwind: `Sleep in ${Math.abs(verdict.deltaMin)} min`,
     normal: "Normal morning",
   }[verdict.verdict];
-  const rangeMin = range ? Math.round(Math.abs(range.highSec - range.lowSec) / 60) : 0;
+  // arrival window: show a range only when it's a meaningful (>=2 min) spread
+  const hasWindow = conservative && conservative.windowMin >= 2;
 
   return (
     <div style={{
@@ -181,8 +182,9 @@ function Home({ active, routes, setActiveRouteId }) {
               )}
             </div>
             <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", marginTop: 10 }}>
-              to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}
-              {rangeMin >= 2 && <span style={{ color: "rgba(255,255,255,0.5)" }}> · ±{rangeMin} min spread</span>}
+              {hasWindow
+                ? <>to arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
+                : <>to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}</>}
             </div>
             {expect && expect.line && (
               <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 8, letterSpacing: "0.01em" }}>
