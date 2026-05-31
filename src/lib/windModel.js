@@ -193,11 +193,15 @@ export function sampleWind(hourly, atMs) {
   // interpolate direction on the circle to avoid the 350°→10° wraparound bug
   const fromDeg = interpAngle(a.fromDeg, b.fromDeg, t);
   const speed = a.speed + (b.speed - a.speed) * t;
-  return { speed, fromDeg };
+  // temperature interpolates linearly; precipitation is an hourly total so we
+  // take the hour the rider is in (the earlier bracket), not a blend, and the
+  // probability likewise reflects that hour.
+  const tempC = a.tempC == null || b.tempC == null ? (a.tempC ?? b.tempC ?? null) : a.tempC + (b.tempC - a.tempC) * t;
+  return { speed, fromDeg, tempC, precipMm: a.precipMm ?? 0, precipProb: a.precipProb ?? 0 };
 }
 
 function pick(s) {
-  return { speed: s.speed, fromDeg: s.fromDeg };
+  return { speed: s.speed, fromDeg: s.fromDeg, tempC: s.tempC ?? null, precipMm: s.precipMm ?? 0, precipProb: s.precipProb ?? 0 };
 }
 
 /** Shortest-path angular interpolation, degrees. */
@@ -277,7 +281,7 @@ export async function fetchForecast(lat, lon, opts = {}) {
 
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&hourly=wind_speed_10m,wind_direction_10m` +
+    `&hourly=wind_speed_10m,wind_direction_10m,temperature_2m,precipitation,precipitation_probability` +
     `&wind_speed_unit=kmh&timeformat=unixtime&forecast_days=${forecastDays}`;
 
   const res = await f(url);
@@ -301,6 +305,10 @@ export function parseForecast(data) {
       time: h.time[i] * 1000, // unixtime (s) → ms
       speed: h.wind_speed_10m[i],
       fromDeg: h.wind_direction_10m[i],
+      // new conditions fields; default safely if a field is absent
+      tempC: h.temperature_2m ? h.temperature_2m[i] : null,
+      precipMm: h.precipitation ? h.precipitation[i] : 0,
+      precipProb: h.precipitation_probability ? h.precipitation_probability[i] : 0,
     });
   }
   out.sort((a, b) => a.time - b.time);

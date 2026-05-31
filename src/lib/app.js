@@ -20,6 +20,8 @@ import {
   seedK as computeSeedK,
   fetchForecast as realFetchForecast,
   parseForecast,
+  makeWindFn,
+  segmentTimes,
 } from "./windModel.js";
 import * as learning from "./learning.js";
 import {
@@ -33,7 +35,9 @@ import {
   makePredictor,
   chooseStations,
   predictWithRange,
+  speedFromBaseline,
 } from "./prediction.js";
+import { whatToExpect } from "./whatToExpect.js";
 import {
   Store,
   MemoryBackend,
@@ -187,7 +191,17 @@ export function createAppController(deps = {}) {
       model ? model.regressionState : learning.createModelState()
     );
 
-    return { route, verdict, range, confidence: conf, model };
+    // "What to expect" line: temp / rain / side wind at the arrival window.
+    let expect = null;
+    if (next) {
+      const baseSpeed = speedFromBaseline(route.totalDistance, route.baselineTimeSec);
+      const times = segmentTimes(route.segments, baseSpeed, { useGradient: true });
+      const windFn = makeWindFn(stationSeries);
+      const departMs = next.arrivalMs - verdict.predictedSec * 1000;
+      expect = whatToExpect({ segments: route.segments, times, windFn, departMs });
+    }
+
+    return { route, verdict, range, confidence: conf, expect, model };
   }
 
   async function listRoutesWithVerdict() {
