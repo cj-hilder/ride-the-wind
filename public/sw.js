@@ -20,28 +20,32 @@
  * push is enhancement.
  * ========================================================================== */
 
-const SHELL_CACHE = "rtw-shell-v1";
+// Cache version is stamped at build time (see the BUILD_ID replace in the
+// deploy step / vite define). When the bundle changes, the version changes,
+// so old shells are purged automatically on activate — no hand-editing.
+const VERSION = (self.__RTW_BUILD_ID__ || "dev");
+const SHELL_CACHE = "rtw-shell-" + VERSION;
 const DATA_CACHE = "rtw-data-v1";
 
 // Paths are relative to the SW's scope (registered under the Pages subpath),
 // so the same SW works whether served from / or /ride-the-wind/.
 const BASE = new URL("./", self.location).pathname; // e.g. "/ride-the-wind/"
+// Only pre-cache things whose URL never changes. NOT index.html — that is
+// fetched network-first so new deploys are picked up immediately.
 const SHELL_ASSETS = [
-  BASE,
-  BASE + "index.html",
   BASE + "manifest.webmanifest",
   BASE + "icons/icon-192.png",
   BASE + "icons/icon-512.png",
 ];
 
-/* ---- install: pre-cache the shell ---- */
+/* ---- install: pre-cache stable assets, then take over immediately ---- */
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(SHELL_CACHE).then((c) => c.addAll(SHELL_ASSETS)).then(() => self.skipWaiting())
   );
 });
 
-/* ---- activate: drop old caches ---- */
+/* ---- activate: drop ALL old shell caches (any version != current) ---- */
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
@@ -59,18 +63,25 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET") return;
 
-  // Open-Meteo (and any forecast API): network-first, fall back to last good.
+  // Open-Meteo: network-first, fall back to last good forecast.
   if (url.hostname.endsWith("open-meteo.com")) {
-    event.respondWith(networkFirst(event.request));
+    event.respondWith(networkFirst(event.request, DATA_CACHE));
     return;
   }
 
-  // App shell & same-origin assets: cache-first.
   if (url.origin === self.location.origin) {
+    // The HTML document / SPA navigations: NETWORK-FIRST so a fresh deploy is
+    // seen at once; fall back to the cached shell only when offline.
+    if (event.request.mode === "navigate" || url.pathname === BASE || url.pathname === BASE + "index.html") {
+      event.respondWith(networkFirstDoc(event.request));
+      return;
+    }
+    // Hashed build assets (app-a1b2c3.js, *.css): safe to cache-first forever,
+    // because Vite changes the filename when the content changes.
     event.respondWith(cacheFirst(event.request));
     return;
   }
-  // Everything else: just go to network.
+  // Everything else: straight to network.
 });
 
 async function cacheFirst(request) {
@@ -84,14 +95,28 @@ async function cacheFirst(request) {
     }
     return res;
   } catch {
-    // SPA fallback to the cached shell for navigations
-    if (request.mode === "navigate") return caches.match(BASE + "index.html");
     throw new Error("offline and uncached");
   }
 }
 
-async function networkFirst(request) {
-  const cache = await caches.open(DATA_CACHE);
+// Network-first for the document: always fetch fresh, cache the latest copy,
+// fall back to whatever we last cached if the network is down.
+async function networkFirstDoc(request) {
+  const cache = await caches.open(SHELL_CACHE);
+  try {
+    const res = await fetch(request, { cache: "no-store" });
+    if (res.ok) cache.put(BASE + "index.html", res.clone());
+    return res;
+  } catch {
+    const cached = await cache.match(BASE + "index.html");
+    if (cached) return cached;
+    throw new Error("offline and no cached shell");
+  }
+}
+
+// Network-first for forecast data: fresh when online, last-known when not.
+async function networkFirst(request, cacheName) {
+  const cache = await caches.open(cacheName);
   try {
     const res = await fetch(request);
     if (res.ok) cache.put(request, res.clone());
@@ -144,6 +169,11 @@ self.addEventListener("notificationclick", (event) => {
  * being closed, on platforms where we don't have server push. Best-effort. */
 self.addEventListener("message", (event) => {
   const msg = event.data || {};
+  if (msg.type === "SKIP_WAITING") {
+    // app detected a new version and asked us to take over now
+    self.skipWaiting();
+    return;
+  }
   if (msg.type === "SHOW_LOCAL_NOTIFICATION") {
     const { title, ...options } = msg.notification || {};
     self.registration.showNotification(title || "Ride the Wind", options);
