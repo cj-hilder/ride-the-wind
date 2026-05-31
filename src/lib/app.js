@@ -239,7 +239,16 @@ export function createAppController(deps = {}) {
     const baselineDepartureMs = next ? next.arrivalMs - route.baselineTimeSec * 1000 : null;
 
     if (next && range) {
-      const slowSec = range.highSec;
+      // Effect at each end, in whole minutes vs baseline (+ = slower).
+      const loEffectMin = Math.round((range.lowSec - route.baselineTimeSec) / 60);
+      const hiEffectMin = Math.round((range.highSec - route.baselineTimeSec) / 60);
+
+      // Departure anchors on the slow end — but SNAP it to baseline when its
+      // effect rounds to ≤ 0 minutes (a sub-minute headwind shouldn't pull the
+      // departure earlier, and the displayed "0" must match the clock). We only
+      // ever snap toward baseline a slow end that's within a minute; a genuine
+      // multi-minute headwind is never snapped, preserving the on-time guarantee.
+      const slowSec = hiEffectMin <= 0 ? route.baselineTimeSec : range.highSec;
       const fastSec = range.lowSec;
       const departureMs = next.arrivalMs - slowSec * 1000;
       const earliestArrivalMs = departureMs + fastSec * 1000;
@@ -252,7 +261,6 @@ export function createAppController(deps = {}) {
         earliestArrivalHHMM: hhmm(earliestArrivalMs),
         windowMin: Math.round((next.arrivalMs - earliestArrivalMs) / 60000),
       };
-      // Headline + departure both off the slow end (safety).
       const deltaSec = slowSec - route.baselineTimeSec;
       verdict.departureMs = departureMs;
       verdict.departureHHMM = conservative.departureHHMM;
@@ -262,28 +270,26 @@ export function createAppController(deps = {}) {
       verdict.verdict = deltaSec > (verdict.thresholdMin ?? 4) * 60 ? "headwind"
         : deltaSec < -(verdict.thresholdMin ?? 4) * 60 ? "tailwind" : "normal";
 
-      // Wind-effect description. The direction word is defined by the displayed
-      // RANGE so word and number can't contradict. The headwind probability is
-      // shown ONLY when the range actually straddles zero (could be faster or
-      // slower) — if both ends share a sign the direction isn't in doubt, so a
-      // percentage would be misleading. Probability/range both from the same
-      // ensemble members. No dead-band: each member is head or tail by sign.
-      const loEffectMin = Math.round((fastSec - route.baselineTimeSec) / 60);
-      const hiEffectMin = Math.round((slowSec - route.baselineTimeSec) / 60);
+      // Wind-effect description, classified from the rounded effect range so the
+      // word and the numbers always agree.
+      //  - slow end ≤ 0 and fast end ≥ −1  → "No wind" (negligible; e.g. −1 to 0)
+      //  - whole range ≤ 0 (faster), fast end ≤ −2 → tailwind
+      //  - whole range ≥ 0 (slower), at least one end > 0 → headwind
+      //  - straddles zero → show headwind probability
       let direction, headPct = null;
-      if (Math.abs(loEffectMin) < 1 && Math.abs(hiEffectMin) < 1) {
-        direction = "calm"; // both ends under a minute → no meaningful effect
-      } else if (loEffectMin < 0 && hiEffectMin > 0) {
-        direction = "mixed"; // range straddles zero → show probability
-        headPct = Math.round(range.headProb * 100);
-      } else if (hiEffectMin >= 0) {
-        direction = "headwind"; // both ends ≥ 0 (and not negligible)
+      if (hiEffectMin <= 0 && loEffectMin >= -1) {
+        direction = "calm";
+      } else if (hiEffectMin <= 0) {
+        direction = "tailwind";
+      } else if (loEffectMin >= 0) {
+        direction = "headwind";
       } else {
-        direction = "tailwind"; // both ends ≤ 0
+        direction = "mixed";
+        headPct = Math.round(range.headProb * 100);
       }
       windEffect = {
         direction,
-        headPct, // null unless the range straddles zero
+        headPct,
         loMin: loEffectMin,
         hiMin: hiEffectMin,
       };
