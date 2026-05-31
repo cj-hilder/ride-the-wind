@@ -94,8 +94,17 @@ export default function App() {
           <Loading />
         ) : screen === "home" ? (
           <Home active={active} routes={routes} setActiveRouteId={setActiveRouteId} />
+        ) : screen === "routes" ? (
+          <Routes
+            controller={controller}
+            routes={routes}
+            onChanged={refresh}
+            onAddNew={() => setScreen("setup")}
+          />
         ) : screen === "setup" ? (
-          <Setup controller={controller} onDone={async () => { await refresh(); setScreen("home"); }} />
+          <Setup controller={controller}
+            onDone={async () => { await refresh(); setScreen("routes"); }}
+            onCancel={() => setScreen("routes")} />
         ) : (
           <Capture controller={controller} route={active?.route}
             onDone={async () => { await refresh(); setScreen("home"); }} />
@@ -196,9 +205,163 @@ function Home({ active, routes, setActiveRouteId }) {
 }
 
 /* ============================================================================
+ * Routes — list, edit, delete existing routes + backup (export/import)
+ * ========================================================================== */
+const DAY_CODES = [["MO", "M"], ["TU", "T"], ["WE", "W"], ["TH", "T"], ["FR", "F"], ["SA", "S"], ["SU", "S"]];
+
+function Routes({ controller, routes, onChanged, onAddNew }) {
+  const [editing, setEditing] = useState(null); // route id being edited
+  const fileRef = useRef();
+
+  const doExport = async () => {
+    const bundle = await controller.exportAll();
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `ride-the-wind-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const doImport = async (file) => {
+    try {
+      const bundle = JSON.parse(await file.text());
+      await controller.importAll(bundle, "replace");
+      await onChanged();
+    } catch (e) { alert("Couldn't import that file: " + e.message); }
+  };
+
+  return (
+    <div style={{ height: "100%", overflowY: "auto", background: "linear-gradient(165deg,#1a1f3a,#2d2a52 55%,#3d3463)", color: "#fff", paddingBottom: 30 }}>
+      <div style={{ padding: "26px 22px 4px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontFamily: "'Fraunces',serif", fontSize: 26, fontWeight: 600 }}>Routes</span>
+        <button onClick={onAddNew} style={{
+          padding: "9px 16px", borderRadius: 100, border: "none", cursor: "pointer",
+          fontFamily: "'Fraunces',serif", fontSize: 14, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a",
+        }}>+ New</button>
+      </div>
+      <div style={{ padding: "0 22px 16px", fontSize: 13.5, color: "rgba(255,255,255,0.55)" }}>
+        Each direction of a commute is its own route.
+      </div>
+
+      {routes.length === 0 ? (
+        <div style={{ padding: "40px 22px", textAlign: "center", color: "rgba(255,255,255,0.55)" }}>
+          No routes yet. Tap <b style={{ color: "#e0a45e" }}>+ New</b> to add one from a GPX file.
+        </div>
+      ) : (
+        <div style={{ padding: "0 16px" }}>
+          {routes.map(({ route, verdict, confidence }) => (
+            <div key={route.id} style={{
+              marginBottom: 12, borderRadius: 16, overflow: "hidden",
+              background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)",
+            }}>
+              <div onClick={() => setEditing(editing === route.id ? null : route.id)} style={{ padding: "14px 16px", cursor: "pointer" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <span style={{ fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{route.name}</span>
+                  <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)" }}>
+                    {(route.totalDistance / 1000).toFixed(1)} km
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: 12, marginTop: 6, fontSize: 12.5, color: "rgba(255,255,255,0.6)" }}>
+                  <span>arrive {route.targetArrival}</span>
+                  <span>·</span>
+                  <span>{route.activeDays.length} days/wk</span>
+                  <span>·</span>
+                  <span>{confidence?.rides ?? 0} rides</span>
+                </div>
+              </div>
+              {editing === route.id && (
+                <RouteEditor
+                  route={route}
+                  controller={controller}
+                  onSaved={async () => { setEditing(null); await onChanged(); }}
+                  onDeleted={async () => { setEditing(null); await onChanged(); }}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* backup */}
+      <div style={{ padding: "20px 22px 0" }}>
+        <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", marginBottom: 10 }}>Backup</div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={doExport} style={backupBtn}>Export data</button>
+          <button onClick={() => fileRef.current.click()} style={backupBtn}>Import data</button>
+          <input ref={fileRef} type="file" accept="application/json,.json" hidden
+            onChange={(e) => e.target.files[0] && doImport(e.target.files[0])} />
+        </div>
+        <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.4)", marginTop: 8 }}>
+          Your routes and rides live only on this device. Export regularly to keep a backup.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RouteEditor({ route, controller, onSaved, onDeleted }) {
+  const [arrival, setArrival] = useState(route.targetArrival);
+  const [days, setDays] = useState(route.activeDays);
+  const [threshold, setThreshold] = useState(route.alertThresholdMin ?? "");
+  const [confirmDel, setConfirmDel] = useState(false);
+  const toggleDay = (d) => setDays(days.includes(d) ? days.filter((x) => x !== d) : [...days, d]);
+
+  const save = async () => {
+    await controller.updateRoute(route.id, {
+      targetArrival: arrival,
+      activeDays: days,
+      alertThresholdMin: threshold === "" ? null : Math.round(parseFloat(threshold)),
+    });
+    onSaved();
+  };
+  const del = async () => { await controller.deleteRoute(route.id); onDeleted(); };
+
+  return (
+    <div style={{ padding: "4px 16px 16px", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+      <label style={lbl}>Target arrival</label>
+      <input type="time" value={arrival} onChange={(e) => setArrival(e.target.value)} style={INP} />
+
+      <label style={{ ...lbl, marginTop: 12 }}>Active days</label>
+      <div style={{ display: "flex", gap: 6 }}>
+        {DAY_CODES.map(([c, l], i) => (
+          <button key={i} onClick={() => toggleDay(c)} style={{
+            flex: 1, padding: "9px 0", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600,
+            border: `1px solid ${days.includes(c) ? "#e0a45e" : "rgba(255,255,255,0.16)"}`,
+            background: days.includes(c) ? "rgba(224,164,94,0.18)" : "transparent",
+            color: days.includes(c) ? "#fff" : "rgba(255,255,255,0.45)",
+          }}>{l}</button>
+        ))}
+      </div>
+
+      <label style={{ ...lbl, marginTop: 12 }}>Alert threshold (minutes) <span style={{ color: "rgba(255,255,255,0.35)" }}>· blank = default</span></label>
+      <input value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="decimal" placeholder="4" style={INP} />
+
+      <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+        {!confirmDel ? (
+          <>
+            <button onClick={() => setConfirmDel(true)} style={{ ...backupBtn, flex: "0 0 auto", color: "#f0a08c", borderColor: "rgba(224,120,94,0.4)" }}>Delete</button>
+            <button onClick={save} style={{ flex: 1, padding: 13, borderRadius: 12, border: "none", cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a" }}>Save changes</button>
+          </>
+        ) : (
+          <>
+            <span style={{ flex: 1, alignSelf: "center", fontSize: 13, color: "#f0b8a8" }}>Delete this route and its rides?</span>
+            <button onClick={() => setConfirmDel(false)} style={backupBtn}>Cancel</button>
+            <button onClick={del} style={{ ...backupBtn, background: "rgba(224,120,94,0.9)", color: "#fff", border: "none" }}>Delete</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const backupBtn = { flex: 1, padding: "11px 14px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, background: "rgba(255,255,255,0.08)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" };
+const lbl = { display: "block", fontSize: 12.5, color: "rgba(255,255,255,0.6)", margin: "0 0 6px" };
+
+/* ============================================================================
  * Setup — create a route from a GPX file (real controller.createRoute)
  * ========================================================================== */
-function Setup({ controller, onDone }) {
+function Setup({ controller, onDone, onCancel }) {
   const [gpxText, setGpxText] = useState(null);
   const [preview, setPreview] = useState(null);
   const [err, setErr] = useState(null);
@@ -233,7 +396,12 @@ function Setup({ controller, onDone }) {
 
   return (
     <div style={{ height: "100%", overflowY: "auto", background: "linear-gradient(165deg,#1a1f3a,#2d2a52 55%,#3d3463)", color: "#fff", paddingBottom: 30 }}>
-      <div style={{ padding: "26px 22px 8px", fontFamily: "'Fraunces',serif", fontSize: 26, fontWeight: 600 }}>New route</div>
+      <div style={{ padding: "26px 22px 8px", display: "flex", alignItems: "center", gap: 12 }}>
+        {onCancel && (
+          <button onClick={onCancel} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.6)", fontSize: 22, padding: 0, lineHeight: 1 }} aria-label="Back">‹</button>
+        )}
+        <span style={{ fontFamily: "'Fraunces',serif", fontSize: 26, fontWeight: 600 }}>New route</span>
+      </div>
       <div style={{ padding: "0 22px 16px", fontSize: 13.5, color: "rgba(255,255,255,0.55)" }}>Each direction is its own route.</div>
 
       <Block n="1" title="Load GPX">
@@ -395,16 +563,18 @@ function Capture({ controller, route, onDone }) {
  * Shared bits
  * ========================================================================== */
 function TabBar({ screen, setScreen, hasRoutes }) {
-  const tabs = [["home", "Today"], ["capture", "Ride"], ["setup", "Routes"]];
+  const tabs = [["home", "Today"], ["capture", "Ride"], ["routes", "Routes"]];
   return (
     <div style={{ display: "flex", background: "#16181d", borderTop: "1px solid rgba(255,255,255,0.06)", padding: "8px 8px calc(8px + env(safe-area-inset-bottom))" }}>
       {tabs.map(([k, label]) => {
         const disabled = k === "capture" && !hasRoutes;
+        // the setup sub-screen still belongs to the Routes tab
+        const isActive = screen === k || (k === "routes" && screen === "setup");
         return (
           <button key={k} disabled={disabled} onClick={() => setScreen(k)} style={{
             flex: 1, padding: "10px 0", border: "none", cursor: disabled ? "default" : "pointer", background: "transparent",
             fontFamily: "inherit", fontSize: 12.5, fontWeight: 600,
-            color: disabled ? "rgba(255,255,255,0.2)" : screen === k ? "#e0a45e" : "rgba(255,255,255,0.5)",
+            color: disabled ? "rgba(255,255,255,0.2)" : isActive ? "#e0a45e" : "rgba(255,255,255,0.5)",
           }}>{label}</button>
         );
       })}
