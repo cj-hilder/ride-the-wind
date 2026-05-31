@@ -208,22 +208,33 @@ export function predictEnsembleRange(args, arrivalMs, opts = {}) {
   if (!(memberCount > 1)) return null;
 
   const times = [];
+  const factors = []; // signed wind_factor per member, for direction
   for (let m = 0; m < memberCount; m++) {
     // build a stationSeries using member m's wind at each station
     const stationSeries = stations.map((s) => ({
       lat: s.lat, lon: s.lon, series: s.members[m],
     }));
     const p = makePredictor({ ...args, stationSeries })(arrivalMs);
-    if (p.predictedSec > 0) times.push(p.predictedSec);
+    if (p.predictedSec > 0) {
+      times.push(p.predictedSec);
+      factors.push(p.windFactor);
+    }
   }
   if (times.length < 2) return null;
   times.sort((a, b) => a - b);
+
+  // Headwind probability = fraction of members that slow the rider (positive
+  // wind_factor). No dead-band: every member is head or tail by sign. Zero is
+  // treated as tail (not slowing).
+  const headCount = factors.filter((f) => f > 0).length;
 
   return {
     centerSec: percentile(times, 50),
     lowSec: percentile(times, loPct),
     highSec: percentile(times, hiPct),
     members: times.length,
+    headCount,
+    headProb: times.length ? headCount / factors.length : 0,
   };
 }
 

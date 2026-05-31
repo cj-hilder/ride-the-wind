@@ -35,7 +35,6 @@ import {
 import {
   makePredictor,
   chooseStations,
-  predictWithRange,
   predictEnsembleRange,
   speedFromBaseline,
 } from "./prediction.js";
@@ -209,24 +208,23 @@ export function createAppController(deps = {}) {
     const verdict = evaluateAlert(route, predictForArrival, { nowMs });
     if (!verdict) return { route, verdict: null };
 
-    // forecast spread: prefer the true ensemble range, fall back to the
-    // deterministic ±% method if the ensemble is unavailable.
+    // Forecast spread: ALWAYS from the real ensemble. No synthetic ±% range.
+    // If the ensemble is unavailable, we do not invent a spread — we fall back
+    // to the central deterministic prediction with no padding, and flag it.
     const next = nextActiveArrival(route, nowMs);
     let range = null;
+    let rangeUnavailable = false;
     if (next) {
       const rangeArgs = {
         route,
         modelState: model ? model.regressionState : learning.createModelState(),
         seed,
-        stationSeries,
       };
       const ensembleStations = await ensembleStationsFor(route);
       if (ensembleStations) {
         range = predictEnsembleRange({ ...rangeArgs, ensembleStations }, next.arrivalMs);
       }
-      if (!range) {
-        range = predictWithRange(rangeArgs, next.arrivalMs);
-      }
+      if (!range) rangeUnavailable = true;
     }
 
     const conf = learning.confidence(
@@ -235,14 +233,16 @@ export function createAppController(deps = {}) {
 
     // Conservative departure: anchor on the SLOW end of the forecast range so
     // the rider arrives on time even on the slower side. Target = latest arrival.
+    // Departure AND headline both drive off the slow end (the safe number).
     let conservative = null;
+    let windEffect = null;
+    const baselineDepartureMs = next ? next.arrivalMs - route.baselineTimeSec * 1000 : null;
+
     if (next && range) {
       const slowSec = range.highSec;
       const fastSec = range.lowSec;
       const departureMs = next.arrivalMs - slowSec * 1000;
       const earliestArrivalMs = departureMs + fastSec * 1000;
-      // a still-air conservative departure for the "vs normal day" delta
-      const baselineDepartureMs = next.arrivalMs - route.baselineTimeSec * 1000;
       conservative = {
         departureMs,
         departureHHMM: hhmm(departureMs),
@@ -252,9 +252,55 @@ export function createAppController(deps = {}) {
         earliestArrivalHHMM: hhmm(earliestArrivalMs),
         windowMin: Math.round((next.arrivalMs - earliestArrivalMs) / 60000),
       };
-      // Recompute the verdict's user-facing departure on the conservative basis,
-      // and the delta vs a normal (still-air) day, so the headline stays honest.
+      // Headline + departure both off the slow end (safety).
       const deltaSec = slowSec - route.baselineTimeSec;
+      verdict.departureMs = departureMs;
+      verdict.departureHHMM = conservative.departureHHMM;
+      verdict.normalDepartureHHMM = hhmm(baselineDepartureMs);
+      verdict.deltaSec = deltaSec;
+      verdict.deltaMin = Math.round(deltaSec / 60);
+      verdict.verdict = deltaSec > (verdict.thresholdMin ?? 4) * 60 ? "headwind"
+        : deltaSec < -(verdict.thresholdMin ?? 4) * 60 ? "tailwind" : "normal";
+
+      // Wind-effect description. Direction/probability and the displayed range
+      // both derive from the same ensemble members, so they stay coherent.
+      // Unanimous → clean "headwind"/"tailwind"; mixed → "xx% chance headwind"
+      // (tailwind is the remainder). No dead-band: each member is head or tail.
+      const loEffectMin = Math.round((fastSec - route.baselineTimeSec) / 60);
+      const hiEffectMin = Math.round((slowSec - route.baselineTimeSec) / 60);
+      const headProb = range.headProb; // 0..1 fraction of members that are headwind
+      let direction, headPct = null;
+      if (loEffectMin === 0 && hiEffectMin === 0) {
+        direction = "calm";
+      } else if (headProb >= 1) {
+        direction = "headwind";
+      } else if (headProb <= 0) {
+        direction = "tailwind";
+      } else {
+        direction = "mixed";
+        headPct = Math.round(headProb * 100);
+      }
+      windEffect = {
+        direction,
+        headPct, // null unless mixed
+        loMin: loEffectMin,
+        hiMin: hiEffectMin,
+      };
+    } else if (next && rangeUnavailable) {
+      // Ensemble unavailable: central prediction, no conservative padding.
+      const centralSec = verdict.predictedSec;
+      const departureMs = next.arrivalMs - centralSec * 1000;
+      conservative = {
+        departureMs,
+        departureHHMM: hhmm(departureMs),
+        latestArrivalMs: next.arrivalMs,
+        latestArrivalHHMM: verdict.arrivalHHMM,
+        earliestArrivalMs: next.arrivalMs,
+        earliestArrivalHHMM: verdict.arrivalHHMM,
+        windowMin: 0,
+        unavailable: true,
+      };
+      const deltaSec = centralSec - route.baselineTimeSec;
       verdict.departureMs = departureMs;
       verdict.departureHHMM = conservative.departureHHMM;
       verdict.normalDepartureHHMM = hhmm(baselineDepartureMs);
@@ -301,7 +347,7 @@ export function createAppController(deps = {}) {
       };
     }
 
-    return { route, verdict, range, conservative, confidence: conf, expect, debug, model };
+    return { route, verdict, range, conservative, windEffect, rangeUnavailable, confidence: conf, expect, debug, model };
   }
 
   async function listRoutesWithVerdict() {
