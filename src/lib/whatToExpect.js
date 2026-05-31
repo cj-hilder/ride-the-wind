@@ -18,8 +18,8 @@
 const DEG = Math.PI / 180;
 
 export const TEMP_HOT_C = 26; // at/above this, show the max not the min
-export const RAIN_PROB_GATE = 25; // %, below which rain stays blank
-export const RAIN_BANDS = [0.5, 2, 6]; // mm/h boundaries: maybe / wet / very
+export const RAIN_PROB_GATE = 15; // %, below which rain stays blank
+export const RAIN_BANDS = [0.05, 0.5, 2]; // total mm boundaries: maybe / wet / very
 export const SIDEWIND_BANDS = [15, 30]; // km/h: side / strong
 
 /* ------------------------------------------------------------------ *
@@ -35,12 +35,12 @@ export const SIDEWIND_BANDS = [15, 30]; // km/h: side / strong
  * @param {number[]} args.times   - still-air seconds per segment (weights)
  * @param {Function} args.windFn  - (lat,lon,atMs)=>{speed,fromDeg,tempC,precipMm,precipProb}
  * @param {number} args.departMs
- * @returns {{temps:number[], crosswinds:number[], precipMm:number[], precipProb:number[], rideHours:number}}
+ * @returns {{temps:number[], crosswinds:number[], precipTotalMm:number, precipProb:number[], rideHours:number}}
  */
 export function sampleConditions({ segments, times, windFn, departMs }) {
   const temps = [];
   const crosswinds = [];
-  const precipRate = []; // per-sample mm/h, time-weighted later
+  let precipTotalMm = 0; // mm actually falling during the ride
   const precipProb = [];
   let clock = departMs;
   let totalSec = 0;
@@ -52,13 +52,15 @@ export function sampleConditions({ segments, times, windFn, departMs }) {
     // crosswind = |wind · sin(φ − θ)|
     const cross = Math.abs(w.speed * Math.sin((w.fromDeg - s.bearing) * DEG));
     crosswinds.push({ v: cross, t: times[i] });
-    // precipitation is reported as mm in the hour; treat as a rate (mm/h)
-    precipRate.push({ rate: w.precipMm || 0, t: times[i] });
+    // precipMm is the mm for the whole hour; the rider is only in this segment
+    // for times[i] seconds, so the rain that falls on them here is the hourly
+    // rate prorated by their fraction of the hour. Summed = total over ride.
+    precipTotalMm += (w.precipMm || 0) * (times[i] / 3600);
     precipProb.push(w.precipProb || 0);
     clock += times[i] * 1000;
     totalSec += times[i];
   }
-  return { temps, crosswinds, precipRate, precipProb, rideHours: totalSec / 3600 };
+  return { temps, crosswinds, precipTotalMm, precipProb, rideHours: totalSec / 3600 };
 }
 
 /* ------------------------------------------------------------------ *
@@ -75,22 +77,20 @@ export function temperatureToken(temps) {
 }
 
 /**
- * Rain token from time-weighted mean precip rate (mm/h), gated by probability.
- * Returns null (blank) when dry, low-confidence, or below the first band.
+ * Rain token from TOTAL precipitation accumulated over the ride (mm), gated by
+ * probability. Total (not rate) so a longer ride in the same rain reads wetter
+ * — the honest measure of arrival wetness. Returns null when dry, low-
+ * confidence, or below the first band.
  */
-export function rainToken(precipRate, precipProb) {
-  if (!precipRate || precipRate.length === 0) return null;
+export function rainToken(precipTotalMm, precipProb) {
   const maxProb = precipProb && precipProb.length ? Math.max(...precipProb) : 0;
   if (maxProb < RAIN_PROB_GATE) return null;
 
-  let num = 0, den = 0;
-  for (const p of precipRate) { num += p.rate * p.t; den += p.t; }
-  const rate = den > 0 ? num / den : 0; // mm/h
-
+  const total = precipTotalMm || 0; // mm over the ride
   const [maybe, wet, very] = RAIN_BANDS;
-  if (rate < maybe) return null;
-  if (rate < wet) return "maybe wet";
-  if (rate < very) return "wet";
+  if (total < maybe) return null;
+  if (total < wet) return "maybe wet";
+  if (total < very) return "wet";
   return "very wet";
 }
 
@@ -118,7 +118,7 @@ export function whatToExpect({ segments, times, windFn, departMs }) {
   const c = sampleConditions({ segments, times, windFn, departMs });
   const tokens = [
     temperatureToken(c.temps),
-    rainToken(c.precipRate, c.precipProb),
+    rainToken(c.precipTotalMm, c.precipProb),
     sideWindToken(c.crosswinds),
   ].filter(Boolean);
   return { tokens, line: tokens.join(" · ") };
