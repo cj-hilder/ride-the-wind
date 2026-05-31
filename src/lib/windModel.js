@@ -188,6 +188,7 @@ export function sampleWind(hourly, atMs) {
   while (lo < hourly.length - 1 && hourly[lo + 1].time <= atMs) lo++;
   const a = hourly[lo];
   const b = hourly[lo + 1];
+  if (!b) return pick(a); // defensive: no upper bracket, use the last sample
   const t = (atMs - a.time) / (b.time - a.time);
 
   // interpolate direction on the circle to avoid the 350°→10° wraparound bug
@@ -288,6 +289,63 @@ export async function fetchForecast(lat, lon, opts = {}) {
   if (!res.ok) throw new Error(`Open-Meteo HTTP ${res.status}`);
   const data = await res.json();
   return parseForecast(data);
+}
+
+/**
+ * Fetch the wind ensemble (ECMWF IFS, 51 members) for a location. Returns one
+ * wind series PER MEMBER, so the caller can run each through the ride-time
+ * model and read off true forecast uncertainty. Members carry only wind
+ * (speed + direction); temperature/precip come from the deterministic call.
+ *
+ * @returns {Promise<Array<Array<{time:number, speed:number, fromDeg:number}>>>}
+ *          array of members, each a sorted series
+ */
+export async function fetchEnsemble(lat, lon, opts = {}) {
+  const { forecastDays = 2, fetchImpl, model = "ecmwf_ifs025" } = opts;
+  const f = fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
+  if (!f) throw new Error("No fetch available; inject opts.fetchImpl.");
+
+  const url =
+    `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${lat}&longitude=${lon}` +
+    `&hourly=wind_speed_10m,wind_direction_10m` +
+    `&models=${model}&wind_speed_unit=kmh&timeformat=unixtime&forecast_days=${forecastDays}`;
+
+  const res = await f(url);
+  if (!res.ok) throw new Error(`Open-Meteo ensemble HTTP ${res.status}`);
+  const data = await res.json();
+  return parseEnsemble(data);
+}
+
+/**
+ * Parse an ensemble response into per-member series. Open-Meteo names member
+ * variables like `wind_speed_10m_member01`, `wind_direction_10m_member01`, …
+ * (member00/control may also appear unsuffixed). Separated from the fetch for
+ * offline testing against canned JSON.
+ */
+export function parseEnsemble(data) {
+  const h = data && data.hourly;
+  if (!h || !Array.isArray(h.time)) {
+    throw new Error("Unexpected Open-Meteo ensemble response shape.");
+  }
+  const times = h.time;
+  // collect member suffixes present for wind speed
+  const speedKeys = Object.keys(h).filter((k) => k.startsWith("wind_speed_10m"));
+  const members = [];
+  for (const sk of speedKeys) {
+    const suffix = sk.slice("wind_speed_10m".length); // "" or "_member03"
+    const dk = "wind_direction_10m" + suffix;
+    const speeds = h[sk];
+    const dirs = h[dk];
+    if (!Array.isArray(speeds) || !Array.isArray(dirs)) continue;
+    const series = [];
+    for (let i = 0; i < times.length; i++) {
+      series.push({ time: times[i] * 1000, speed: speeds[i], fromDeg: dirs[i] });
+    }
+    series.sort((a, b) => a.time - b.time);
+    members.push(series);
+  }
+  if (members.length === 0) throw new Error("No ensemble members found.");
+  return members;
 }
 
 /**

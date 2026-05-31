@@ -184,3 +184,54 @@ export function predictWithRange(args, arrivalMs, opts = {}) {
     provisional: center.provisional,
   };
 }
+
+/**
+ * True forecast-uncertainty range from a weather ensemble. Runs the ride-time
+ * model once per member and reads percentiles off the resulting distribution,
+ * so the spread is the model's own honest uncertainty (narrow on settled days,
+ * wide on uncertain ones) rather than a fixed ±%.
+ *
+ * @param {Object} args - same as makePredictor, but `ensemble` replaces the
+ *                        wind in stationSeries:
+ * @param {Array<{lat,lon, members: Array<series>}>} args.ensembleStations
+ *        per station, an array of per-member wind series (windModel.parseEnsemble)
+ * @param {number} arrivalMs
+ * @param {Object} [opts]
+ * @param {number} [opts.loPct=10] @param {number} [opts.hiPct=90]
+ * @returns {{centerSec, lowSec, highSec, members:number}|null}
+ */
+export function predictEnsembleRange(args, arrivalMs, opts = {}) {
+  const { loPct = 10, hiPct = 90 } = opts;
+  const stations = args.ensembleStations;
+  if (!stations || stations.length === 0) return null;
+  const memberCount = Math.min(...stations.map((s) => s.members.length));
+  if (!(memberCount > 1)) return null;
+
+  const times = [];
+  for (let m = 0; m < memberCount; m++) {
+    // build a stationSeries using member m's wind at each station
+    const stationSeries = stations.map((s) => ({
+      lat: s.lat, lon: s.lon, series: s.members[m],
+    }));
+    const p = makePredictor({ ...args, stationSeries })(arrivalMs);
+    if (p.predictedSec > 0) times.push(p.predictedSec);
+  }
+  if (times.length < 2) return null;
+  times.sort((a, b) => a - b);
+
+  return {
+    centerSec: percentile(times, 50),
+    lowSec: percentile(times, loPct),
+    highSec: percentile(times, hiPct),
+    members: times.length,
+  };
+}
+
+/** Linear-interpolated percentile of a sorted array. */
+export function percentile(sorted, p) {
+  if (sorted.length === 1) return sorted[0];
+  const idx = (p / 100) * (sorted.length - 1);
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}

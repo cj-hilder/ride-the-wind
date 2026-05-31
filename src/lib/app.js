@@ -19,6 +19,7 @@ import { processGpx } from "./gpxRoute.js";
 import {
   seedK as computeSeedK,
   fetchForecast as realFetchForecast,
+  fetchEnsemble as realFetchEnsemble,
   parseForecast,
   makeWindFn,
   segmentTimes,
@@ -35,6 +36,7 @@ import {
   makePredictor,
   chooseStations,
   predictWithRange,
+  predictEnsembleRange,
   speedFromBaseline,
 } from "./prediction.js";
 import { whatToExpect } from "./whatToExpect.js";
@@ -45,6 +47,13 @@ import {
   requestPersistentStorage,
 } from "./storage.js";
 import { runDueAlerts, installScheduler } from "./scheduler.js";
+
+// Local HH:MM (24h) formatter, device local time.
+function hhmm(ms) {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 
 /* ------------------------------------------------------------------ *
  * Construction
@@ -74,6 +83,12 @@ export function createAppController(deps = {}) {
     deps.fetchForecastFor ||
     (async (lat, lon) => realFetchForecast(lat, lon)); // returns parsed series
 
+  // Optional ensemble fetcher → per-member wind series. Defaults to Open-Meteo
+  // ensemble; if it throws, the range falls back to the deterministic method.
+  const fetchEnsembleFor =
+    deps.fetchEnsembleFor ||
+    (async (lat, lon) => realFetchEnsemble(lat, lon));
+
   const now = deps.now || (() => Date.now());
 
   // In-memory caches for a session: avoid re-fetching the same station within
@@ -98,9 +113,30 @@ export function createAppController(deps = {}) {
     return series;
   }
 
-  /* ---------------------------------------------------------------- *
-   * Routes
-   * ---------------------------------------------------------------- */
+  const ensembleCache = new Map();
+  // Fetch per-member ensemble wind for each station. Returns null on any
+  // failure so the caller can fall back to the deterministic range — the app
+  // must never block on the ensemble.
+  async function ensembleStationsFor(route) {
+    try {
+      const stations = chooseStations(route);
+      const out = [];
+      for (const st of stations) {
+        const key = `${st.lat.toFixed(2)},${st.lon.toFixed(2)}`;
+        const hit = ensembleCache.get(key);
+        if (hit && now() - hit.at < FORECAST_TTL) {
+          out.push({ lat: st.lat, lon: st.lon, members: hit.members });
+          continue;
+        }
+        const members = await fetchEnsembleFor(st.lat, st.lon);
+        ensembleCache.set(key, { members, at: now() });
+        out.push({ lat: st.lat, lon: st.lon, members });
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
 
   /**
    * Create a route from raw GPX text plus the setup form values.
@@ -173,23 +209,60 @@ export function createAppController(deps = {}) {
     const verdict = evaluateAlert(route, predictForArrival, { nowMs });
     if (!verdict) return { route, verdict: null };
 
-    // forecast spread for the range display
+    // forecast spread: prefer the true ensemble range, fall back to the
+    // deterministic ±% method if the ensemble is unavailable.
     const next = nextActiveArrival(route, nowMs);
-    const range = next
-      ? predictWithRange(
-          {
-            route,
-            modelState: model ? model.regressionState : learning.createModelState(),
-            seed,
-            stationSeries,
-          },
-          next.arrivalMs
-        )
-      : null;
+    let range = null;
+    if (next) {
+      const rangeArgs = {
+        route,
+        modelState: model ? model.regressionState : learning.createModelState(),
+        seed,
+        stationSeries,
+      };
+      const ensembleStations = await ensembleStationsFor(route);
+      if (ensembleStations) {
+        range = predictEnsembleRange({ ...rangeArgs, ensembleStations }, next.arrivalMs);
+      }
+      if (!range) {
+        range = predictWithRange(rangeArgs, next.arrivalMs);
+      }
+    }
 
     const conf = learning.confidence(
       model ? model.regressionState : learning.createModelState()
     );
+
+    // Conservative departure: anchor on the SLOW end of the forecast range so
+    // the rider arrives on time even on the slower side. Target = latest arrival.
+    let conservative = null;
+    if (next && range) {
+      const slowSec = range.highSec;
+      const fastSec = range.lowSec;
+      const departureMs = next.arrivalMs - slowSec * 1000;
+      const earliestArrivalMs = departureMs + fastSec * 1000;
+      // a still-air conservative departure for the "vs normal day" delta
+      const baselineDepartureMs = next.arrivalMs - route.baselineTimeSec * 1000;
+      conservative = {
+        departureMs,
+        departureHHMM: hhmm(departureMs),
+        latestArrivalMs: next.arrivalMs,
+        latestArrivalHHMM: verdict.arrivalHHMM,
+        earliestArrivalMs,
+        earliestArrivalHHMM: hhmm(earliestArrivalMs),
+        windowMin: Math.round((next.arrivalMs - earliestArrivalMs) / 60000),
+      };
+      // Recompute the verdict's user-facing departure on the conservative basis,
+      // and the delta vs a normal (still-air) day, so the headline stays honest.
+      const deltaSec = slowSec - route.baselineTimeSec;
+      verdict.departureMs = departureMs;
+      verdict.departureHHMM = conservative.departureHHMM;
+      verdict.normalDepartureHHMM = hhmm(baselineDepartureMs);
+      verdict.deltaSec = deltaSec;
+      verdict.deltaMin = Math.round(deltaSec / 60);
+      verdict.verdict = deltaSec > (verdict.thresholdMin ?? 4) * 60 ? "headwind"
+        : deltaSec < -(verdict.thresholdMin ?? 4) * 60 ? "tailwind" : "normal";
+    }
 
     // "What to expect" line: temp / rain / side wind at the arrival window.
     let expect = null;
@@ -197,11 +270,11 @@ export function createAppController(deps = {}) {
       const baseSpeed = speedFromBaseline(route.totalDistance, route.baselineTimeSec);
       const times = segmentTimes(route.segments, baseSpeed, { useGradient: true });
       const windFn = makeWindFn(stationSeries);
-      const departMs = next.arrivalMs - verdict.predictedSec * 1000;
+      const departMs = conservative ? conservative.departureMs : next.arrivalMs - verdict.predictedSec * 1000;
       expect = whatToExpect({ segments: route.segments, times, windFn, departMs });
     }
 
-    return { route, verdict, range, confidence: conf, expect, model };
+    return { route, verdict, range, conservative, confidence: conf, expect, model };
   }
 
   async function listRoutesWithVerdict() {
