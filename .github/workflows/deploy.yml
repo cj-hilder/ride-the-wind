@@ -23,6 +23,11 @@ jobs:
         with:
           node-version: 20
       - run: npm install
+      - name: Stamp service worker build id (cache-busting)
+        run: |
+          BUILD_ID="${GITHUB_SHA::8}-$(date +%s)"
+          sed -i "s/self.__RTW_BUILD_ID__ || \"dev\"/\"$BUILD_ID\"/" public/sw.js
+          echo "Stamped SW build id: $BUILD_ID"
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:
