@@ -1,6 +1,6 @@
 {
   "name": "Ride the Wind",
-  "short_name": "RideWind",
+  "short_name": "Ride the Wind",
   "description": "Know each morning whether to leave early or sleep in, based on the forecast wind along your commute.",
   "start_url": "./",
   "scope": "./",
