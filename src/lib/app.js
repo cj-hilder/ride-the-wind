@@ -271,13 +271,13 @@ export function createAppController(deps = {}) {
       const loEffectMin = Math.round((fastSec - route.baselineTimeSec) / 60);
       const hiEffectMin = Math.round((slowSec - route.baselineTimeSec) / 60);
       let direction, headPct = null;
-      if (loEffectMin === 0 && hiEffectMin === 0) {
-        direction = "calm";
+      if (Math.abs(loEffectMin) < 1 && Math.abs(hiEffectMin) < 1) {
+        direction = "calm"; // both ends under a minute → no meaningful effect
       } else if (loEffectMin < 0 && hiEffectMin > 0) {
         direction = "mixed"; // range straddles zero → show probability
         headPct = Math.round(range.headProb * 100);
       } else if (hiEffectMin >= 0) {
-        direction = "headwind"; // both ends ≥ 0 (and not both 0)
+        direction = "headwind"; // both ends ≥ 0 (and not negligible)
       } else {
         direction = "tailwind"; // both ends ≤ 0
       }
