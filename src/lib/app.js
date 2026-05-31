@@ -262,27 +262,28 @@ export function createAppController(deps = {}) {
       verdict.verdict = deltaSec > (verdict.thresholdMin ?? 4) * 60 ? "headwind"
         : deltaSec < -(verdict.thresholdMin ?? 4) * 60 ? "tailwind" : "normal";
 
-      // Wind-effect description. Direction/probability and the displayed range
-      // both derive from the same ensemble members, so they stay coherent.
-      // Unanimous → clean "headwind"/"tailwind"; mixed → "xx% chance headwind"
-      // (tailwind is the remainder). No dead-band: each member is head or tail.
+      // Wind-effect description. The direction word is defined by the displayed
+      // RANGE so word and number can't contradict. The headwind probability is
+      // shown ONLY when the range actually straddles zero (could be faster or
+      // slower) — if both ends share a sign the direction isn't in doubt, so a
+      // percentage would be misleading. Probability/range both from the same
+      // ensemble members. No dead-band: each member is head or tail by sign.
       const loEffectMin = Math.round((fastSec - route.baselineTimeSec) / 60);
       const hiEffectMin = Math.round((slowSec - route.baselineTimeSec) / 60);
-      const headProb = range.headProb; // 0..1 fraction of members that are headwind
       let direction, headPct = null;
       if (loEffectMin === 0 && hiEffectMin === 0) {
         direction = "calm";
-      } else if (headProb >= 1) {
-        direction = "headwind";
-      } else if (headProb <= 0) {
-        direction = "tailwind";
+      } else if (loEffectMin < 0 && hiEffectMin > 0) {
+        direction = "mixed"; // range straddles zero → show probability
+        headPct = Math.round(range.headProb * 100);
+      } else if (hiEffectMin >= 0) {
+        direction = "headwind"; // both ends ≥ 0 (and not both 0)
       } else {
-        direction = "mixed";
-        headPct = Math.round(headProb * 100);
+        direction = "tailwind"; // both ends ≤ 0
       }
       windEffect = {
         direction,
-        headPct, // null unless mixed
+        headPct, // null unless the range straddles zero
         loMin: loEffectMin,
         hiMin: hiEffectMin,
       };
