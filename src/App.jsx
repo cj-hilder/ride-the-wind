@@ -133,8 +133,9 @@ export default function App() {
  * Home — verdict for the active route
  * ========================================================================== */
 function Home({ active, routes, setActiveRouteId }) {
+  const [showDebug, setShowDebug] = useState(false);
   if (!active) return <Empty />;
-  const { route, verdict, range, conservative, confidence, expect } = active;
+  const { route, verdict, range, conservative, confidence, expect, debug } = active;
   if (!verdict) return <Empty name={route.name} />;
 
   const accent = ACCENT[verdict.verdict];
@@ -187,8 +188,23 @@ function Home({ active, routes, setActiveRouteId }) {
                 : <>to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}</>}
             </div>
             {expect && expect.line && (
-              <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 8, letterSpacing: "0.01em" }}>
+              <div onClick={() => setShowDebug((v) => !v)} style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 8, letterSpacing: "0.01em", cursor: "pointer" }}>
                 {expect.line}
+              </div>
+            )}
+            {showDebug && debug && (
+              <div style={{
+                marginTop: 10, padding: "10px 12px", borderRadius: 12, fontSize: 12,
+                fontFamily: "ui-monospace, monospace", lineHeight: 1.6,
+                background: "rgba(0,0,0,0.25)", color: "rgba(255,255,255,0.8)",
+              }}>
+                <div>wind: {debug.windSpeedKmh} km/h from {debug.windFromDeg}°</div>
+                <div>route avg bearing: {debug.avgBearingDeg}°</div>
+                <div>mean headwind: {debug.meanHeadwindKmh} km/h <span style={{ color: "rgba(255,255,255,0.5)" }}>({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</span></div>
+                <div>mean crosswind: {debug.meanCrosswindKmh} km/h</div>
+                <div>wind_factor: {debug.windFactor} <span style={{ color: "rgba(255,255,255,0.5)" }}>({debug.windFactor >= 0 ? "slows" : "speeds"})</span></div>
+                <div>baseline {Math.round(debug.baselineSec / 60)}m → predicted {Math.round(debug.predictedSec / 60)}m</div>
+                {debug.slowSec != null && <div>range {Math.round(debug.fastSec / 60)}–{Math.round(debug.slowSec / 60)}m</div>}
               </div>
             )}
           </div>
