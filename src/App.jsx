@@ -33,6 +33,19 @@ const skyFor = (hour) =>
 const ACCENT = { headwind: "#5b8fc7", tailwind: "#e0a45e", normal: "#9aa7b0" };
 const fmtMin = (sec) => `${Math.round(sec / 60)} min`;
 
+// Label the forecast day: "today"/"tomorrow" when close, else the weekday name.
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+function dayLabel(arrivalMs) {
+  if (!arrivalMs) return "";
+  const arr = new Date(arrivalMs);
+  const today = new Date();
+  const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x.getTime(); };
+  const days = Math.round((startOfDay(arr) - startOfDay(today)) / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "tomorrow";
+  return WEEKDAY_NAMES[arr.getDay()];
+}
+
 export default function App() {
   const controllerRef = useRef(null);
   if (!controllerRef.current) controllerRef.current = createAppController();
@@ -168,7 +181,7 @@ function Home({ active, routes, setActiveRouteId }) {
               )}
             </div>
             <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", marginTop: 10 }}>
-              to arrive {verdict.arrivalHHMM}
+              to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}
               {rangeMin >= 2 && <span style={{ color: "rgba(255,255,255,0.5)" }}> · ±{rangeMin} min spread</span>}
             </div>
           </div>
