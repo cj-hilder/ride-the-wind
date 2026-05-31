@@ -243,12 +243,16 @@ export function createAppController(deps = {}) {
       const loEffectMin = Math.round((range.lowSec - route.baselineTimeSec) / 60);
       const hiEffectMin = Math.round((range.highSec - route.baselineTimeSec) / 60);
 
-      // Departure anchors on the slow end — but SNAP it to baseline when its
-      // effect rounds to ≤ 0 minutes (a sub-minute headwind shouldn't pull the
-      // departure earlier, and the displayed "0" must match the clock). We only
-      // ever snap toward baseline a slow end that's within a minute; a genuine
-      // multi-minute headwind is never snapped, preserving the on-time guarantee.
-      const slowSec = hiEffectMin <= 0 ? route.baselineTimeSec : range.highSec;
+      // Departure anchors on the slow end. SNAP it to baseline only when it is
+      // a sub-minute HEADWIND — i.e. fractionally ABOVE baseline but rounding to
+      // 0 — so it doesn't pull the departure earlier while the display shows 0.
+      // A slow end at or below baseline is a genuine (if small) tailwind benefit
+      // and must pass through untouched; a multi-minute headwind is never
+      // snapped, preserving the on-time guarantee.
+      const slowAboveBaseline = range.highSec > route.baselineTimeSec;
+      const slowSec = slowAboveBaseline && hiEffectMin === 0
+        ? route.baselineTimeSec
+        : range.highSec;
       const fastSec = range.lowSec;
       const departureMs = next.arrivalMs - slowSec * 1000;
       const earliestArrivalMs = departureMs + fastSec * 1000;
