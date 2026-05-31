@@ -72,12 +72,12 @@ export default function App() {
   const [activeRouteId, setActiveRouteId] = useState(null);
   const [banner, setBanner] = useState(null); // alert summary banner
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (opts = {}) => {
+    if (!opts.quiet) setLoading(true);
     const list = await controller.listRoutesWithVerdict();
     setRoutes(list);
     if (!activeRouteId && list[0]) setActiveRouteId(list[0].route.id);
-    setLoading(false);
+    if (!opts.quiet) setLoading(false);
   }, [controller, activeRouteId]);
 
   useEffect(() => {
@@ -88,6 +88,36 @@ export default function App() {
       },
     });
     refresh();
+
+    // Keep a long-open session fresh: recompute the verdict periodically and on
+    // regaining focus. The forecast fetch itself is throttled by the cache TTL,
+    // so frequent recompute is cheap and only re-fetches when data is stale.
+    // This also handles midnight rollover (the "next ride" day advancing) since
+    // listRoutesWithVerdict re-evaluates nextActiveArrival each time.
+    let lastDay = new Date().getDate();
+    const tick = () => {
+      if (document.visibilityState !== "visible") return;
+      refresh({ quiet: true });
+    };
+    const interval = setInterval(tick, 15 * 60 * 1000); // every 15 min while visible
+
+    // A faster check purely for day rollover, so the screen flips to the next
+    // ride promptly after midnight without waiting for the 15-min tick.
+    const dayCheck = setInterval(() => {
+      const d = new Date().getDate();
+      if (d !== lastDay) { lastDay = d; if (document.visibilityState === "visible") refresh({ quiet: true }); }
+    }, 60 * 1000); // once a minute, near-free (no fetch unless verdict changes)
+
+    const onVisible = () => { if (document.visibilityState === "visible") refresh({ quiet: true }); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+
+    return () => {
+      clearInterval(interval);
+      clearInterval(dayCheck);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
   }, []); // eslint-disable-line
 
   const active = routes.find((r) => r.route.id === activeRouteId) || routes[0];
