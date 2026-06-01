@@ -54,6 +54,14 @@ function hhmm(ms) {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+// Clamp the conservatism percentile to a sane band (50–99); guards against a
+// bad stored value. Below 50 would invert slow/fast; 100 is the noisy extreme.
+function clampPct(p) {
+  const n = Number(p);
+  if (!Number.isFinite(n)) return 95;
+  return Math.max(50, Math.min(99, n));
+}
+
 
 /* ------------------------------------------------------------------ *
  * Construction
@@ -240,7 +248,17 @@ export function createAppController(deps = {}) {
           st.members.every((m) => seriesCovers(m, next.arrivalMs))
         );
       if (ensembleReaches) {
-        range = predictEnsembleRange({ ...rangeArgs, ensembleStations }, next.arrivalMs);
+        // Conservatism percentile (tunable). The slow end anchors here; the
+        // fast end mirrors at its complement. NOT a calibrated on-time
+        // probability — a deliberate safety margin against an under-dispersive
+        // ensemble. Default 95 (≈ rarely late) rather than 90 (≈1-in-10 late).
+        const hiPct = clampPct(await store.getSetting("conservatismPct", 95));
+        const loPct = 100 - hiPct;
+        range = predictEnsembleRange(
+          { ...rangeArgs, ensembleStations },
+          next.arrivalMs,
+          { loPct, hiPct }
+        );
       }
       if (!range) rangeUnavailable = true;
     } else if (next) {
@@ -256,9 +274,55 @@ export function createAppController(deps = {}) {
     // Departure AND headline both drive off the slow end (the safe number).
     let conservative = null;
     let windEffect = null;
-    const baselineDepartureMs = next ? next.arrivalMs - route.baselineTimeSec * 1000 : null;
+    const timeMode = route.timeMode === "depart" ? "depart" : "arrive";
+    // `next.arrivalMs` is the entered-time instant: an arrival in arrive mode,
+    // a departure in depart mode.
+    const baselineDepartureMs =
+      next && timeMode === "arrive" ? next.arrivalMs - route.baselineTimeSec * 1000 : null;
 
-    if (next && range) {
+    if (next && range && timeMode === "depart") {
+      // Fixed departure: the rider leaves at the entered time; we show the
+      // arrival RANGE. arrival = departure + rideTime. The caution percentile
+      // already widened range.highSec, so the latest-arrival reflects it.
+      const departureMs = next.arrivalMs; // entered time = departure
+      const fastSec = range.lowSec;
+      const slowSec = range.highSec;
+      const earliestArrivalMs = departureMs + fastSec * 1000;
+      const latestArrivalMs = departureMs + slowSec * 1000;
+      conservative = {
+        mode: "depart",
+        departureMs,
+        departureHHMM: hhmm(departureMs),
+        earliestArrivalMs,
+        earliestArrivalHHMM: hhmm(earliestArrivalMs),
+        latestArrivalMs,
+        latestArrivalHHMM: hhmm(latestArrivalMs),
+        windowMin: Math.round((latestArrivalMs - earliestArrivalMs) / 60000),
+      };
+      // No leave-early decision in depart mode (departure is fixed), but the
+      // wind still classifies the ride for the headline. Use the slow-end delta
+      // vs baseline, same threshold as arrive mode.
+      verdict.departureMs = departureMs;
+      verdict.departureHHMM = hhmm(departureMs);
+      const dDeltaSec = range.highSec - route.baselineTimeSec;
+      const thr = (verdict.thresholdMin ?? 4) * 60;
+      verdict.verdict = dDeltaSec > thr ? "headwind" : dDeltaSec < -thr ? "tailwind" : "normal";
+      verdict.deltaMin = Math.round(dDeltaSec / 60);
+
+      const loEffectMin = Math.round((range.lowSec - route.baselineTimeSec) / 60);
+      const hiEffectMin = Math.round((range.highSec - route.baselineTimeSec) / 60);
+      let direction, headPct = null;
+      if (hiEffectMin <= 0 && loEffectMin >= -1) direction = "calm";
+      else if (hiEffectMin <= 0) direction = "tailwind";
+      else if (loEffectMin >= 0) direction = "headwind";
+      else { direction = "mixed"; headPct = Math.round(range.headProb * 100); }
+      windEffect = {
+        direction, headPct, loMin: loEffectMin, hiMin: hiEffectMin,
+        fastMin: Math.round(range.lowSec / 60),
+        slowMin: Math.round(range.highSec / 60),
+        likelyMin: Math.round(range.centerSec / 60),
+      };
+    } else if (next && range) {
       // Effect at each end, in whole minutes vs baseline (+ = slower).
       const loEffectMin = Math.round((range.lowSec - route.baselineTimeSec) / 60);
       const hiEffectMin = Math.round((range.highSec - route.baselineTimeSec) / 60);
@@ -277,6 +341,7 @@ export function createAppController(deps = {}) {
       const departureMs = next.arrivalMs - slowSec * 1000;
       const earliestArrivalMs = departureMs + fastSec * 1000;
       conservative = {
+        mode: "arrive",
         departureMs,
         departureHHMM: hhmm(departureMs),
         latestArrivalMs: next.arrivalMs,
@@ -316,12 +381,37 @@ export function createAppController(deps = {}) {
         headPct,
         loMin: loEffectMin,
         hiMin: hiEffectMin,
+        fastMin: Math.round(range.lowSec / 60),
+        slowMin: Math.round(range.highSec / 60),
+        likelyMin: Math.round(range.centerSec / 60),
       };
+    } else if (next && rangeUnavailable && timeMode === "depart") {
+      // Fixed departure, no forecast range: single central arrival estimate.
+      const departureMs = next.arrivalMs;
+      const arrivalMs = departureMs + verdict.predictedSec * 1000;
+      conservative = {
+        mode: "depart",
+        departureMs,
+        departureHHMM: hhmm(departureMs),
+        earliestArrivalMs: arrivalMs,
+        earliestArrivalHHMM: hhmm(arrivalMs),
+        latestArrivalMs: arrivalMs,
+        latestArrivalHHMM: hhmm(arrivalMs),
+        windowMin: 0,
+        unavailable: true,
+      };
+      verdict.departureMs = departureMs;
+      verdict.departureHHMM = hhmm(departureMs);
+      const duDeltaSec = verdict.predictedSec - route.baselineTimeSec;
+      const duThr = (verdict.thresholdMin ?? 4) * 60;
+      verdict.verdict = duDeltaSec > duThr ? "headwind" : duDeltaSec < -duThr ? "tailwind" : "normal";
+      verdict.deltaMin = Math.round(duDeltaSec / 60);
     } else if (next && rangeUnavailable) {
       // Ensemble unavailable: central prediction, no conservative padding.
       const centralSec = verdict.predictedSec;
       const departureMs = next.arrivalMs - centralSec * 1000;
       conservative = {
+        mode: "arrive",
         departureMs,
         departureHHMM: hhmm(departureMs),
         latestArrivalMs: next.arrivalMs,

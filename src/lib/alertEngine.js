@@ -230,7 +230,7 @@ function buildMessage(verdict, ctx) {
         provNote
       );
     default:
-      return `Normal morning — leave by ${ctx.departureHHMM} to arrive ${ctx.arrivalHHMM}${provNote}`;
+      return `Usual time — leave by ${ctx.departureHHMM} to arrive ${ctx.arrivalHHMM}${provNote}`;
   }
 }
 

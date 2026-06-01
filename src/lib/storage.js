@@ -31,6 +31,28 @@ const STORES = {
 const DB_NAME = "ride-the-wind";
 const DB_VERSION = 1;
 
+// Default k when a direction has no usable setup estimate. Mirrors
+// windModel.DEFAULT_K; duplicated here to avoid a cross-module dependency in
+// the storage layer (which otherwise knows no regression/wind math).
+const MIGRATION_DEFAULT_K = 0.33;
+
+/**
+ * Derive { kHead, kTail } from a route's stored setup estimates, for migrating
+ * pre-split models. Same formula as windModel.seedKSplit: kHead from the
+ * headwind estimate, kTail from the tailwind estimate, each defaulting to
+ * MIGRATION_DEFAULT_K and clamped to the full physical range 0.05–4.0.
+ */
+function splitSeedFromRoute(route) {
+  const clamp = (x) => Math.max(0.05, Math.min(4.0, x));
+  let kHead = MIGRATION_DEFAULT_K, kTail = MIGRATION_DEFAULT_K;
+  const still = route?.seedStillAirSec;
+  if (still > 0) {
+    if (route.seedHeadwind20Sec > 0) kHead = clamp(route.seedHeadwind20Sec / still - 1);
+    if (route.seedTailwind20Sec > 0) kTail = clamp(1 - route.seedTailwind20Sec / still);
+  }
+  return { kHead, kTail };
+}
+
 /* ================================================================== *
  * Backend interface
  *   get(store, key) -> value|undefined
@@ -226,6 +248,7 @@ export class Store {
       seedHeadwind20Sec: setup.seedHeadwind20Sec ?? null,
       seedTailwind20Sec: setup.seedTailwind20Sec ?? null,
       targetArrival: setup.targetArrival,
+      timeMode: setup.timeMode === "depart" ? "depart" : "arrive",
       arrivalOverrides: setup.arrivalOverrides ?? {},
       activeDays: setup.activeDays ?? [],
       alertThresholdMin: setup.alertThresholdMin ?? null,
@@ -272,8 +295,28 @@ export class Store {
 
   /* ---- Model state ---- */
 
-  getModel(routeId) {
-    return this.b.get(STORES.MODEL, routeId);
+  async getModel(routeId) {
+    const model = await this.b.get(STORES.MODEL, routeId);
+    if (!model) return model;
+    // Migration: models stored before the kHead/kTail split have only `k`
+    // (or nothing). Per the reset-and-reseed decision, rebuild both directional
+    // sensitivities from the route's stored setup estimates and persist.
+    if (model.kHead == null || model.kTail == null) {
+      const route = await this.getRoute(routeId);
+      const seed = splitSeedFromRoute(route);
+      const upgraded = {
+        ...model,
+        kHead: seed.kHead,
+        kTail: seed.kTail,
+        // a reset also discards the old single-k regression assumption
+        regressionState: this.learning.createModelState(),
+        usableRideCount: 0,
+      };
+      delete upgraded.k;
+      await this.b.put(STORES.MODEL, upgraded);
+      return upgraded;
+    }
+    return model;
   }
 
   /* ---- Rides ---- */
