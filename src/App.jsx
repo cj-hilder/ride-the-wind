@@ -229,8 +229,8 @@ function Home({ active, routes, setActiveRouteId }) {
             <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", marginTop: 10 }}>
               {isDepart
                 ? (hasWindow
-                    ? <>home between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
-                    : <>home around {conservative.earliestArrivalHHMM} {dayLabel(conservative.earliestArrivalMs)}</>)
+                    ? <>arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
+                    : <>arrive around {conservative.earliestArrivalHHMM} {dayLabel(conservative.earliestArrivalMs)}</>)
                 : (hasWindow
                     ? <>to arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
                     : <>to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}</>)}
@@ -401,6 +401,7 @@ function Routes({ controller, routes, onChanged, onAddNew }) {
                   controller={controller}
                   onSaved={async () => { setEditing(null); await onChanged(); }}
                   onDeleted={async () => { setEditing(null); await onChanged(); }}
+                  onCancel={() => setEditing(null)}
                 />
               )}
             </div>
@@ -425,15 +426,23 @@ function Routes({ controller, routes, onChanged, onAddNew }) {
   );
 }
 
-function RouteEditor({ route, controller, onSaved, onDeleted }) {
+function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
+  const [name, setName] = useState(route.name);
   const [arrival, setArrival] = useState(route.targetArrival);
   const [days, setDays] = useState(route.activeDays);
   const [threshold, setThreshold] = useState(route.alertThresholdMin ?? "");
   const [confirmDel, setConfirmDel] = useState(false);
+  // base values (minutes) for an optional data reset
+  const minsOf = (sec) => (sec ? String(Math.round(sec / 60)) : "");
+  const [still, setStill] = useState(minsOf(route.seedStillAirSec));
+  const [head, setHead] = useState(minsOf(route.seedHeadwind20Sec));
+  const [tail, setTail] = useState(minsOf(route.seedTailwind20Sec));
+  const [confirmReset, setConfirmReset] = useState(false);
   const toggleDay = (d) => setDays(days.includes(d) ? days.filter((x) => x !== d) : [...days, d]);
 
   const save = async () => {
     await controller.updateRoute(route.id, {
+      name: name.trim() || route.name,
       targetArrival: arrival,
       activeDays: days,
       alertThresholdMin: threshold === "" ? null : Math.round(parseFloat(threshold)),
@@ -441,10 +450,26 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
     onSaved();
   };
   const del = async () => { await controller.deleteRoute(route.id); onDeleted(); };
+  const doReset = async () => {
+    await controller.resetRoute(route.id, {
+      seedStillAirSec: still ? Math.round(parseFloat(still) * 60) : route.seedStillAirSec,
+      seedHeadwind20Sec: head ? Math.round(parseFloat(head) * 60) : null,
+      seedTailwind20Sec: tail ? Math.round(parseFloat(tail) * 60) : null,
+    });
+    // also save any name/schedule edits made alongside
+    await controller.updateRoute(route.id, {
+      name: name.trim() || route.name, targetArrival: arrival, activeDays: days,
+      alertThresholdMin: threshold === "" ? null : Math.round(parseFloat(threshold)),
+    });
+    onSaved();
+  };
 
   return (
     <div style={{ padding: "4px 16px 16px", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
-      <label style={lbl}>Target arrival</label>
+      <label style={lbl}>Route name</label>
+      <input value={name} onChange={(e) => setName(e.target.value)} style={INP} />
+
+      <label style={{ ...lbl, marginTop: 12 }}>{route.timeMode === "depart" ? "Departure time" : "Target arrival"}</label>
       <input type="time" value={arrival} onChange={(e) => setArrival(e.target.value)} style={INP} />
 
       <label style={{ ...lbl, marginTop: 12 }}>Active days</label>
@@ -462,12 +487,39 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
       <label style={{ ...lbl, marginTop: 12 }}>Alert threshold (minutes) <span style={{ color: "rgba(255,255,255,0.35)" }}>· blank = default</span></label>
       <input value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="decimal" placeholder="4" style={INP} />
 
+      <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+        <button onClick={onCancel} style={backupBtn}>Cancel</button>
+        <button onClick={save} style={{ flex: 1, padding: 13, borderRadius: 12, border: "none", cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a" }}>Save changes</button>
+      </div>
+
+      {/* Reset base values + discard ride data */}
+      <div style={{ marginTop: 20, padding: "12px 14px", borderRadius: 12, background: "rgba(0,0,0,0.18)" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.8)", marginBottom: 4 }}>Reset learning</div>
+        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginBottom: 10, lineHeight: 1.4 }}>
+          Re-enter base ride times. This throws away all logged rides and starts learning fresh from these values.
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input value={still} onChange={(e) => setStill(e.target.value)} inputMode="decimal" placeholder="still-air min" style={{ ...INP, fontSize: 13 }} />
+          <input value={head} onChange={(e) => setHead(e.target.value)} inputMode="decimal" placeholder="headwind" style={{ ...INP, fontSize: 13 }} />
+          <input value={tail} onChange={(e) => setTail(e.target.value)} inputMode="decimal" placeholder="tailwind" style={{ ...INP, fontSize: 13 }} />
+        </div>
+        <div style={{ marginTop: 10 }}>
+          {!confirmReset ? (
+            <button onClick={() => setConfirmReset(true)} style={{ ...backupBtn, width: "100%", color: "#f0c08c", borderColor: "rgba(224,164,94,0.4)" }}>Reset data to these values</button>
+          ) : (
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ flex: 1, fontSize: 12.5, color: "#f0d8a8" }}>Discard all logged rides?</span>
+              <button onClick={() => setConfirmReset(false)} style={backupBtn}>Cancel</button>
+              <button onClick={doReset} style={{ ...backupBtn, background: "rgba(224,164,94,0.9)", color: "#1a1f3a", border: "none" }}>Reset</button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Delete route entirely */}
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
         {!confirmDel ? (
-          <>
-            <button onClick={() => setConfirmDel(true)} style={{ ...backupBtn, flex: "0 0 auto", color: "#f0a08c", borderColor: "rgba(224,120,94,0.4)" }}>Delete</button>
-            <button onClick={save} style={{ flex: 1, padding: 13, borderRadius: 12, border: "none", cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a" }}>Save changes</button>
-          </>
+          <button onClick={() => setConfirmDel(true)} style={{ ...backupBtn, color: "#f0a08c", borderColor: "rgba(224,120,94,0.4)" }}>Delete route</button>
         ) : (
           <>
             <span style={{ flex: 1, alignSelf: "center", fontSize: 13, color: "#f0b8a8" }}>Delete this route and its rides?</span>
