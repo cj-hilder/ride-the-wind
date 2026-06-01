@@ -294,7 +294,7 @@ function Home({ active, routes, setActiveRouteId }) {
         animation: "rise 0.8s 0.12s both",
       }}>
         <RowLine label="Still-air baseline" value={fmtMin(verdict.baselineSec)} />
-        <RowLine label="Wind effect" value={`${verdict.deltaMin > 0 ? "+" : ""}${verdict.deltaMin} min`} color={accent} />
+        <RowLine label="Wind allowance" value={`${verdict.deltaMin > 0 ? "+" : ""}${verdict.deltaMin} min`} color={accent} />
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.12)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <ConfidenceDots confidence={confidence} />
           {verdict.kHead != null && verdict.kTail != null ? (
