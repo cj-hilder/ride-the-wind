@@ -152,6 +152,8 @@ export function evaluateAlert(route, predictForArrival, opts = {}) {
     baselineSec: p.baselineSec,
     windFactor: p.windFactor ?? null,
     k: p.k ?? null,
+    kHead: p.kHead ?? null,
+    kTail: p.kTail ?? null,
     provisional: !!p.provisional,
 
     message: buildMessage(verdict, {

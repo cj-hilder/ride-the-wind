@@ -124,6 +124,8 @@ export function makePredictor({ route, modelState, seed, stationSeries, opts = {
       predictedSec,
       baselineSec: pr.baselineSec,
       k: pr.k,
+      kHead: pr.kHead,
+      kTail: pr.kTail,
       provisional: pr.provisional,
       windFactor,
     };
