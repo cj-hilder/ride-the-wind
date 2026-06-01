@@ -293,6 +293,39 @@ export class Store {
     await this.b.delete(STORES.ROUTES, id);
   }
 
+  /**
+   * Reset a route's learning to freshly-entered base values: update the seed
+   * still-air / head / tail times (and baseline), discard all logged rides, and
+   * rebuild the model from the new directional seeds. Used by the editor's
+   * "reset data" action. The GPX/segments and schedule are untouched.
+   */
+  async resetRoute(id, baseValues) {
+    const route = await this.getRoute(id);
+    if (!route) return null;
+    const updated = {
+      ...route,
+      seedStillAirSec: baseValues.seedStillAirSec ?? route.seedStillAirSec,
+      seedHeadwind20Sec: baseValues.seedHeadwind20Sec ?? null,
+      seedTailwind20Sec: baseValues.seedTailwind20Sec ?? null,
+      baselineTimeSec: baseValues.seedStillAirSec ?? route.baselineTimeSec,
+      updatedAt: Date.now(),
+    };
+    await this.b.put(STORES.ROUTES, updated);
+    // throw away every logged ride for this route
+    await this.b.deleteWhere(STORES.RIDES, (r) => r.routeId === id);
+    // rebuild a fresh model seeded from the new base values
+    const seed = splitSeedFromRoute(updated);
+    await this.b.put(STORES.MODEL, {
+      routeId: id,
+      kHead: seed.kHead,
+      kTail: seed.kTail,
+      regressionState: this.learning.createModelState(),
+      usableRideCount: 0,
+      lastUpdated: Date.now(),
+    });
+    return updated;
+  }
+
   /* ---- Model state ---- */
 
   async getModel(routeId) {

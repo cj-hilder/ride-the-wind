@@ -182,6 +182,7 @@ export function createAppController(deps = {}) {
   const listRoutes = () => store.listRoutes();
   const getRoute = (id) => store.getRoute(id);
   const updateRoute = (id, patch) => store.updateRoute(id, patch);
+  const resetRoute = (id, baseValues) => store.resetRoute(id, baseValues);
   const deleteRoute = (id) => store.deleteRoute(id);
 
   /* ---------------------------------------------------------------- *
@@ -690,7 +691,7 @@ export function createAppController(deps = {}) {
 
   return {
     store,
-    createRoute, previewGpx, listRoutes, getRoute, updateRoute, deleteRoute,
+    createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute,
     getHomeVerdict, listRoutesWithVerdict,
     recordRide, listRides, recomputeModel, startRide,
     runAlerts, start,
