@@ -40,14 +40,14 @@ const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "
 // loMin/hiMin are (predicted − baseline) at the fast/slow ends; + = slower.
 function windEffectPhrase(we) {
   if (!we) return "";
-  // sign only on non-zero; zero is plain "0"
-  const fmt = (m) => (m > 0 ? `+${m}` : `${m}`); // m<0 already carries "-", m===0 → "0"
-  const lo = we.loMin, hi = we.hiMin;
-  const rangeStr = lo === hi ? `${fmt(lo)} min` : `${fmt(lo)} to ${fmt(hi)} min`;
-  if (we.direction === "calm") return "No wind";
-  if (we.direction === "mixed") return `${we.headPct}% chance headwind: ${rangeStr}`;
+  const fast = we.fastMin, slow = we.slowMin, likely = we.likelyMin;
+  const ride = fast === slow
+    ? `ride ${likely} mins`
+    : `ride ${fast} to ${slow} mins (likely ${likely} mins)`;
+  if (we.direction === "calm") return `No wind: ${ride}`;
+  if (we.direction === "mixed") return `${we.headPct}% chance headwind: ${ride}`;
   const label = we.direction === "headwind" ? "Headwind" : "Tailwind";
-  return `${label}: ${rangeStr}`;
+  return `${label}: ${ride}`;
 }
 
 function dayLabel(arrivalMs) {
@@ -185,11 +185,10 @@ function Home({ active, routes, setActiveRouteId }) {
 
   const accent = ACCENT[verdict.verdict];
   const sky = skyFor(new Date(verdict.departureMs).getHours());
-  const headline = {
-    headwind: `Leave ${Math.abs(verdict.deltaMin)} min early`,
-    tailwind: `Sleep in ${Math.abs(verdict.deltaMin)} min`,
-    normal: "Normal morning",
-  }[verdict.verdict];
+  const isDepart = conservative && conservative.mode === "depart";
+  const headline = isDepart
+    ? { headwind: "Headwind", tailwind: "Tailwind", normal: "Usual time" }[verdict.verdict]
+    : { headwind: "Early start", tailwind: "Late start", normal: "Usual time" }[verdict.verdict];
   // arrival window: show a range only when it's a meaningful (>=2 min) spread
   const hasWindow = conservative && conservative.windowMin >= 2;
 
@@ -218,19 +217,23 @@ function Home({ active, routes, setActiveRouteId }) {
             {headline}
           </div>
           <div style={{ marginTop: 26 }}>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", marginBottom: 4 }}>Leave by</div>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", marginBottom: 4 }}>{isDepart ? "Leave at" : "Leave by"}</div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
               <span style={{ fontFamily: "'Fraunces', serif", fontSize: 60, fontWeight: 600, lineHeight: 1, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
                 {verdict.departureHHMM}
               </span>
-              {verdict.verdict !== "normal" && (
+              {!isDepart && verdict.verdict !== "normal" && (
                 <span style={{ fontSize: 15, color: "rgba(255,255,255,0.55)", textDecoration: "line-through" }}>{verdict.normalDepartureHHMM}</span>
               )}
             </div>
             <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", marginTop: 10 }}>
-              {hasWindow
-                ? <>to arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
-                : <>to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}</>}
+              {isDepart
+                ? (hasWindow
+                    ? <>home between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
+                    : <>home around {conservative.earliestArrivalHHMM} {dayLabel(conservative.earliestArrivalMs)}</>)
+                : (hasWindow
+                    ? <>to arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
+                    : <>to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}</>)}
             </div>
             {windEffect && (
               <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 6 }}>
@@ -302,7 +305,23 @@ const DAY_CODES = [["MO", "M"], ["TU", "T"], ["WE", "W"], ["TH", "T"], ["FR", "F
 
 function Routes({ controller, routes, onChanged, onAddNew }) {
   const [editing, setEditing] = useState(null); // route id being edited
+  const [conservatism, setConservatism] = useState(95);
   const fileRef = useRef();
+
+  useEffect(() => {
+    let alive = true;
+    controller.store.getSetting("conservatismPct", 95).then((v) => {
+      if (alive && v != null) setConservatism(Number(v));
+    });
+    return () => { alive = false; };
+  }, [controller]);
+
+  const saveConservatism = async (v) => {
+    const n = Math.max(50, Math.min(99, Math.round(Number(v) || 95)));
+    setConservatism(n);
+    await controller.store.setSetting("conservatismPct", n);
+    await onChanged();
+  };
 
   const doExport = async () => {
     const bundle = await controller.exportAll();
@@ -333,6 +352,21 @@ function Routes({ controller, routes, onChanged, onAddNew }) {
       </div>
       <div style={{ padding: "0 22px 16px", fontSize: 13.5, color: "rgba(255,255,255,0.55)" }}>
         Each direction of a commute is its own route.
+      </div>
+
+      <div style={{ margin: "0 22px 18px", padding: "12px 14px", borderRadius: 14, background: "rgba(255,255,255,0.06)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: 14 }}>Caution level</span>
+          <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{conservatism}</span>
+        </div>
+        <input type="range" min={50} max={99} value={conservatism}
+          onChange={(e) => setConservatism(Number(e.target.value))}
+          onMouseUp={(e) => saveConservatism(e.target.value)}
+          onTouchEnd={(e) => saveConservatism(e.target.value)}
+          style={{ width: "100%", marginTop: 8, accentColor: "#e0a45e" }} />
+        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 4, lineHeight: 1.4 }}>
+          Higher = leave earlier, rarely late. This is how cautious the departure window is against forecast spread — a safety margin, not a guaranteed on-time percentage.
+        </div>
       </div>
 
       {routes.length === 0 ? (
@@ -456,7 +490,7 @@ function Setup({ controller, onDone, onCancel }) {
   const [gpxText, setGpxText] = useState(null);
   const [preview, setPreview] = useState(null);
   const [err, setErr] = useState(null);
-  const [form, setForm] = useState({ name: "", still: "", head: "", tail: "", arrival: "08:45", days: ["MO", "TU", "WE", "TH", "FR"] });
+  const [form, setForm] = useState({ name: "", still: "", head: "", tail: "", arrival: "08:45", timeMode: "arrive", days: ["MO", "TU", "WE", "TH", "FR"] });
   const [saving, setSaving] = useState(false);
   const fileRef = useRef();
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -479,7 +513,7 @@ function Setup({ controller, onDone, onCancel }) {
       seedStillAirSec: Math.round(parseFloat(form.still) * 60),
       seedHeadwind20Sec: form.head ? Math.round(parseFloat(form.head) * 60) : null,
       seedTailwind20Sec: form.tail ? Math.round(parseFloat(form.tail) * 60) : null,
-      targetArrival: form.arrival, activeDays: form.days,
+      targetArrival: form.arrival, timeMode: form.timeMode, activeDays: form.days,
     });
     onDone();
   };
@@ -530,6 +564,20 @@ function Setup({ controller, onDone, onCancel }) {
             </div>
           </Block>
           <Block n="4" title="When you ride">
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              {[["arrive", "Arrive by"], ["depart", "Depart at"]].map(([m, label]) => (
+                <button key={m} onClick={() => set("timeMode", m)} style={{
+                  flex: 1, padding: "10px 0", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 600,
+                  border: "none", background: form.timeMode === m ? "#e0a45e" : "rgba(255,255,255,0.1)",
+                  color: form.timeMode === m ? "#1a1f3a" : "rgba(255,255,255,0.8)",
+                }}>{label}</button>
+              ))}
+            </div>
+            <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)", marginBottom: 8 }}>
+              {form.timeMode === "arrive"
+                ? "Fixed arrival — we tell you when to leave."
+                : "Fixed departure (e.g. end of work) — we tell you when you'll arrive."}
+            </div>
             <input type="time" value={form.arrival} onChange={(e) => set("arrival", e.target.value)} style={INP} />
             <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
               {[["MO", "M"], ["TU", "T"], ["WE", "W"], ["TH", "T"], ["FR", "F"], ["SA", "S"], ["SU", "S"]].map(([c, l], i) => (
