@@ -69,12 +69,28 @@ export default function App() {
   const [screen, setScreen] = useState("home"); // home | setup | capture
   const [routes, setRoutes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [activeRouteId, setActiveRouteId] = useState(null);
   const [banner, setBanner] = useState(null); // alert summary banner
+  const [showHelp, setShowHelp] = useState(false);
+
+  // First launch (helpSeen unset) → show the welcome/help panel once.
+  useEffect(() => {
+    controller.store.getSetting("helpSeen", false).then((seen) => {
+      if (!seen) setShowHelp(true);
+    });
+  }, [controller]);
+
+  const acceptHelp = useCallback(async () => {
+    setShowHelp(false);
+    await controller.store.setSetting("helpSeen", true);
+  }, [controller]);
 
   const refresh = useCallback(async (opts = {}) => {
-    if (!opts.quiet) setLoading(true);
-    const list = await controller.listRoutesWithVerdict();
+    if (!opts.quiet) { setLoading(true); setProgress({ done: 0, total: 0 }); }
+    const list = await controller.listRoutesWithVerdict(
+      opts.quiet ? undefined : (done, total) => setProgress({ done, total })
+    );
     setRoutes(list);
     if (!activeRouteId && list[0]) setActiveRouteId(list[0].route.id);
     if (!opts.quiet) setLoading(false);
@@ -149,7 +165,7 @@ export default function App() {
 
       <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
         {loading ? (
-          <Loading />
+          <Loading progress={progress} />
         ) : screen === "home" ? (
           <Home active={active} routes={routes} setActiveRouteId={setActiveRouteId} />
         ) : screen === "routes" ? (
@@ -158,6 +174,7 @@ export default function App() {
             routes={routes}
             onChanged={refresh}
             onAddNew={() => setScreen("setup")}
+            onHelp={() => setShowHelp(true)}
           />
         ) : screen === "setup" ? (
           <Setup controller={controller}
@@ -170,6 +187,8 @@ export default function App() {
       </div>
 
       <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} />
+
+      {showHelp && <HelpPanel onClose={acceptHelp} />}
     </div>
   );
 }
@@ -303,7 +322,7 @@ function Home({ active, routes, setActiveRouteId }) {
  * ========================================================================== */
 const DAY_CODES = [["MO", "M"], ["TU", "T"], ["WE", "W"], ["TH", "T"], ["FR", "F"], ["SA", "S"], ["SU", "S"]];
 
-function Routes({ controller, routes, onChanged, onAddNew }) {
+function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
   const [editing, setEditing] = useState(null); // route id being edited
   const [conservatism, setConservatism] = useState(95);
   const fileRef = useRef();
@@ -420,6 +439,13 @@ function Routes({ controller, routes, onChanged, onAddNew }) {
         </div>
         <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.4)", marginTop: 8 }}>
           Your routes and rides live only on this device. Export regularly to keep a backup.
+        </div>
+      </div>
+
+      <div style={{ padding: "22px 22px 0" }}>
+        <button onClick={onHelp} style={{ ...backupBtn, width: "100%" }}>Help &amp; getting started</button>
+        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginTop: 14, lineHeight: 1.5, textAlign: "center" }}>
+          Ride the Wind · free &amp; open source (MIT) · by Chris Hilder
         </div>
       </div>
     </div>
@@ -812,8 +838,117 @@ function Stat({ label, value }) {
 function Warn({ children }) {
   return <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 10, fontSize: 12.5, background: "rgba(224,120,94,0.12)", border: "1px solid rgba(224,120,94,0.3)", color: "#f0b8a8" }}>{children}</div>;
 }
-function Loading() {
-  return <div style={{ height: "100%", display: "grid", placeItems: "center", background: "linear-gradient(165deg,#12152b,#1d1b38)", color: "rgba(255,255,255,0.5)", fontSize: 14 }}>Loading…</div>;
+/* ============================================================================
+ * HelpPanel — first-launch welcome + re-readable help (install, GPX, training)
+ * ========================================================================== */
+function detectInstall() {
+  if (typeof navigator === "undefined") return "unknown";
+  const standalone =
+    (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
+    (typeof navigator !== "undefined" && navigator.standalone);
+  if (standalone) return "installed";
+  const ua = navigator.userAgent || "";
+  if (/iPhone|iPad|iPod/i.test(ua)) return "ios";
+  if (/Android/i.test(ua)) return "android";
+  return "desktop";
+}
+
+const INSTALL_TEXT = {
+  ios: "Tap the Share button, then “Add to Home Screen”.",
+  android: "Open the browser menu, then “Install app” (or “Add to Home Screen”).",
+  desktop: "Click the install icon in the address bar, or browser menu → “Install”.",
+  unknown: "Add this page to your home screen from your browser’s menu.",
+};
+
+function HelpPanel({ onClose }) {
+  const platform = detectInstall();
+  const installed = platform === "installed";
+  const h3 = { fontFamily: "'Fraunces',serif", fontSize: 17, fontWeight: 600, color: "#fff", margin: "0 0 6px" };
+  const p = { fontSize: 13.5, color: "rgba(255,255,255,0.75)", lineHeight: 1.5, margin: "0 0 4px" };
+  const section = { padding: "16px 0", borderBottom: "1px solid rgba(255,255,255,0.1)" };
+
+  return (
+    <div style={{
+      position: "absolute", inset: 0, zIndex: 50, display: "flex", flexDirection: "column",
+      background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff",
+    }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "calc(28px + env(safe-area-inset-top)) 24px 20px" }}>
+        <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600, marginBottom: 2 }}>Ride the Wind</div>
+        <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 14 }}>
+          Predicts your bike commute time from the forecast wind, so you know when to leave.
+        </div>
+
+        {!installed && (
+          <div style={section}>
+            <h3 style={h3}>Install it</h3>
+            <p style={p}>{INSTALL_TEXT[platform] || INSTALL_TEXT.unknown}</p>
+            <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>Gives a full-screen app that works offline and opens like any other.</p>
+          </div>
+        )}
+
+        <div style={section}>
+          <h3 style={h3}>Add a route (you’ll need a GPX file)</h3>
+          <p style={p}>
+            A GPX is just the route’s path. Plan it in a route planner (like Mapy.com) — draw the route and export the <b>.gpx</b> — or use a ride you’ve already recorded in Strava, Komoot, Garmin, etc. and export its GPX. Open the file here to add the route.
+          </p>
+          <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
+            A planner’s ride-time estimate is a good starting value for the still-air time we ask for at setup. Each direction is its own route — an out-and-back is two routes.
+          </p>
+        </div>
+
+        <div style={section}>
+          <h3 style={h3}>How many rides to train it</h3>
+          <p style={p}>
+            Usable from your first ride — it starts from the times you enter at setup. It sharpens as you log rides and is well-tuned after about <b>10 rides in each direction</b> (headwind and tailwind days are learned separately). After that you can stop logging; it keeps adapting to the rides you do log.
+          </p>
+          <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
+            Behind each forecast, the app pulls an ensemble of about 50 separate wind forecasts for your route — more detailed wind data than a typical weather app shows.
+          </p>
+        </div>
+
+        <div style={{ padding: "16px 0 4px" }}>
+          <p style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.55, margin: 0 }}>
+            Ride the Wind gives estimates from weather forecasts. Forecasts are uncertain and conditions change — treat the times as a guide, not a guarantee, and ride safely and within the law. Provided as is, with no warranty and no liability for lateness or any other outcome. It’s free and open source — made by Chris Hilder and released under the MIT License, so anyone can use, study, modify, and share it.
+          </p>
+        </div>
+      </div>
+
+      <div style={{ padding: "12px 24px calc(16px + env(safe-area-inset-bottom))", borderTop: "1px solid rgba(255,255,255,0.12)" }}>
+        <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.45)", textAlign: "center", marginBottom: 10 }}>
+          By using Ride the Wind you agree to these terms.
+        </div>
+        <button onClick={onClose} style={{
+          width: "100%", padding: 14, borderRadius: 12, border: "none", cursor: "pointer",
+          fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a",
+        }}>Got it</button>
+      </div>
+    </div>
+  );
+}
+
+function Loading({ progress }) {
+  const { done = 0, total = 0 } = progress || {};
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const showBar = total > 1; // a real bar only when there are multiple routes to load
+  return (
+    <div style={{ height: "100%", display: "grid", placeItems: "center", background: "linear-gradient(165deg,#12152b,#1d1b38)", color: "rgba(255,255,255,0.7)" }}>
+      <div style={{ width: 220, textAlign: "center" }}>
+        <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, color: "rgba(255,255,255,0.92)", marginBottom: 14 }}>Ride the Wind</div>
+        {showBar ? (
+          <>
+            <div style={{ height: 5, borderRadius: 3, background: "rgba(255,255,255,0.12)", overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${pct}%`, background: "#e0a45e", borderRadius: 3, transition: "width 0.3s ease" }} />
+            </div>
+            <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)", marginTop: 8 }}>
+              Checking forecasts · route {Math.min(done + 1, total)} of {total}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 14, color: "rgba(255,255,255,0.5)" }}>Checking the forecast…</div>
+        )}
+      </div>
+    </div>
+  );
 }
 function Empty({ name }) {
   return <div style={{ height: "100%", display: "grid", placeItems: "center", background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff", textAlign: "center", padding: 30 }}>
