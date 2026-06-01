@@ -472,11 +472,14 @@ export function createAppController(deps = {}) {
     return { route, verdict, range, conservative, windEffect, rangeUnavailable, confidence: conf, expect, debug, model };
   }
 
-  async function listRoutesWithVerdict() {
+  async function listRoutesWithVerdict(onProgress) {
     const routes = await store.listRoutes();
+    const total = routes.length;
+    if (onProgress) onProgress(0, total);
     const out = [];
-    for (const r of routes) {
-      out.push(await getHomeVerdict(r.id));
+    for (let i = 0; i < routes.length; i++) {
+      out.push(await getHomeVerdict(routes[i].id));
+      if (onProgress) onProgress(i + 1, total);
     }
     return out;
   }
