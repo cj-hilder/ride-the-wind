@@ -2,6 +2,8 @@
   "name": "ride-the-wind",
   "private": true,
   "version": "1.0.0",
+  "license": "MIT",
+  "author": "Chris Hilder",
   "type": "module",
   "scripts": {
     "dev": "vite",
