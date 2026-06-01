@@ -22,11 +22,11 @@ import { createAppController } from "./lib/app.js";
 
 /* dawn-to-dusk palette shared with the screens */
 const SKY = {
-  predawn: ["#1a1f3a", "#2d2a52", "#3d3463"],
-  sunrise: ["#f4a07c", "#e8849a", "#a76b97"],
-  day: ["#7db8d8", "#9fc9e0", "#c5dced"],
-  dusk: ["#e89b6c", "#cf7a82", "#7a5b8c"],
-  night: ["#1a1f3a", "#2d2a52", "#3d3463"],
+  predawn: ["#12152b", "#1d1b38", "#281f44"],
+  sunrise: ["#6b3a3f", "#7a4156", "#5a3a63"],
+  day: ["#1f4a63", "#2a5a78", "#356b8a"],
+  dusk: ["#6b3f2e", "#5e3a44", "#3c2d50"],
+  night: ["#0f1226", "#171530", "#201a3a"],
 };
 const skyFor = (hour) =>
   hour < 6 ? SKY.predawn : hour < 9 ? SKY.sunrise : hour < 17 ? SKY.day : hour < 20 ? SKY.dusk : SKY.night;
@@ -283,13 +283,13 @@ function Home({ active, routes, setActiveRouteId }) {
       </div>
 
       {routes.length > 1 && (
-        <div style={{ position: "relative", zIndex: 2, display: "flex", gap: 8, padding: "0 16px 16px" }}>
+        <div style={{ position: "relative", zIndex: 2, display: "flex", flexWrap: "wrap", gap: 8, padding: "0 16px 16px", maxHeight: "22vh", overflowY: "auto" }}>
           {routes.map((r) => (
             <button key={r.route.id} onClick={() => setActiveRouteId(r.route.id)} style={{
-              flex: 1, padding: "9px 6px", borderRadius: 12, border: "none", cursor: "pointer",
+              flex: "1 1 calc(33.333% - 6px)", minWidth: 72, padding: "9px 6px", borderRadius: 12, border: "none", cursor: "pointer",
               fontFamily: "inherit", fontSize: 12, fontWeight: 600,
-              background: r.route.id === active.route.id ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.06)",
-              color: r.route.id === active.route.id ? "#fff" : "rgba(255,255,255,0.5)",
+              background: r.route.id === active.route.id ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.18)",
+              color: r.route.id === active.route.id ? "#fff" : "rgba(255,255,255,0.65)",
             }}>{r.route.name.split(" ")[0]}</button>
           ))}
         </div>
@@ -342,7 +342,7 @@ function Routes({ controller, routes, onChanged, onAddNew }) {
   };
 
   return (
-    <div style={{ height: "100%", overflowY: "auto", background: "linear-gradient(165deg,#1a1f3a,#2d2a52 55%,#3d3463)", color: "#fff", paddingBottom: 30 }}>
+    <div style={{ height: "100%", overflowY: "auto", background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff", paddingBottom: 30 }}>
       <div style={{ padding: "26px 22px 4px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontFamily: "'Fraunces',serif", fontSize: 26, fontWeight: 600 }}>Routes</span>
         <button onClick={onAddNew} style={{
@@ -520,7 +520,7 @@ function Setup({ controller, onDone, onCancel }) {
   const toggleDay = (d) => set("days", form.days.includes(d) ? form.days.filter((x) => x !== d) : [...form.days, d]);
 
   return (
-    <div style={{ height: "100%", overflowY: "auto", background: "linear-gradient(165deg,#1a1f3a,#2d2a52 55%,#3d3463)", color: "#fff", paddingBottom: 30 }}>
+    <div style={{ height: "100%", overflowY: "auto", background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff", paddingBottom: 30 }}>
       <div style={{ padding: "26px 22px 8px", display: "flex", alignItems: "center", gap: 12 }}>
         {onCancel && (
           <button onClick={onCancel} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.6)", fontSize: 22, padding: 0, lineHeight: 1 }} aria-label="Back">‹</button>
@@ -642,7 +642,7 @@ function Capture({ controller, route, onDone }) {
   return (
     <div style={{
       height: "100%", color: "#fff", padding: 24,
-      background: state === "riding" ? "linear-gradient(165deg,#16324a,#1d4258 55%,#2a5a6e)" : "linear-gradient(165deg,#1a1f3a,#2d2a52 55%,#3d3463)",
+      background: state === "riding" ? "linear-gradient(165deg,#16324a,#1d4258 55%,#2a5a6e)" : "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)",
       transition: "background 1s", display: "flex", flexDirection: "column",
     }}>
       {state === "armed" && (
@@ -761,10 +761,10 @@ function Warn({ children }) {
   return <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 10, fontSize: 12.5, background: "rgba(224,120,94,0.12)", border: "1px solid rgba(224,120,94,0.3)", color: "#f0b8a8" }}>{children}</div>;
 }
 function Loading() {
-  return <div style={{ height: "100%", display: "grid", placeItems: "center", background: "linear-gradient(165deg,#1a1f3a,#2d2a52)", color: "rgba(255,255,255,0.5)", fontSize: 14 }}>Loading…</div>;
+  return <div style={{ height: "100%", display: "grid", placeItems: "center", background: "linear-gradient(165deg,#12152b,#1d1b38)", color: "rgba(255,255,255,0.5)", fontSize: 14 }}>Loading…</div>;
 }
 function Empty({ name }) {
-  return <div style={{ height: "100%", display: "grid", placeItems: "center", background: "linear-gradient(165deg,#1a1f3a,#2d2a52 55%,#3d3463)", color: "#fff", textAlign: "center", padding: 30 }}>
+  return <div style={{ height: "100%", display: "grid", placeItems: "center", background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff", textAlign: "center", padding: 30 }}>
     <div>
       <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{name || "No routes yet"}</div>
       <div style={{ fontSize: 14, color: "rgba(255,255,255,0.6)", marginTop: 8 }}>Add a route in the Routes tab to see your morning verdict.</div>
