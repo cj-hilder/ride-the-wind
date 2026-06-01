@@ -141,15 +141,26 @@ export function computeWindFactor(segments, windAt, times, wRef = W_REF_KMH) {
  *   t_tail = t_still · (1 − k)      →  k_tail = 1 − t_tail/t_still
  *
  * We average the two implied estimates when both are present, use whichever
- * is present alone, and fall back to 1.0 if neither is given.
+ * is present alone, and fall back to DEFAULT_K if neither is given.
  *
  * @param {number} stillAirSec
  * @param {number|null} headwind20Sec
  * @param {number|null} tailwind20Sec
  * @returns {number} seeded k (>0)
  */
+/**
+ * Default wind sensitivity when the user gives no directional seed estimate.
+ * Set from real data: a measured k ≈ 0.5 on an exposed Otago Harbour route is
+ * an upper anchor (harbour edges are windier than sheltered streets), so a
+ * typical commute with some urban shelter sits below it. 0.33 lands the default
+ * in typical-sheltered territory — a third under the one exposed-route
+ * measurement — and is far more realistic than the old 1.0. Tune as more
+ * routes' learned k values accumulate.
+ */
+export const DEFAULT_K = 0.33;
+
 export function seedK(stillAirSec, headwind20Sec, tailwind20Sec) {
-  if (!(stillAirSec > 0)) return 1.0;
+  if (!(stillAirSec > 0)) return DEFAULT_K;
   const estimates = [];
   if (headwind20Sec != null && headwind20Sec > 0) {
     estimates.push(headwind20Sec / stillAirSec - 1);
@@ -157,10 +168,32 @@ export function seedK(stillAirSec, headwind20Sec, tailwind20Sec) {
   if (tailwind20Sec != null && tailwind20Sec > 0) {
     estimates.push(1 - tailwind20Sec / stillAirSec);
   }
-  if (estimates.length === 0) return 1.0;
+  if (estimates.length === 0) return DEFAULT_K;
   const k = estimates.reduce((a, b) => a + b, 0) / estimates.length;
   // Keep within the same sane band the learning update enforces.
-  return Math.max(0.2, Math.min(3.0, k));
+  return Math.max(0.05, Math.min(4.0, k));
+}
+
+/**
+ * Asymmetric seed: independent kHead and kTail from the directional setup
+ * estimates. kHead from the headwind estimate (headwind20Sec/stillAir − 1),
+ * kTail from the tailwind estimate (1 − tailwind20Sec/stillAir). Each side
+ * defaults to DEFAULT_K if its estimate is absent. Both clamped to 0.2–3.0.
+ */
+export function seedKSplit(stillAirSec, headwind20Sec, tailwind20Sec) {
+  // User setup estimates are explicit prior knowledge, not a noisy fit, so we
+  // clamp only to the full physical range (0.05–4.0), not the tight early band.
+  const clamp = (x) => Math.max(0.05, Math.min(4.0, x));
+  let kHead = DEFAULT_K, kTail = DEFAULT_K;
+  if (stillAirSec > 0) {
+    if (headwind20Sec != null && headwind20Sec > 0) {
+      kHead = clamp(headwind20Sec / stillAirSec - 1);
+    }
+    if (tailwind20Sec != null && tailwind20Sec > 0) {
+      kTail = clamp(1 - tailwind20Sec / stillAirSec);
+    }
+  }
+  return { kHead, kTail };
 }
 
 /* ------------------------------------------------------------------ *

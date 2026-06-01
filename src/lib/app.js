@@ -17,7 +17,7 @@
 
 import { processGpx } from "./gpxRoute.js";
 import {
-  seedK as computeSeedK,
+  seedKSplit as computeSeedKSplit,
   fetchForecast as realFetchForecast,
   fetchEnsemble as realFetchEnsemble,
   parseForecast,
@@ -162,7 +162,7 @@ export function createAppController(deps = {}) {
 
   async function createRoute(gpxText, setup) {
     const processed = processGpx(gpxText, { domParser: deps.domParser });
-    const seededK = computeSeedK(
+    const seededK = computeSeedKSplit(
       setup.seedStillAirSec,
       setup.seedHeadwind20Sec,
       setup.seedTailwind20Sec
@@ -183,7 +183,8 @@ export function createAppController(deps = {}) {
   async function seedFor(route, model) {
     return {
       baselineSec: route.baselineTimeSec,
-      k: model ? model.k : 1.0,
+      kHead: model ? (model.kHead ?? 1.0) : 1.0,
+      kTail: model ? (model.kTail ?? 1.0) : 1.0,
     };
   }
 

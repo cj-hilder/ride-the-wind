@@ -96,7 +96,7 @@ export function makePredictor({ route, modelState, seed, stationSeries, opts = {
   return function predictForArrival(arrivalMs) {
     // Best current estimate of still-air baseline & k, for weighting and
     // for converting wind_factor into a time.
-    const baseFit = modelPredict(modelState, 0, seed); // wf=0 → baseline only
+    const baseFit = modelPredict(modelState, 0, seed, { distanceM: route.totalDistance }); // wf=0 → baseline only
     const baselineSec = baseFit.baselineSec;
     const baseSpeedKmh = speedFromBaseline(route.totalDistance, baselineSec);
 
@@ -116,7 +116,7 @@ export function makePredictor({ route, modelState, seed, stationSeries, opts = {
         departMs,
         passes: 1, // inner single pass; outer loop here drives convergence
       });
-      pr = modelPredict(modelState, windFactor, seed);
+      pr = modelPredict(modelState, windFactor, seed, { distanceM: route.totalDistance });
       predictedSec = pr.predictedSec;
     }
 

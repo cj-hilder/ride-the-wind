@@ -235,9 +235,11 @@ export class Store {
     };
     await this.b.put(STORES.ROUTES, route);
 
+    // seededK is now { kHead, kTail }
     const model = {
       routeId: id,
-      k: seededK,
+      kHead: seededK.kHead ?? 1.0,
+      kTail: seededK.kTail ?? 1.0,
       regressionState: this.learning.createModelState(),
       usableRideCount: 0,
       lastUpdated: now,
@@ -309,11 +311,15 @@ export class Store {
         ride.windFactor,
         ride.actualTimeSec
       );
-      const fit = this.learning.fitModel(newState);
+      const fit = this.learning.fitModel(newState, {
+        seedKHead: model.kHead ?? 1.0,
+        seedKTail: model.kTail ?? 1.0,
+      });
       model = {
         ...model,
         regressionState: newState,
-        k: fit ? fit.k : model.k,
+        kHead: fit ? fit.kHead : model.kHead,
+        kTail: fit ? fit.kTail : model.kTail,
         usableRideCount: model.usableRideCount + 1,
         lastUpdated: Date.now(),
       };
@@ -342,12 +348,16 @@ export class Store {
       (a, b) => a.startedAt - b.startedAt
     );
     const state = this.learning.rebuildFromRides(rides);
-    const fit = this.learning.fitModel(state);
     const existing = await this.getModel(routeId);
+    const fit = this.learning.fitModel(state, {
+      seedKHead: existing?.kHead ?? 1.0,
+      seedKTail: existing?.kTail ?? 1.0,
+    });
     const model = {
       routeId,
       regressionState: state,
-      k: fit ? fit.k : existing?.k ?? 1.0,
+      kHead: fit ? fit.kHead : existing?.kHead ?? 1.0,
+      kTail: fit ? fit.kTail : existing?.kTail ?? 1.0,
       usableRideCount: rides.filter((r) => r.usable).length,
       lastUpdated: Date.now(),
     };
