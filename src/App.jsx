@@ -297,7 +297,15 @@ function Home({ active, routes, setActiveRouteId }) {
         <RowLine label="Wind effect" value={`${verdict.deltaMin > 0 ? "+" : ""}${verdict.deltaMin} min`} color={accent} />
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.12)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <ConfidenceDots confidence={confidence} />
-          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>k = {verdict.k?.toFixed(2) ?? "—"}</span>
+          {verdict.kHead != null && verdict.kTail != null ? (
+            <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
+              k <span style={{ color: verdict.windFactor >= 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor >= 0 ? 600 : 400 }}>↑{verdict.kHead.toFixed(2)}</span>
+              {" / "}
+              <span style={{ color: verdict.windFactor < 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor < 0 ? 600 : 400 }}>↓{verdict.kTail.toFixed(2)}</span>
+            </span>
+          ) : (
+            <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>k = {verdict.k?.toFixed(2) ?? "—"}</span>
+          )}
         </div>
       </div>
 
