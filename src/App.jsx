@@ -254,13 +254,13 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs }) {
           <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)" }}>{activeRoute.name}</span>
         </div>
         {/* Day strip */}
-        <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
+        <div style={{ display: "flex", gap: 5 }}>
           {days.map((d) => {
             const selected = d.ms === selectedDayMs;
             return (
               <button key={d.ms} onClick={() => setSelectedDayMs(d.ms)} style={{
-                flex: "1 0 auto", minWidth: 46, padding: "8px 4px", borderRadius: 10, cursor: "pointer",
-                fontFamily: "inherit", fontSize: 12.5, fontWeight: 600,
+                flex: 1, minWidth: 0, padding: "8px 2px", borderRadius: 10, cursor: "pointer",
+                fontFamily: "inherit", fontSize: 12, fontWeight: selected ? 600 : 400,
                 border: d.isToday ? "1px solid rgba(255,255,255,0.55)" : "1px solid transparent",
                 background: selected ? "#e0a45e" : "rgba(255,255,255,0.1)",
                 color: selected ? "#1a1f3a" : "rgba(255,255,255,0.8)",
@@ -305,7 +305,7 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
   const hasWindow = conservative && conservative.windowMin >= 2;
 
   return (
-    <div style={{ position: "relative", zIndex: 2, flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 24px", overflowY: "auto" }}>
+    <div style={{ position: "relative", zIndex: 2, flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "18px 24px 16px", overflowY: "auto" }}>
       <div style={{ animation: "rise 0.5s both" }}>
         <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: "clamp(34px,9vw,50px)", lineHeight: 1.03, color: "#fff", letterSpacing: "-0.03em" }}>
           {headline}
@@ -349,12 +349,12 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
       </div>
 
       <div style={{
-        position: "relative", zIndex: 2, margin: "0 16px 14px", padding: 16, borderRadius: 20,
+        position: "relative", zIndex: 2, marginTop: 20, padding: "14px 16px", borderRadius: 18,
         background: "rgba(255,255,255,0.1)", backdropFilter: "blur(14px)", border: "1px solid rgba(255,255,255,0.16)",
       }}>
         <RowLine label="Still-air baseline" value={fmtMin(verdict.baselineSec)} />
         <RowLine label="Wind allowance" value={`${verdict.deltaMin > 0 ? "+" : ""}${verdict.deltaMin} min`} color={accent} />
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.12)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <ConfidenceDots confidence={confidence} />
           {verdict.kHead != null && verdict.kTail != null ? (
             <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
