@@ -73,6 +73,7 @@ export default function App() {
   const [activeRouteId, setActiveRouteId] = useState(null);
   const [banner, setBanner] = useState(null); // alert summary banner
   const [showHelp, setShowHelp] = useState(false);
+  const [nowTick, setNowTick] = useState(Date.now()); // drives the Plan day strip; bumped on midnight rollover
 
   // First launch (helpSeen unset) → show the welcome/help panel once.
   useEffect(() => {
@@ -121,7 +122,7 @@ export default function App() {
     // ride promptly after midnight without waiting for the 15-min tick.
     const dayCheck = setInterval(() => {
       const d = new Date().getDate();
-      if (d !== lastDay) { lastDay = d; if (document.visibilityState === "visible") refresh({ quiet: true }); }
+      if (d !== lastDay) { lastDay = d; setNowTick(Date.now()); if (document.visibilityState === "visible") refresh({ quiet: true }); }
     }, 60 * 1000); // once a minute, near-free (no fetch unless verdict changes)
 
     const onVisible = () => { if (document.visibilityState === "visible") refresh({ quiet: true }); };
@@ -167,7 +168,8 @@ export default function App() {
         {loading ? (
           <Loading progress={progress} />
         ) : screen === "home" ? (
-          <Home active={active} routes={routes} setActiveRouteId={setActiveRouteId} />
+          <Home controller={controller} activeRouteId={activeRouteId} routes={routes}
+            setActiveRouteId={setActiveRouteId} nowMs={nowTick} />
         ) : screen === "routes" ? (
           <Routes
             controller={controller}
@@ -196,20 +198,46 @@ export default function App() {
 /* ============================================================================
  * Home — verdict for the active route
  * ========================================================================== */
-function Home({ active, routes, setActiveRouteId }) {
+function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs }) {
   const [showDebug, setShowDebug] = useState(false);
-  if (!active) return <Empty />;
-  const { route, verdict, range, conservative, windEffect, rangeUnavailable, confidence, expect, debug } = active;
-  if (!verdict) return <Empty name={route.name} />;
+  // start of today (local) — the strip is today + next 6 days, today pinned left
+  const startOfToday = (() => { const d = new Date(nowMs); d.setHours(0, 0, 0, 0); return d.getTime(); })();
+  const [selectedDayMs, setSelectedDayMs] = useState(startOfToday);
+  const [dayVerdict, setDayVerdict] = useState(null);
+  const [fetching, setFetching] = useState(false);
 
-  const accent = ACCENT[verdict.verdict];
-  const sky = skyFor(new Date(verdict.departureMs).getHours());
-  const isDepart = conservative && conservative.mode === "depart";
-  const headline = isDepart
-    ? { headwind: "Headwind", tailwind: "Tailwind", normal: "Usual time" }[verdict.verdict]
-    : { headwind: "Early start", tailwind: "Late start", normal: "Usual time" }[verdict.verdict];
-  // arrival window: show a range only when it's a meaningful (>=2 min) spread
-  const hasWindow = conservative && conservative.windowMin >= 2;
+  // If the calendar day rolls over (midnight) and the selection was an old
+  // "today", snap it forward so the strip and selection stay coherent.
+  useEffect(() => {
+    if (selectedDayMs < startOfToday) setSelectedDayMs(startOfToday);
+  }, [startOfToday, selectedDayMs]);
+
+  // Fetch the verdict for the selected route + selected day.
+  useEffect(() => {
+    let alive = true;
+    if (!activeRouteId) { setDayVerdict(null); return; }
+    setFetching(true);
+    controller.getHomeVerdict(activeRouteId, selectedDayMs).then((v) => {
+      if (alive) { setDayVerdict(v); setFetching(false); }
+    });
+    return () => { alive = false; };
+  }, [controller, activeRouteId, selectedDayMs]);
+
+  const activeRoute = routes.find((r) => r.route.id === activeRouteId)?.route
+    || (routes[0] && routes[0].route);
+  if (!activeRoute) return <Empty />;
+
+  // Build the day strip: today + next 6 days.
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const ms = startOfToday + i * 86400e3;
+    const d = new Date(ms);
+    days.push({ ms, label: i === 0 ? "Today" : WEEKDAY_NAMES[d.getDay()].slice(0, 3), isToday: i === 0 });
+  }
+
+  const verdict = dayVerdict && dayVerdict.verdict;
+  const accent = verdict ? ACCENT[verdict.verdict] : ACCENT.normal;
+  const sky = verdict ? skyFor(new Date(verdict.departureMs).getHours()) : SKY.predawn;
 
   return (
     <div style={{
@@ -217,81 +245,112 @@ function Home({ active, routes, setActiveRouteId }) {
       background: `linear-gradient(165deg, ${sky[0]}, ${sky[1]} 55%, ${sky[2]})`,
       transition: "background 1.2s ease", display: "flex", flexDirection: "column",
     }}>
-      <WindField verdict={verdict.verdict} accent={accent} />
-      <div style={{ position: "relative", zIndex: 2, padding: "26px 24px 0", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <span style={{ fontFamily: "'Fraunces', serif", fontSize: 19, fontWeight: 600, color: "rgba(255,255,255,0.95)" }}>Ride the Wind</span>
+      {verdict && <WindField verdict={verdict.verdict} accent={accent} />}
+
+      {/* Header: route selector pills (if >1) handled below; title + day strip */}
+      <div style={{ position: "relative", zIndex: 2, padding: "calc(22px + env(safe-area-inset-top)) 16px 0" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 8px 12px" }}>
+          <span style={{ fontFamily: "'Fraunces', serif", fontSize: 19, fontWeight: 600, color: "rgba(255,255,255,0.95)" }}>Plan</span>
+          <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)" }}>{activeRoute.name}</span>
+        </div>
+        {/* Day strip */}
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
+          {days.map((d) => {
+            const selected = d.ms === selectedDayMs;
+            return (
+              <button key={d.ms} onClick={() => setSelectedDayMs(d.ms)} style={{
+                flex: "1 0 auto", minWidth: 46, padding: "8px 4px", borderRadius: 10, cursor: "pointer",
+                fontFamily: "inherit", fontSize: 12.5, fontWeight: 600,
+                border: d.isToday ? "1px solid rgba(255,255,255,0.55)" : "1px solid transparent",
+                background: selected ? "#e0a45e" : "rgba(255,255,255,0.1)",
+                color: selected ? "#1a1f3a" : "rgba(255,255,255,0.8)",
+              }}>{d.label}</button>
+            );
+          })}
+        </div>
+        {/* Route selector (if more than one route) */}
+        {routes.length > 1 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+            {routes.map((r) => (
+              <button key={r.route.id} onClick={() => setActiveRouteId(r.route.id)} style={{
+                flex: "1 1 calc(33.333% - 4px)", minWidth: 70, padding: "7px 4px", borderRadius: 10, border: "none", cursor: "pointer",
+                fontFamily: "inherit", fontSize: 11.5, fontWeight: 600,
+                background: r.route.id === activeRoute.id ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.18)",
+                color: r.route.id === activeRoute.id ? "#fff" : "rgba(255,255,255,0.6)",
+              }}>{r.route.name.split(" ")[0]}</button>
+            ))}
+          </div>
+        )}
       </div>
 
-      <div style={{ position: "relative", zIndex: 2, flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 24px" }}>
-        <div style={{ animation: "rise 0.8s both" }}>
-          <div style={{
-            display: "inline-flex", alignItems: "center", gap: 8, padding: "5px 12px", borderRadius: 100,
-            background: "rgba(255,255,255,0.14)", backdropFilter: "blur(8px)", border: `1px solid ${accent}66`,
-            fontSize: 12.5, color: "rgba(255,255,255,0.92)", marginBottom: 20,
-          }}>
-            <Arrow verdict={verdict.verdict} accent={accent} />
-            {route.name}
+      <PlanBody verdict={verdict} dayVerdict={dayVerdict} fetching={fetching}
+        accent={accent} showDebug={showDebug} setShowDebug={setShowDebug} />
+    </div>
+  );
+}
+
+/* Plan detail body for the selected route+day (the former Home centre block). */
+function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDebug }) {
+  if (fetching && !verdict) {
+    return <div style={{ flex: 1, display: "grid", placeItems: "center", color: "rgba(255,255,255,0.5)", fontSize: 14 }}>Checking the forecast…</div>;
+  }
+  if (!verdict) {
+    return <div style={{ flex: 1, display: "grid", placeItems: "center", color: "rgba(255,255,255,0.5)", fontSize: 14, padding: 24, textAlign: "center" }}>No forecast for this day yet — it's beyond the forecast horizon.</div>;
+  }
+  const { range, conservative, windEffect, rangeUnavailable, confidence, expect, debug } = dayVerdict;
+  const isDepart = conservative && conservative.mode === "depart";
+  const headline = isDepart
+    ? { headwind: "Headwind", tailwind: "Tailwind", normal: "Usual time" }[verdict.verdict]
+    : { headwind: "Early start", tailwind: "Late start", normal: "Usual time" }[verdict.verdict];
+  const hasWindow = conservative && conservative.windowMin >= 2;
+
+  return (
+    <div style={{ position: "relative", zIndex: 2, flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 24px", overflowY: "auto" }}>
+      <div style={{ animation: "rise 0.5s both" }}>
+        <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: "clamp(34px,9vw,50px)", lineHeight: 1.03, color: "#fff", letterSpacing: "-0.03em" }}>
+          {headline}
+        </div>
+        <div style={{ marginTop: 22 }}>
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", marginBottom: 4 }}>{isDepart ? "Leave at" : "Leave by"}</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+            <span style={{ fontFamily: "'Fraunces', serif", fontSize: 56, fontWeight: 600, lineHeight: 1, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
+              {verdict.departureHHMM}
+            </span>
+            {!isDepart && verdict.verdict !== "normal" && (
+              <span style={{ fontSize: 15, color: "rgba(255,255,255,0.55)", textDecoration: "line-through" }}>{verdict.normalDepartureHHMM}</span>
+            )}
           </div>
-          <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: "clamp(36px,10vw,52px)", lineHeight: 1.03, color: "#fff", letterSpacing: "-0.03em" }}>
-            {headline}
+          <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", marginTop: 10 }}>
+            {isDepart
+              ? (hasWindow
+                  ? <>arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
+                  : <>arrive around {conservative.earliestArrivalHHMM} {dayLabel(conservative.earliestArrivalMs)}</>)
+              : (hasWindow
+                  ? <>to arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
+                  : <>to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}</>)}
           </div>
-          <div style={{ marginTop: 26 }}>
-            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", marginBottom: 4 }}>{isDepart ? "Leave at" : "Leave by"}</div>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-              <span style={{ fontFamily: "'Fraunces', serif", fontSize: 60, fontWeight: 600, lineHeight: 1, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
-                {verdict.departureHHMM}
-              </span>
-              {!isDepart && verdict.verdict !== "normal" && (
-                <span style={{ fontSize: 15, color: "rgba(255,255,255,0.55)", textDecoration: "line-through" }}>{verdict.normalDepartureHHMM}</span>
-              )}
+          {windEffect && (
+            <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 6 }}>
+              {windEffectPhrase(windEffect)}
             </div>
-            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", marginTop: 10 }}>
-              {isDepart
-                ? (hasWindow
-                    ? <>arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
-                    : <>arrive around {conservative.earliestArrivalHHMM} {dayLabel(conservative.earliestArrivalMs)}</>)
-                : (hasWindow
-                    ? <>to arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
-                    : <>to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}</>)}
+          )}
+          {rangeUnavailable && (
+            <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.45)", marginTop: 6, fontStyle: "italic" }}>
+              forecast range unavailable — showing best estimate
             </div>
-            {windEffect && (
-              <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 6 }}>
-                {windEffectPhrase(windEffect)}
-              </div>
-            )}
-            {rangeUnavailable && (
-              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.45)", marginTop: 6, fontStyle: "italic" }}>
-                forecast range unavailable — showing best estimate
-              </div>
-            )}
-            {expect && expect.line && (
-              <div onClick={() => setShowDebug((v) => !v)} style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 8, letterSpacing: "0.01em", cursor: "pointer" }}>
-                {expect.line}
-              </div>
-            )}
-            {showDebug && debug && (
-              <div style={{
-                marginTop: 10, padding: "10px 12px", borderRadius: 12, fontSize: 12,
-                fontFamily: "ui-monospace, monospace", lineHeight: 1.6,
-                background: "rgba(0,0,0,0.25)", color: "rgba(255,255,255,0.8)",
-              }}>
-                <div>wind: {debug.windSpeedKmh} km/h from {debug.windFromDeg}°</div>
-                <div>route avg bearing: {debug.avgBearingDeg}°</div>
-                <div>mean headwind: {debug.meanHeadwindKmh} km/h <span style={{ color: "rgba(255,255,255,0.5)" }}>({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</span></div>
-                <div>mean crosswind: {debug.meanCrosswindKmh} km/h</div>
-                <div>wind_factor: {debug.windFactor} <span style={{ color: "rgba(255,255,255,0.5)" }}>({debug.windFactor >= 0 ? "slows" : "speeds"})</span></div>
-                <div>baseline {Math.round(debug.baselineSec / 60)}m → predicted {Math.round(debug.predictedSec / 60)}m</div>
-                {debug.slowSec != null && <div>range {Math.round(debug.fastSec / 60)}–{Math.round(debug.slowSec / 60)}m</div>}
-              </div>
-            )}
-          </div>
+          )}
+          {expect && expect.line && (
+            <div onClick={() => setShowDebug((v) => !v)} style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 8, letterSpacing: "0.01em", cursor: "pointer" }}>
+              {expect.line}
+            </div>
+          )}
+          {showDebug && debug && <DebugReadout debug={debug} />}
         </div>
       </div>
 
       <div style={{
         position: "relative", zIndex: 2, margin: "0 16px 14px", padding: 16, borderRadius: 20,
         background: "rgba(255,255,255,0.1)", backdropFilter: "blur(14px)", border: "1px solid rgba(255,255,255,0.16)",
-        animation: "rise 0.8s 0.12s both",
       }}>
         <RowLine label="Still-air baseline" value={fmtMin(verdict.baselineSec)} />
         <RowLine label="Wind allowance" value={`${verdict.deltaMin > 0 ? "+" : ""}${verdict.deltaMin} min`} color={accent} />
@@ -308,19 +367,25 @@ function Home({ active, routes, setActiveRouteId }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
 
-      {routes.length > 1 && (
-        <div style={{ position: "relative", zIndex: 2, display: "flex", flexWrap: "wrap", gap: 8, padding: "0 16px 16px", maxHeight: "22vh", overflowY: "auto" }}>
-          {routes.map((r) => (
-            <button key={r.route.id} onClick={() => setActiveRouteId(r.route.id)} style={{
-              flex: "1 1 calc(33.333% - 6px)", minWidth: 72, padding: "9px 6px", borderRadius: 12, border: "none", cursor: "pointer",
-              fontFamily: "inherit", fontSize: 12, fontWeight: 600,
-              background: r.route.id === active.route.id ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.18)",
-              color: r.route.id === active.route.id ? "#fff" : "rgba(255,255,255,0.65)",
-            }}>{r.route.name.split(" ")[0]}</button>
-          ))}
-        </div>
-      )}
+/* Collapsible debug readout for the Plan detail. */
+function DebugReadout({ debug }) {
+  return (
+    <div style={{
+      marginTop: 10, padding: "10px 12px", borderRadius: 12, fontSize: 12,
+      fontFamily: "ui-monospace, monospace", lineHeight: 1.6,
+      background: "rgba(0,0,0,0.25)", color: "rgba(255,255,255,0.8)",
+    }}>
+      <div>wind: {debug.windSpeedKmh} km/h from {debug.windFromDeg}°</div>
+      <div>route avg bearing: {debug.avgBearingDeg}°</div>
+      <div>mean headwind: {debug.meanHeadwindKmh} km/h <span style={{ color: "rgba(255,255,255,0.5)" }}>({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</span></div>
+      <div>mean crosswind: {debug.meanCrosswindKmh} km/h</div>
+      <div>wind_factor: {debug.windFactor} <span style={{ color: "rgba(255,255,255,0.5)" }}>({debug.windFactor >= 0 ? "slows" : "speeds"})</span></div>
+      <div>baseline {Math.round(debug.baselineSec / 60)}m → predicted {Math.round(debug.predictedSec / 60)}m</div>
+      {debug.slowSec != null && <div>range {Math.round(debug.fastSec / 60)}–{Math.round(debug.slowSec / 60)}m</div>}
     </div>
   );
 }
@@ -788,7 +853,7 @@ function Capture({ controller, route, onDone }) {
  * Shared bits
  * ========================================================================== */
 function TabBar({ screen, setScreen, hasRoutes }) {
-  const tabs = [["home", "Today"], ["capture", "Ride"], ["routes", "Routes"]];
+  const tabs = [["home", "Plan"], ["capture", "Ride"], ["routes", "Routes"]];
   return (
     <div style={{ display: "flex", background: "#16181d", borderTop: "1px solid rgba(255,255,255,0.06)", padding: "8px 8px calc(8px + env(safe-area-inset-bottom))" }}>
       {tabs.map(([k, label]) => {
