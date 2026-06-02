@@ -47,6 +47,24 @@ const WEEKDAY_CODE = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
  * @param {number} [opts.lookaheadDays=8]
  * @returns {{arrivalMs:number, weekday:string, arrivalHHMM:string}|null}
  */
+/**
+ * The route's configured time on a SPECIFIC calendar day, ignoring activeDays
+ * and ignoring whether the time has passed. Used by the Plan tab, which shows
+ * the forecast for any selected day regardless of the alert schedule.
+ *
+ * @param {Object} route
+ * @param {number} dayMs - any instant within the target calendar day (local)
+ * @returns {{arrivalMs:number, weekday:string, arrivalHHMM:string}}
+ */
+export function arrivalOnDate(route, dayMs) {
+  const day = new Date(dayMs);
+  const code = WEEKDAY_CODE[day.getDay()];
+  const hhmm =
+    (route.arrivalOverrides && route.arrivalOverrides[code]) ||
+    route.targetArrival;
+  return { arrivalMs: atLocalTime(day, hhmm), weekday: code, arrivalHHMM: hhmm };
+}
+
 export function nextActiveArrival(route, fromMs, opts = {}) {
   const { lookaheadDays = 8 } = opts;
   const active = new Set(route.activeDays || []);
@@ -114,7 +132,7 @@ export function evaluateAlert(route, predictForArrival, opts = {}) {
     route.alertThresholdMin ??
     DEFAULT_THRESHOLD_MIN;
 
-  const next = nextActiveArrival(route, nowMs, opts);
+  const next = opts.fixedArrival || nextActiveArrival(route, nowMs, opts);
   if (!next) return null;
 
   const p = predictForArrival(next.arrivalMs);

@@ -30,6 +30,7 @@ import {
   evaluateAlert,
   reconcileMorning,
   nextActiveArrival,
+  arrivalOnDate,
   shouldNotify,
   DEFAULT_THRESHOLD_MIN,
 } from "./alertEngine.js";
@@ -201,7 +202,7 @@ export function createAppController(deps = {}) {
    * Full home verdict for a route: the alert verdict plus the forecast range
    * and confidence, ready for the UI. Fetches the live forecast.
    */
-  async function getHomeVerdict(routeId) {
+  async function getHomeVerdict(routeId, dayMs = null) {
     const route = await store.getRoute(routeId);
     if (!route) return null;
     const model = await store.getModel(routeId);
@@ -209,7 +210,11 @@ export function createAppController(deps = {}) {
     const stationSeries = await stationSeriesFor(route);
 
     const nowMs = now();
-    const next = nextActiveArrival(route, nowMs);
+    // Plan tab passes a specific calendar day (ignores activeDays / past-time);
+    // otherwise fall back to the next scheduled active-day arrival.
+    const next = dayMs != null
+      ? arrivalOnDate(route, dayMs)
+      : nextActiveArrival(route, nowMs);
 
     // Guard: does the fetched forecast actually reach the ride day? A ride up to
     // a week out must not silently use clamped (stale) end-of-forecast data. If
@@ -227,7 +232,10 @@ export function createAppController(deps = {}) {
       stationSeries,
     });
 
-    const verdict = evaluateAlert(route, predictForArrival, { nowMs });
+    const verdict = evaluateAlert(route, predictForArrival, {
+      nowMs,
+      fixedArrival: dayMs != null ? next : undefined,
+    });
     if (!verdict) return { route, verdict: null };
 
     // Forecast spread: ALWAYS from the real ensemble. No synthetic ±% range.
