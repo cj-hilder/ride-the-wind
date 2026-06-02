@@ -42,8 +42,8 @@ function windEffectPhrase(we) {
   if (!we) return "";
   const fast = we.fastMin, slow = we.slowMin, likely = we.likelyMin;
   const ride = fast === slow
-    ? `ride ${likely} mins`
-    : `ride ${fast} to ${slow} mins (likely ${likely} mins)`;
+    ? `ride for ${likely} mins`
+    : `ride for ${fast} to ${slow} mins (likely ${likely} mins)`;
   if (we.direction === "calm") return `No wind: ${ride}`;
   if (we.direction === "mixed") return `${we.headPct}% chance headwind: ${ride}`;
   const label = we.direction === "headwind" ? "Headwind" : "Tailwind";
@@ -253,6 +253,23 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
   const accent = verdict ? ACCENT[verdict.verdict] : ACCENT.normal;
   const sky = verdict ? skyFor(new Date(verdict.departureMs).getHours()) : SKY.predawn;
 
+  // The route's configured time for the selected day (per-weekday override, else
+  // the default). Used so an explored time equal to the default counts as none.
+  const WD = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+  const dayCode = WD[new Date(selectedDayMs).getDay()];
+  const defaultHHMM =
+    (activeRoute.arrivalOverrides && activeRoute.arrivalOverrides[dayCode]) ||
+    activeRoute.targetArrival;
+  const applyExplore = (hhmm) => {
+    setExplored((m) => {
+      const n = { ...m };
+      if (!hhmm || hhmm === defaultHHMM) delete n[exploreKey]; // same as default → no override
+      else n[exploreKey] = hhmm;
+      return n;
+    });
+    setShowExplore(false);
+  };
+
   return (
     <div style={{
       position: "relative", height: "100%",
@@ -302,7 +319,7 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
         timeMode={activeRoute.timeMode === "depart" ? "depart" : "arrive"}
         exploredHHMM={exploredHHMM}
         showExplore={showExplore} setShowExplore={setShowExplore}
-        onExplore={(hhmm) => { setExplored((m) => ({ ...m, [exploreKey]: hhmm })); setShowExplore(false); }}
+        onExplore={applyExplore}
         onRestore={() => { setExplored((m) => { const n = { ...m }; delete n[exploreKey]; return n; }); setShowExplore(false); }}
       />
     </div>
@@ -378,14 +395,9 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
               display: "inline-flex", alignItems: "center", gap: 5,
             }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-              Explore
+              {exploredHHMM ? `custom · ${isDepart ? "leave" : "arrive by"} ${exploredHHMM}` : "Explore"}
             </button>
           </div>
-          {exploredHHMM && (
-            <div style={{ display: "inline-block", fontSize: 11, fontWeight: 600, color: "#1a1f3a", background: "#e0a45e", borderRadius: 6, padding: "2px 7px", marginBottom: 6 }}>
-              custom time · {isDepart ? "leaving" : "arrive by"} {exploredHHMM}
-            </div>
-          )}
           {showExplore && (
             <ExplorePicker timeMode={timeMode} current={exploredHHMM || verdict.arrivalHHMM}
               hasOverride={!!exploredHHMM} onApply={onExplore} onRestore={onRestore} onCancel={() => setShowExplore(false)} />
