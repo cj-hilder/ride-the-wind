@@ -202,7 +202,7 @@ export function createAppController(deps = {}) {
    * Full home verdict for a route: the alert verdict plus the forecast range
    * and confidence, ready for the UI. Fetches the live forecast.
    */
-  async function getHomeVerdict(routeId, dayMs = null) {
+  async function getHomeVerdict(routeId, dayMs = null, exploredHHMM = null) {
     const route = await store.getRoute(routeId);
     if (!route) return null;
     const model = await store.getModel(routeId);
@@ -211,9 +211,10 @@ export function createAppController(deps = {}) {
 
     const nowMs = now();
     // Plan tab passes a specific calendar day (ignores activeDays / past-time);
-    // otherwise fall back to the next scheduled active-day arrival.
+    // optionally with an Explore time override on that day. Otherwise fall back
+    // to the next scheduled active-day arrival.
     const next = dayMs != null
-      ? arrivalOnDate(route, dayMs)
+      ? arrivalOnDate(route, dayMs, exploredHHMM || undefined)
       : nextActiveArrival(route, nowMs);
 
     // Guard: does the fetched forecast actually reach the ride day? A ride up to

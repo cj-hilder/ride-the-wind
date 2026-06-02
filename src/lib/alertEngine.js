@@ -54,12 +54,14 @@ const WEEKDAY_CODE = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
  *
  * @param {Object} route
  * @param {number} dayMs - any instant within the target calendar day (local)
+ * @param {string} [overrideHHMM] - Explore: use this time instead of the route's
+ *        configured time, for a what-if forecast on this day
  * @returns {{arrivalMs:number, weekday:string, arrivalHHMM:string}}
  */
-export function arrivalOnDate(route, dayMs) {
+export function arrivalOnDate(route, dayMs, overrideHHMM) {
   const day = new Date(dayMs);
   const code = WEEKDAY_CODE[day.getDay()];
-  const hhmm =
+  const hhmm = overrideHHMM ||
     (route.arrivalOverrides && route.arrivalOverrides[code]) ||
     route.targetArrival;
   return { arrivalMs: atLocalTime(day, hhmm), weekday: code, arrivalHHMM: hhmm };
