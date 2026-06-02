@@ -71,6 +71,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [activeRouteId, setActiveRouteId] = useState(null);
+  const activeRouteIdRef = useRef(null);
+  useEffect(() => { activeRouteIdRef.current = activeRouteId; }, [activeRouteId]);
   const [banner, setBanner] = useState(null); // alert summary banner
   const [showHelp, setShowHelp] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now()); // drives the Plan day strip; bumped on midnight rollover
@@ -94,12 +96,15 @@ export default function App() {
       opts.quiet ? undefined : (done, total) => setProgress({ done, total })
     );
     setRoutes(list);
-    if (!activeRouteId && list[0]) setActiveRouteId(list[0].route.id);
+    // Only auto-select when nothing is chosen yet (first load). Read the live
+    // value via ref so this stable callback never stomps an existing selection
+    // on a background refresh.
+    if (!activeRouteIdRef.current && list[0]) setActiveRouteId(list[0].route.id);
     if (!opts.quiet) setLoading(false);
     // Signal the Plan tab to recompute the displayed ride against fresh data,
     // preserving its day/route/explored-time selection.
     setForecastGen((g) => g + 1);
-  }, [controller, activeRouteId]);
+  }, [controller]);
 
   useEffect(() => {
     controller.start({
