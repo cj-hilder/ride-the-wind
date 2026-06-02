@@ -74,6 +74,7 @@ export default function App() {
   const [banner, setBanner] = useState(null); // alert summary banner
   const [showHelp, setShowHelp] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now()); // drives the Plan day strip; bumped on midnight rollover
+  const [forecastGen, setForecastGen] = useState(0); // bumped whenever routes/forecasts refresh, so Plan recomputes in place
 
   // First launch (helpSeen unset) → show the welcome/help panel once.
   useEffect(() => {
@@ -95,6 +96,9 @@ export default function App() {
     setRoutes(list);
     if (!activeRouteId && list[0]) setActiveRouteId(list[0].route.id);
     if (!opts.quiet) setLoading(false);
+    // Signal the Plan tab to recompute the displayed ride against fresh data,
+    // preserving its day/route/explored-time selection.
+    setForecastGen((g) => g + 1);
   }, [controller, activeRouteId]);
 
   useEffect(() => {
@@ -169,7 +173,7 @@ export default function App() {
           <Loading progress={progress} />
         ) : screen === "home" ? (
           <Home controller={controller} activeRouteId={activeRouteId} routes={routes}
-            setActiveRouteId={setActiveRouteId} nowMs={nowTick} />
+            setActiveRouteId={setActiveRouteId} nowMs={nowTick} forecastGen={forecastGen} />
         ) : screen === "routes" ? (
           <Routes
             controller={controller}
@@ -198,13 +202,21 @@ export default function App() {
 /* ============================================================================
  * Home — verdict for the active route
  * ========================================================================== */
-function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs }) {
+function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, forecastGen }) {
   const [showDebug, setShowDebug] = useState(false);
   // start of today (local) — the strip is today + next 6 days, today pinned left
   const startOfToday = (() => { const d = new Date(nowMs); d.setHours(0, 0, 0, 0); return d.getTime(); })();
   const [selectedDayMs, setSelectedDayMs] = useState(startOfToday);
   const [dayVerdict, setDayVerdict] = useState(null);
   const [fetching, setFetching] = useState(false);
+  // Explore: per-(route, day) what-if time overrides, held in session only.
+  // Key "routeId:dayMs" → "HH:MM". Never persisted; survives background refresh
+  // and route/day switches, cleared only on full reload.
+  const [explored, setExplored] = useState({});
+  const [showExplore, setShowExplore] = useState(false);
+
+  const exploreKey = `${activeRouteId}:${selectedDayMs}`;
+  const exploredHHMM = explored[exploreKey] || null;
 
   // If the calendar day rolls over (midnight) and the selection was an old
   // "today", snap it forward so the strip and selection stay coherent.
@@ -212,16 +224,18 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs }) {
     if (selectedDayMs < startOfToday) setSelectedDayMs(startOfToday);
   }, [startOfToday, selectedDayMs]);
 
-  // Fetch the verdict for the selected route + selected day.
+  // Fetch the verdict for the selected route + day + any explored time.
+  // Re-fires on forecastGen so a background refresh updates the displayed ride
+  // in place, preserving the explore override and the day/route selection.
   useEffect(() => {
     let alive = true;
     if (!activeRouteId) { setDayVerdict(null); return; }
     setFetching(true);
-    controller.getHomeVerdict(activeRouteId, selectedDayMs).then((v) => {
+    controller.getHomeVerdict(activeRouteId, selectedDayMs, exploredHHMM).then((v) => {
       if (alive) { setDayVerdict(v); setFetching(false); }
     });
     return () => { alive = false; };
-  }, [controller, activeRouteId, selectedDayMs]);
+  }, [controller, activeRouteId, selectedDayMs, exploredHHMM, forecastGen]);
 
   const activeRoute = routes.find((r) => r.route.id === activeRouteId)?.route
     || (routes[0] && routes[0].route);
@@ -284,13 +298,57 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs }) {
       </div>
 
       <PlanBody verdict={verdict} dayVerdict={dayVerdict} fetching={fetching}
-        accent={accent} showDebug={showDebug} setShowDebug={setShowDebug} />
+        accent={accent} showDebug={showDebug} setShowDebug={setShowDebug}
+        timeMode={activeRoute.timeMode === "depart" ? "depart" : "arrive"}
+        exploredHHMM={exploredHHMM}
+        showExplore={showExplore} setShowExplore={setShowExplore}
+        onExplore={(hhmm) => { setExplored((m) => ({ ...m, [exploreKey]: hhmm })); setShowExplore(false); }}
+        onRestore={() => { setExplored((m) => { const n = { ...m }; delete n[exploreKey]; return n; }); setShowExplore(false); }}
+      />
+    </div>
+  );
+}
+
+/* Mode-aware time picker for Explore: enter an arrival (arrive routes) or a
+ * departure (depart routes) for the selected day; apply or restore default. */
+function ExplorePicker({ timeMode, current, hasOverride, onApply, onRestore, onCancel }) {
+  const [t, setT] = useState(current);
+  const label = timeMode === "depart" ? "Depart at" : "Arrive by";
+  return (
+    <div style={{
+      margin: "2px 0 10px", padding: "12px 14px", borderRadius: 14,
+      background: "rgba(0,0,0,0.28)", border: "1px solid rgba(255,255,255,0.16)",
+    }}>
+      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.7)", marginBottom: 8 }}>
+        See this ride at a different time — {label.toLowerCase()}:
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input type="time" value={t} onChange={(e) => setT(e.target.value)} style={{
+          flex: 1, padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.2)",
+          background: "rgba(255,255,255,0.08)", color: "#fff", fontFamily: "inherit", fontSize: 15,
+        }} />
+        <button onClick={() => t && onApply(t)} style={{
+          padding: "10px 16px", borderRadius: 10, border: "none", cursor: "pointer",
+          fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a",
+        }}>Show</button>
+      </div>
+      <div style={{ display: "flex", gap: 14, marginTop: 10 }}>
+        {hasOverride && (
+          <button onClick={onRestore} style={{ border: "none", background: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, color: "#f0c08c", padding: 0 }}>
+            Restore default time
+          </button>
+        )}
+        <button onClick={onCancel} style={{ border: "none", background: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, color: "rgba(255,255,255,0.55)", padding: 0 }}>
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
 
 /* Plan detail body for the selected route+day (the former Home centre block). */
-function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDebug }) {
+function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDebug,
+  timeMode, exploredHHMM, showExplore, setShowExplore, onExplore, onRestore }) {
   if (fetching && !verdict) {
     return <div style={{ flex: 1, display: "grid", placeItems: "center", color: "rgba(255,255,255,0.5)", fontSize: 14 }}>Checking the forecast…</div>;
   }
@@ -311,7 +369,27 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
           {headline}
         </div>
         <div style={{ marginTop: 22 }}>
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", marginBottom: 4 }}>{isDepart ? "Leave at" : "Leave by"}</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}>{isDepart ? "Leave at" : "Leave by"}</span>
+            <button onClick={() => setShowExplore((v) => !v)} title="Explore a different time" style={{
+              border: "none", cursor: "pointer", padding: "4px 8px", borderRadius: 8, fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+              background: exploredHHMM ? "#e0a45e" : "rgba(255,255,255,0.12)",
+              color: exploredHHMM ? "#1a1f3a" : "rgba(255,255,255,0.8)",
+              display: "inline-flex", alignItems: "center", gap: 5,
+            }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+              Explore
+            </button>
+          </div>
+          {exploredHHMM && (
+            <div style={{ display: "inline-block", fontSize: 11, fontWeight: 600, color: "#1a1f3a", background: "#e0a45e", borderRadius: 6, padding: "2px 7px", marginBottom: 6 }}>
+              custom time · {isDepart ? "leaving" : "arrive by"} {exploredHHMM}
+            </div>
+          )}
+          {showExplore && (
+            <ExplorePicker timeMode={timeMode} current={exploredHHMM || verdict.arrivalHHMM}
+              hasOverride={!!exploredHHMM} onApply={onExplore} onRestore={onRestore} onCancel={() => setShowExplore(false)} />
+          )}
           <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
             <span style={{ fontFamily: "'Fraunces', serif", fontSize: 56, fontWeight: 600, lineHeight: 1, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
               {verdict.departureHHMM}
