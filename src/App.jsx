@@ -265,7 +265,11 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
   const [showExplore, setShowExplore] = useState(false);
 
   const exploreKey = `${activeRouteId}:${selectedDayMs}`;
-  const exploredHHMM = explored[exploreKey] || null;
+  // An override is either null, a plain "HH:MM" (respects the route's mode), or
+  // { hhmm, depart:true } for a "Go now" instance that forces depart mode.
+  const exploredEntry = explored[exploreKey] || null;
+  const exploredHHMM = exploredEntry ? (exploredEntry.hhmm ?? exploredEntry) : null;
+  const exploredDepart = !!(exploredEntry && exploredEntry.depart);
 
   // If the calendar day rolls over (midnight) and the selection was an old
   // "today", snap it forward so the strip and selection stay coherent.
@@ -280,11 +284,11 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
     let alive = true;
     if (!activeRouteId) { setDayVerdict(null); return; }
     setFetching(true);
-    controller.getHomeVerdict(activeRouteId, selectedDayMs, exploredHHMM).then((v) => {
+    controller.getHomeVerdict(activeRouteId, selectedDayMs, exploredHHMM, exploredDepart).then((v) => {
       if (alive) { setDayVerdict(v); setFetching(false); }
     });
     return () => { alive = false; };
-  }, [controller, activeRouteId, selectedDayMs, exploredHHMM, forecastGen]);
+  }, [controller, activeRouteId, selectedDayMs, exploredHHMM, exploredDepart, forecastGen]);
 
   const activeRoute = routes.find((r) => r.route.id === activeRouteId)?.route
     || (routes[0] && routes[0].route);
@@ -313,9 +317,19 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
     setExplored((m) => {
       const n = { ...m };
       if (!hhmm || hhmm === defaultHHMM) delete n[exploreKey]; // same as default → no override
-      else n[exploreKey] = hhmm;
+      else n[exploreKey] = hhmm; // plain time: respects the route's own mode
       return n;
     });
+    setShowExplore(false);
+  };
+  // "Go now": treat this instance as a DEPARTURE at the current clock time,
+  // regardless of the route's configured mode. Today only. Frozen at the time
+  // tapped, persisted in the day's cell like any explore override.
+  const isToday = selectedDayMs === startOfToday;
+  const goNow = () => {
+    const d = new Date();
+    const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    setExplored((m) => ({ ...m, [exploreKey]: { hhmm, depart: true } }));
     setShowExplore(false);
   };
 
@@ -365,10 +379,10 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
 
       <PlanBody verdict={verdict} dayVerdict={dayVerdict} fetching={fetching}
         accent={accent} showDebug={showDebug} setShowDebug={setShowDebug}
-        timeMode={activeRoute.timeMode === "depart" ? "depart" : "arrive"}
-        exploredHHMM={exploredHHMM}
+        timeMode={exploredDepart ? "depart" : (activeRoute.timeMode === "depart" ? "depart" : "arrive")}
+        exploredHHMM={exploredHHMM} exploredDepart={exploredDepart} canGoNow={isToday}
         showExplore={showExplore} setShowExplore={setShowExplore}
-        onExplore={applyExplore}
+        onExplore={applyExplore} onGoNow={goNow}
         onRestore={() => { setExplored((m) => { const n = { ...m }; delete n[exploreKey]; return n; }); setShowExplore(false); }}
       />
     </div>
@@ -377,7 +391,7 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
 
 /* Mode-aware time picker for Explore: enter an arrival (arrive routes) or a
  * departure (depart routes) for the selected day; apply or restore default. */
-function ExplorePicker({ timeMode, current, hasOverride, onApply, onRestore, onCancel }) {
+function ExplorePicker({ timeMode, current, hasOverride, canGoNow, onApply, onGoNow, onRestore, onCancel }) {
   const [t, setT] = useState(current);
   const label = timeMode === "depart" ? "Depart at" : "Arrive by";
   return (
@@ -398,6 +412,19 @@ function ExplorePicker({ timeMode, current, hasOverride, onApply, onRestore, onC
           fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a",
         }}>Show</button>
       </div>
+      {canGoNow && (
+        <button onClick={onGoNow} style={{
+          marginTop: 10, width: "100%", padding: "11px 12px", borderRadius: 10, border: "none", cursor: "pointer",
+          fontFamily: "'Fraunces', serif", fontSize: 15, fontWeight: 600, background: "#6fd49a", color: "#0f2a1c",
+          display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7,
+        }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          Go now
+        </button>
+      )}
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", marginTop: canGoNow ? 6 : 0, lineHeight: 1.4 }}>
+        {canGoNow ? "“Go now” shows the ride leaving at the current time." : ""}
+      </div>
       <div style={{ display: "flex", gap: 14, marginTop: 10 }}>
         {hasOverride && (
           <button onClick={onRestore} style={{ border: "none", background: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, color: "#f0c08c", padding: 0 }}>
@@ -414,7 +441,7 @@ function ExplorePicker({ timeMode, current, hasOverride, onApply, onRestore, onC
 
 /* Plan detail body for the selected route+day (the former Home centre block). */
 function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDebug,
-  timeMode, exploredHHMM, showExplore, setShowExplore, onExplore, onRestore }) {
+  timeMode, exploredHHMM, exploredDepart, canGoNow, showExplore, setShowExplore, onExplore, onGoNow, onRestore }) {
   // Per-minute tick so the live countdown beside the time stays current without
   // depending on forecast refreshes. Declared before any early return (hooks).
   const [nowMs, setNowMs] = useState(Date.now());
@@ -464,7 +491,8 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
           </div>
           {showExplore && (
             <ExplorePicker timeMode={timeMode} current={exploredHHMM || verdict.arrivalHHMM}
-              hasOverride={!!exploredHHMM} onApply={onExplore} onRestore={onRestore} onCancel={() => setShowExplore(false)} />
+              hasOverride={!!exploredHHMM} canGoNow={canGoNow}
+              onApply={onExplore} onGoNow={onGoNow} onRestore={onRestore} onCancel={() => setShowExplore(false)} />
           )}
           <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
             <span style={{ fontFamily: "'Fraunces', serif", fontSize: 56, fontWeight: 600, lineHeight: 1, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
