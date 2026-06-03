@@ -866,40 +866,63 @@ function Setup({ controller, onDone, onCancel }) {
 function Capture({ controller, route, onDone }) {
   const [state, setState] = useState("armed");
   const [elapsed, setElapsed] = useState(0);
+  const [paused, setPaused] = useState(false);
   const [result, setResult] = useState(null);
   const [confirm, setConfirm] = useState(null);
+  const [adjustMin, setAdjustMin] = useState(0); // minutes added/removed at review
   const ref = useRef({});
 
   if (!route) return <Empty />;
 
   const start = async () => {
-    setState("riding"); setElapsed(0); setConfirm(null);
+    setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0);
     const handle = await controller.startRide(route, {
       onTick: ({ elapsedSec }) => setElapsed(elapsedSec),
       onFinish: (r) => {
-        setResult({ actualSec: r.actualSec, distance: r.distanceM, startedAt: r.startedAt, endedAt: r.endedAt, forecastWind: r.forecastWind });
+        setResult({ actualSec: r.actualSec, distance: r.distanceM, startedAt: r.startedAt, endedAt: r.endedAt, pausedSec: r.pausedSec || 0, forecastWind: r.forecastWind });
         setState("done");
       },
     }).catch((e) => { alert(e.message); setState("armed"); });
     ref.current = { handle };
   };
 
+  // Local display clock so the timer ticks smoothly and freezes on pause,
+  // independent of GPS fix cadence.
+  useEffect(() => {
+    if (state !== "riding" || paused) return;
+    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(id);
+  }, [state, paused]);
+
   useEffect(() => () => ref.current.handle?.stop?.(), []);
 
+  const togglePause = () => {
+    const h = ref.current.handle;
+    if (!h) return;
+    if (paused) { h.resume?.(); setPaused(false); }
+    else { h.pause?.(); setPaused(true); }
+  };
+
   const fmtC = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-  const submit = async (usable, reason) => {
-    setConfirm(usable ? "yes" : "no");
+
+  // Final ride time after any manual adjustment (never below zero).
+  const adjustedSec = result ? Math.max(0, result.actualSec + adjustMin * 60) : 0;
+
+  const submit = async () => {
+    setConfirm("yes");
     await controller.recordRide({
       routeId: route.id, startedAt: result.startedAt, endedAt: result.endedAt,
-      actualTimeSec: result.actualSec, forecastWind: result.forecastWind,
-      usable, excludeReason: reason || null,
+      actualTimeSec: adjustedSec, forecastWind: result.forecastWind,
+      adjustMin: adjustMin || 0, pausedSec: result.pausedSec || 0,
+      usable: true,
     });
   };
+  const discard = () => { setConfirm("discarded"); /* nothing stored */ };
 
   return (
     <div style={{
       height: "100%", color: "#fff", padding: 24,
-      background: state === "riding" ? "linear-gradient(165deg,#16324a,#1d4258 55%,#2a5a6e)" : "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)",
+      background: state === "riding" ? (paused ? "linear-gradient(165deg,#2a2438,#3a3048 55%,#473c52)" : "linear-gradient(165deg,#16324a,#1d4258 55%,#2a5a6e)") : "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)",
       transition: "background 1s", display: "flex", flexDirection: "column",
     }}>
       {state === "armed" && (
@@ -917,34 +940,66 @@ function Capture({ controller, route, onDone }) {
       )}
       {state === "riding" && (
         <div style={{ flex: 1, paddingTop: 40 }}>
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.55)" }}>Elapsed · GPS active</div>
-          <div style={{ fontFamily: "'Fraunces',serif", fontSize: 76, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmtC(elapsed)}</div>
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", marginTop: 20 }}>Finish detected automatically near your destination.</div>
-          <button onClick={() => ref.current.handle?.manualFinish?.()} style={{ marginTop: 28, width: "100%", padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 500, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Finish now</button>
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.55)" }}>{paused ? "Paused · time not counting" : "Elapsed · GPS active"}</div>
+          <div style={{ fontFamily: "'Fraunces',serif", fontSize: 76, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.6 : 1 }}>{fmtC(elapsed)}</div>
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", marginTop: 20 }}>
+            {paused ? "Resume when you're moving again." : "Finish detected automatically near your destination."}
+          </div>
+          <div style={{ display: "flex", gap: 12, marginTop: 28 }}>
+            <button onClick={togglePause} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: paused ? "#6fd49a" : "rgba(255,255,255,0.12)", color: paused ? "#0f2a1c" : "#fff", border: paused ? "none" : "1px solid rgba(255,255,255,0.18)" }}>
+              {paused ? "Continue" : "Pause"}
+            </button>
+            <button onClick={() => ref.current.handle?.manualFinish?.()} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 500, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Finish now</button>
+          </div>
         </div>
       )}
       {state === "done" && result && (
-        <div style={{ flex: 1, paddingTop: 20 }}>
+        <div style={{ flex: 1, paddingTop: 20, overflowY: "auto" }}>
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 13, color: "rgba(255,255,255,0.55)" }}>Ride complete</div>
-            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 70, fontWeight: 600 }}>{fmtC(result.actualSec)}</div>
-            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.65)" }}>{(result.distance / 1000).toFixed(2)} km</div>
-          </div>
-          {confirm === null && (
-            <div style={{ marginTop: 36 }}>
-              <div style={{ fontFamily: "'Fraunces',serif", fontSize: 20, fontWeight: 600, textAlign: "center" }}>Was this a typical ride?</div>
-              <div style={{ fontSize: 13, color: "rgba(255,255,255,0.55)", textAlign: "center", margin: "8px 0 22px" }}>We only learn from clean rides.</div>
-              <div style={{ display: "flex", gap: 12 }}>
-                <button onClick={() => submit(false)} style={{ flex: 1, padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 600, background: "rgba(255,255,255,0.08)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>No, unusual</button>
-                <button onClick={() => submit(true)} style={{ flex: 1.4, padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#6fd49a", color: "#0f2a1c", border: "none" }}>Yes, typical</button>
-              </div>
+            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 70, fontWeight: 600 }}>{fmtC(adjustedSec)}</div>
+            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.65)" }}>
+              {(result.distance / 1000).toFixed(2)} km{result.pausedSec >= 30 ? ` · ${Math.round(result.pausedSec / 60)} min paused (excluded)` : ""}
             </div>
+            {adjustMin !== 0 && (
+              <div style={{ fontSize: 12.5, color: "#e0a45e", marginTop: 4 }}>
+                adjusted {adjustMin > 0 ? "+" : ""}{adjustMin} min from {fmtC(result.actualSec)}
+              </div>
+            )}
+          </div>
+
+          {confirm === null && (
+            <>
+              {/* Adjust */}
+              <div style={{ marginTop: 28, padding: "14px 16px", borderRadius: 16, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)" }}>
+                <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)", marginBottom: 4 }}>Adjust ride time</div>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginBottom: 12, lineHeight: 1.45 }}>
+                  Correct for anything the timer couldn't know — a stop you forgot to pause, or recording started before you set off.
+                </div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14 }}>
+                  <button onClick={() => setAdjustMin((m) => m - 1)} style={adjBtn}>−1 min</button>
+                  <span style={{ fontFamily: "'Fraunces',serif", fontSize: 22, fontWeight: 600, minWidth: 64, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
+                    {adjustMin > 0 ? "+" : ""}{adjustMin}
+                  </span>
+                  <button onClick={() => setAdjustMin((m) => m + 1)} style={adjBtn}>+1 min</button>
+                </div>
+              </div>
+
+              {/* Accept / discard */}
+              <div style={{ marginTop: 22, fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, textAlign: "center" }}>Was this a typical ride?</div>
+              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", textAlign: "center", margin: "6px 0 18px" }}>Accept to train the model, or discard if it wasn't a normal ride.</div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={discard} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "none", color: "#f0a08c", border: "1px solid rgba(224,120,94,0.4)" }}>Discard</button>
+                <button onClick={() => submit()} style={{ flex: 1.3, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#6fd49a", color: "#0f2a1c", border: "none" }}>Accept</button>
+              </div>
+            </>
           )}
+
           {confirm && (
             <div style={{ marginTop: 36, textAlign: "center" }}>
-              <div style={{ fontSize: 36 }}>{confirm === "yes" ? "✓" : "·"}</div>
+              <div style={{ fontSize: 36 }}>{confirm === "yes" ? "✓" : "✕"}</div>
               <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginTop: 6 }}>
-                {confirm === "yes" ? "Added to your model" : "Stored, kept out of learning"}
+                {confirm === "yes" ? "Added to your model" : "Ride discarded"}
               </div>
               <button onClick={onDone} style={{ marginTop: 26, width: "100%", padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Done</button>
             </div>
@@ -954,6 +1009,11 @@ function Capture({ controller, route, onDone }) {
     </div>
   );
 }
+
+const adjBtn = {
+  padding: "9px 14px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600,
+  background: "rgba(255,255,255,0.12)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)",
+};
 
 /* ============================================================================
  * Shared bits
