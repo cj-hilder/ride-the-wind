@@ -67,17 +67,25 @@ const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "
 // loMin/hiMin are (predicted − baseline) at the fast/slow ends; + = slower.
 function windEffectPhrase(we, light = false) {
   if (!we) return "";
+  const WIND_FLOOR = 7.5; // km/h
   const fast = we.fastMin, slow = we.slowMin, likely = we.likelyMin;
   const ride = fast === slow
     ? `ride for ${likely} mins`
     : `ride for ${fast} to ${slow} mins (likely ${likely} mins)`;
-  if (we.direction === "calm") return `No wind: ${ride}`;
+  if (we.direction === "calm") {
+    // "No wind" only when the forecast wind is genuinely slight; if there's a
+    // real wind that simply has little net along-route effect, say so instead.
+    const noWindLabel = (we.windSpeedKmh ?? 0) > WIND_FLOOR ? "No wind effect" : "No wind";
+    return `${noWindLabel}: ${ride}`;
+  }
   if (we.direction === "mixed") return `${we.headPct}% chance headwind: ${ride}`;
-  // A definite head/tailwind whose time effect is under the alert threshold
-  // (verdict "normal") is described as "light", so the line agrees with a
-  // "Usual time/speed" or "Leave late" headline rather than overstating it.
+  // "Light head/tailwind" applies only when the verdict is under-threshold AND
+  // the mean headwind is genuinely slight (< 7.5 km/h). A strong wind that
+  // happens to fall just under the time threshold still reads as a full
+  // "Headwind/Tailwind", not "Light".
   const base = we.direction === "headwind" ? "headwind" : "tailwind";
-  const label = light
+  const isLight = light && (we.meanHeadKmh ?? 0) < WIND_FLOOR;
+  const label = isLight
     ? `Light ${base}`
     : base.charAt(0).toUpperCase() + base.slice(1);
   return `${label}: ${ride}`;
