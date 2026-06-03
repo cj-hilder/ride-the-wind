@@ -67,28 +67,6 @@ export function arrivalOnDate(route, dayMs, overrideHHMM) {
   return { arrivalMs: atLocalTime(day, hhmm), weekday: code, arrivalHHMM: hhmm };
 }
 
-export function nextActiveArrival(route, fromMs, opts = {}) {
-  const { lookaheadDays = 8 } = opts;
-  const active = new Set(route.activeDays || []);
-  if (active.size === 0) return null;
-
-  for (let d = 0; d < lookaheadDays; d++) {
-    const day = new Date(fromMs + d * 86400e3);
-    const code = WEEKDAY_CODE[day.getDay()];
-    if (!active.has(code)) continue;
-
-    const hhmm =
-      (route.arrivalOverrides && route.arrivalOverrides[code]) ||
-      route.targetArrival;
-    const arrivalMs = atLocalTime(day, hhmm);
-
-    // Skip a day whose arrival has already passed relative to fromMs.
-    if (arrivalMs <= fromMs) continue;
-    return { arrivalMs, weekday: code, arrivalHHMM: hhmm };
-  }
-  return null;
-}
-
 /**
  * Resolve "HH:MM" on the calendar date of `dateInDay` to epoch ms in local time.
  */
@@ -134,7 +112,9 @@ export function evaluateAlert(route, predictForArrival, opts = {}) {
     route.alertThresholdMin ??
     DEFAULT_THRESHOLD_MIN;
 
-  const next = opts.fixedArrival || nextActiveArrival(route, nowMs, opts);
+  // The caller always supplies the resolved arrival (a specific calendar day
+  // at the route's configured or explored time). There is no scheduler.
+  const next = opts.fixedArrival;
   if (!next) return null;
 
   const p = predictForArrival(next.arrivalMs);
@@ -175,85 +155,9 @@ export function evaluateAlert(route, predictForArrival, opts = {}) {
     kHead: p.kHead ?? null,
     kTail: p.kTail ?? null,
     provisional: !!p.provisional,
-
-    message: buildMessage(verdict, {
-      deltaMin: Math.abs(Math.round(deltaSec / 60)),
-      departureHHMM: formatHHMM(departureMs),
-      normalDepartureHHMM: formatHHMM(normalDepartureMs),
-      arrivalHHMM: next.arrivalHHMM,
-      provisional: !!p.provisional,
-    }),
   };
 }
 
-/**
- * Whether to actually surface a notification. Normal days stay silent (§4.2);
- * the in-app summary may still show the normal verdict, but push/notify should
- * not fire. Use this to gate the notification layer.
- */
-export function shouldNotify(verdict) {
-  return verdict && verdict.verdict !== VERDICT.NORMAL;
-}
-
-/* ------------------------------------------------------------------ *
- * Morning reconciliation (§4.3)
- * ------------------------------------------------------------------ */
-
-/**
- * Compare a fresh morning verdict against the night-before one and decide
- * whether to update the user. The morning forecast is the one to trust; we
- * notify of a change only if the departure time has moved materially or the
- * verdict category flipped, to avoid waking someone for a one-minute drift.
- *
- * @param {Object} nightVerdict - prior evaluateAlert result (may be null)
- * @param {Object} morningVerdict - fresh evaluateAlert result
- * @param {Object} [opts]
- * @param {number} [opts.materialMin=3] - departure shift worth re-alerting
- * @returns {{changed:boolean, reason:string, verdict:Object}}
- */
-export function reconcileMorning(nightVerdict, morningVerdict, opts = {}) {
-  const { materialMin = 3 } = opts;
-  if (!morningVerdict) {
-    return { changed: false, reason: "no-morning", verdict: morningVerdict };
-  }
-  if (!nightVerdict) {
-    return { changed: true, reason: "no-prior", verdict: morningVerdict };
-  }
-  if (nightVerdict.verdict !== morningVerdict.verdict) {
-    return { changed: true, reason: "verdict-flip", verdict: morningVerdict };
-  }
-  const shiftMin =
-    Math.abs(morningVerdict.departureMs - nightVerdict.departureMs) / 60000;
-  if (shiftMin >= materialMin) {
-    return { changed: true, reason: "departure-shift", verdict: morningVerdict };
-  }
-  return { changed: false, reason: "unchanged", verdict: morningVerdict };
-}
-
-/* ------------------------------------------------------------------ *
- * Messages (§4.4)
- * ------------------------------------------------------------------ */
-
 export const DEFAULT_THRESHOLD_MIN = 4;
-
-function buildMessage(verdict, ctx) {
-  const provNote = ctx.provisional ? " (still learning — provisional)" : "";
-  switch (verdict) {
-    case VERDICT.HEADWIND:
-      return (
-        `Headwind — leave by ${ctx.departureHHMM} ` +
-        `instead of ${ctx.normalDepartureHHMM} to arrive ${ctx.arrivalHHMM}` +
-        provNote
-      );
-    case VERDICT.TAILWIND:
-      return (
-        `Tailwind — you can leave at ${ctx.departureHHMM}, ` +
-        `about ${ctx.deltaMin} min later than usual, and still arrive ${ctx.arrivalHHMM}` +
-        provNote
-      );
-    default:
-      return `Usual time — leave by ${ctx.departureHHMM} to arrive ${ctx.arrivalHHMM}${provNote}`;
-  }
-}
 
 export { WEEKDAY, WEEKDAY_CODE };

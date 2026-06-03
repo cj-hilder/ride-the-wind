@@ -9,7 +9,6 @@
  *   - SetupScreen   → controller.createRoute(gpxText, setup)
  *   - HomeScreen    → controller.getHomeVerdict(routeId) / listRoutesWithVerdict()
  *   - CaptureScreen → controller.recordRide(capture)
- *   - on app open   → controller.runDueAlerts()
  *
  * The forecast fetch is injected (real Open-Meteo in the browser, a stub in
  * tests) so this whole layer is exercisable headlessly.
@@ -28,10 +27,7 @@ import {
 import * as learning from "./learning.js";
 import {
   evaluateAlert,
-  reconcileMorning,
-  nextActiveArrival,
   arrivalOnDate,
-  shouldNotify,
   DEFAULT_THRESHOLD_MIN,
 } from "./alertEngine.js";
 import {
@@ -47,7 +43,6 @@ import {
   IndexedDBBackend,
   requestPersistentStorage,
 } from "./storage.js";
-import { runDueAlerts, installScheduler } from "./scheduler.js";
 
 // Local HH:MM (24h) formatter, device local time.
 function hhmm(ms) {
@@ -76,7 +71,6 @@ function clampPct(p) {
  *                                    browser, MemoryBackend otherwise)
  * @param {Function} [deps.fetchForecastFor] - async (lat,lon)=>parsedSeries;
  *                                    defaults to Open-Meteo via windModel
- * @param {Function} [deps.notify]  - async (notification)=>void
  * @param {Function} [deps.now]     - ()=>epochMs (injectable clock for tests)
  */
 export function createAppController(deps = {}) {
@@ -210,12 +204,12 @@ export function createAppController(deps = {}) {
     const stationSeries = await stationSeriesFor(route);
 
     const nowMs = now();
-    // Plan tab passes a specific calendar day (ignores activeDays / past-time);
-    // optionally with an Explore time override on that day. Otherwise fall back
-    // to the next scheduled active-day arrival.
-    const next = dayMs != null
-      ? arrivalOnDate(route, dayMs, exploredHHMM || undefined)
-      : nextActiveArrival(route, nowMs);
+    // The Plan tab passes a specific calendar day (ignoring activeDays/past-time),
+    // optionally with an Explore time override. With no day given (the route-list
+    // summary), default to today's configured time. There is no scheduler: PWAs
+    // can't reliably wake to notify when closed, so the app shows a live
+    // countdown beside the time instead of dispatching alerts.
+    const next = arrivalOnDate(route, dayMs != null ? dayMs : nowMs, exploredHHMM || undefined);
 
     // Guard: does the fetched forecast actually reach the ride day? A ride up to
     // a week out must not silently use clamped (stale) end-of-forecast data. If
@@ -235,7 +229,7 @@ export function createAppController(deps = {}) {
 
     const verdict = evaluateAlert(route, predictForArrival, {
       nowMs,
-      fixedArrival: dayMs != null ? next : undefined,
+      fixedArrival: next,
     });
     if (!verdict) return { route, verdict: null };
 
@@ -644,65 +638,6 @@ export function createAppController(deps = {}) {
    * Alert runs (on app open)
    * ---------------------------------------------------------------- */
 
-  // last-run / stored-verdict persistence via settings store
-  const lrKey = (rid, t) => `lastRun:${rid}:${t}`;
-  const svKey = (rid, day, t) => `verdict:${rid}:${day}:${t}`;
-
-  async function runAlerts(nowMs = now()) {
-    return runDueAlerts(
-      {
-        getRoutes: () => store.listRoutes(),
-        nextActiveArrival,
-        getModelAndSeed: async (routeId) => {
-          const route = await store.getRoute(routeId);
-          const model = await store.getModel(routeId);
-          return {
-            modelState: model
-              ? model.regressionState
-              : learning.createModelState(),
-            seed: await seedFor(route, model),
-          };
-        },
-        fetchStations: (route) => stationSeriesFor(route),
-        makePredictor,
-        evaluateAlert,
-        reconcile: reconcileMorning,
-        getLastRun: (rid, t) => readSettingSync(rid, t),
-        setLastRun: (rid, t, v) => store.setSetting(lrKey(rid, t), v),
-        getStoredVerdict: (rid, day, t) => svCache.get(svKey(rid, day, t)) || null,
-        setStoredVerdict: (rid, day, t, v) => {
-          svCache.set(svKey(rid, day, t), v);
-          store.setSetting(svKey(rid, day, t), v);
-        },
-        notify: deps.notify || defaultNotify,
-      },
-      nowMs
-    );
-  }
-
-  // small sync-ish caches hydrated lazily (settings reads are async; the
-  // scheduler calls getLastRun synchronously, so we hydrate a cache first)
-  const lrCache = new Map();
-  const svCache = new Map();
-  function readSettingSync(rid, t) {
-    return lrCache.get(lrKey(rid, t)) || null;
-  }
-  async function hydrateRunCaches() {
-    const routes = await store.listRoutes();
-    for (const r of routes) {
-      for (const t of ["night", "morning"]) {
-        const v = await store.getSetting(lrKey(r.id, t));
-        if (v) lrCache.set(lrKey(r.id, t), v);
-      }
-    }
-  }
-  // keep lrCache in step when the scheduler writes
-  const origSet = store.setSetting.bind(store);
-  store.setSetting = (key, value) => {
-    if (key.startsWith("lastRun:")) lrCache.set(key, value);
-    return origSet(key, value);
-  };
-
   /* ---------------------------------------------------------------- *
    * Portability + persistence
    * ---------------------------------------------------------------- */
@@ -712,18 +647,13 @@ export function createAppController(deps = {}) {
   const requestPersistence = () => requestPersistentStorage();
 
   /* ---------------------------------------------------------------- *
-   * Startup
+   * Startup. No scheduler/notifications: a PWA can't reliably wake to
+   * notify when closed, so the app shows a live countdown beside the
+   * departure time while open instead of dispatching alerts.
    * ---------------------------------------------------------------- */
 
-  async function start({ onAlerts } = {}) {
-    await hydrateRunCaches();
+  async function start() {
     await requestPersistence();
-    installScheduler({
-      onActive: async () => {
-        const produced = await runAlerts();
-        if (onAlerts) onAlerts(produced);
-      },
-    });
   }
 
   return {
@@ -731,14 +661,14 @@ export function createAppController(deps = {}) {
     createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute,
     getHomeVerdict, listRoutesWithVerdict,
     recordRide, listRides, recomputeModel, startRide,
-    runAlerts, start,
+    start,
     exportAll, importAll, requestPersistence,
     stationSeriesFor,
   };
 }
 
 /* ------------------------------------------------------------------ *
- * Default notify: route through the service worker if available
+ * Geometry helper
  * ------------------------------------------------------------------ */
 
 const EARTH_M = 6371008.8, D2R = Math.PI / 180;
@@ -746,27 +676,6 @@ function haversineLocal(aLat, aLon, bLat, bLon) {
   const dLat = (bLat - aLat) * D2R, dLon = (bLon - aLon) * D2R;
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(aLat * D2R) * Math.cos(bLat * D2R) * Math.sin(dLon / 2) ** 2;
   return 2 * EARTH_M * Math.asin(Math.min(1, Math.sqrt(h)));
-}
-
-async function defaultNotify(n) {
-  if (
-    typeof navigator !== "undefined" &&
-    navigator.serviceWorker &&
-    navigator.serviceWorker.controller
-  ) {
-    navigator.serviceWorker.controller.postMessage({
-      type: "SHOW_LOCAL_NOTIFICATION",
-      notification: {
-        title: n.title,
-        body: n.body,
-        tag: n.tag,
-        renotify: n.renotify,
-        icon: "/icons/icon-192.png",
-        data: { url: "/", routeId: n.routeId },
-      },
-    });
-  }
-  // else: the in-app summary (the produced[] return) is the guaranteed channel
 }
 
 export { DEFAULT_THRESHOLD_MIN };
