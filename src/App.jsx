@@ -379,8 +379,8 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
 
       <PlanBody verdict={verdict} dayVerdict={dayVerdict} fetching={fetching}
         accent={accent} showDebug={showDebug} setShowDebug={setShowDebug}
-        timeMode={exploredDepart ? "depart" : (activeRoute.timeMode === "depart" ? "depart" : "arrive")}
-        exploredHHMM={exploredHHMM} exploredDepart={exploredDepart} canGoNow={isToday}
+        timeMode={activeRoute.timeMode === "depart" ? "depart" : "arrive"}
+        exploredHHMM={exploredHHMM} canGoNow={isToday}
         showExplore={showExplore} setShowExplore={setShowExplore}
         onExplore={applyExplore} onGoNow={goNow}
         onRestore={() => { setExplored((m) => { const n = { ...m }; delete n[exploreKey]; return n; }); setShowExplore(false); }}
@@ -441,7 +441,7 @@ function ExplorePicker({ timeMode, current, hasOverride, canGoNow, onApply, onGo
 
 /* Plan detail body for the selected route+day (the former Home centre block). */
 function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDebug,
-  timeMode, exploredHHMM, exploredDepart, canGoNow, showExplore, setShowExplore, onExplore, onGoNow, onRestore }) {
+  timeMode, exploredHHMM, canGoNow, showExplore, setShowExplore, onExplore, onGoNow, onRestore }) {
   // Per-minute tick so the live countdown beside the time stays current without
   // depending on forecast refreshes. Declared before any early return (hooks).
   const [nowMs, setNowMs] = useState(Date.now());
