@@ -319,14 +319,17 @@ export function windFactorTimed({
  * @returns {Promise<Array<{time:number, speed:number, fromDeg:number}>>}
  */
 export async function fetchForecast(lat, lon, opts = {}) {
-  const { forecastDays = 8, fetchImpl } = opts;
+  const { forecastDays = 8, pastDays = 1, fetchImpl } = opts;
   const f = fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
   if (!f) throw new Error("No fetch available; inject opts.fetchImpl.");
 
+  // past_days keeps recently-past hours in the window so a ride earlier today
+  // (or yesterday) still resolves to its OWN forecast hour rather than being
+  // clamped to the first remaining hour as the day advances.
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
     `&hourly=wind_speed_10m,wind_direction_10m,temperature_2m,precipitation,precipitation_probability` +
-    `&wind_speed_unit=kmh&timeformat=unixtime&forecast_days=${forecastDays}`;
+    `&wind_speed_unit=kmh&timeformat=unixtime&past_days=${pastDays}&forecast_days=${forecastDays}`;
 
   const res = await f(url);
   if (!res.ok) throw new Error(`Open-Meteo HTTP ${res.status}`);
@@ -344,14 +347,14 @@ export async function fetchForecast(lat, lon, opts = {}) {
  *          array of members, each a sorted series
  */
 export async function fetchEnsemble(lat, lon, opts = {}) {
-  const { forecastDays = 8, fetchImpl, model = "ecmwf_ifs025" } = opts;
+  const { forecastDays = 8, pastDays = 1, fetchImpl, model = "ecmwf_ifs025" } = opts;
   const f = fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
   if (!f) throw new Error("No fetch available; inject opts.fetchImpl.");
 
   const url =
     `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${lat}&longitude=${lon}` +
     `&hourly=wind_speed_10m,wind_direction_10m` +
-    `&models=${model}&wind_speed_unit=kmh&timeformat=unixtime&forecast_days=${forecastDays}`;
+    `&models=${model}&wind_speed_unit=kmh&timeformat=unixtime&past_days=${pastDays}&forecast_days=${forecastDays}`;
 
   const res = await f(url);
   if (!res.ok) throw new Error(`Open-Meteo ensemble HTTP ${res.status}`);
