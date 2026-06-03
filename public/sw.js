@@ -7,17 +7,13 @@
  *     network. Forecast data is never shell-cached (it must be fresh); only the
  *     code/UI is. Strategy: cache-first for the shell, network-first for data.
  *
- *  2. Push display. When a push arrives (from a server, or a local
- *     showNotification call), render it and route taps back into the app.
- *
- * What this SW deliberately does NOT do: it does not try to self-schedule a
- * 21:00 fetch. A service worker cannot be relied on to wake at a wall-clock
- * time — setTimeout does not survive suspension, and Periodic Background Sync
- * is Chromium-only and best-effort. Scheduling/eval lives in scheduler.js and
- * runs when the app is open (the guaranteed path); true timed push, where
- * available, is driven by a server posting to the Push API. This matches the
- * delivery decision in the spec: in-app summary is the guaranteed channel,
- * push is enhancement.
+ * What this SW deliberately does NOT do: notifications or scheduling. A PWA
+ * cannot be relied on to wake at a wall-clock time (setTimeout does not survive
+ * suspension; Periodic Background Sync is Chromium-only and best-effort) and on
+ * iOS cannot notify when closed at all. Rather than ship an alert path that
+ * works on some platforms and silently fails on others, the app shows a live
+ * countdown beside the departure time while open. The only message handled here
+ * is SKIP_WAITING, for picking up a new version.
  * ========================================================================== */
 
 // Cache version is stamped at build time (see the BUILD_ID replace in the
@@ -128,54 +124,13 @@ async function networkFirst(request, cacheName) {
   }
 }
 
-/* ---- push: render an alert ---- */
-self.addEventListener("push", (event) => {
-  let payload = {};
-  try { payload = event.data ? event.data.json() : {}; } catch { payload = {}; }
-
-  const title = payload.title || "Ride the Wind";
-  const options = {
-    body: payload.body || "Your morning ride forecast is ready.",
-    icon: BASE + "icons/icon-192.png",
-    badge: BASE + "icons/icon-192.png",
-    tag: payload.tag || "rtw-alert", // collapse repeats for the same morning
-    renotify: !!payload.renotify,
-    data: { url: payload.url || BASE, routeId: payload.routeId || null },
-    // a calm vibration, only where supported
-    vibrate: payload.silent ? undefined : [40, 60, 40],
-  };
-  event.waitUntil(self.registration.showNotification(title, options));
-});
-
-/* ---- notification tap: focus or open the app on the right route ---- */
-self.addEventListener("notificationclick", (event) => {
-  event.notification.close();
-  const target = (event.notification.data && event.notification.data.url) || BASE;
-  event.waitUntil(
-    clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
-      for (const w of wins) {
-        if ("focus" in w) {
-          w.navigate?.(target);
-          return w.focus();
-        }
-      }
-      return clients.openWindow(target);
-    })
-  );
-});
-
-/* ---- message channel: let the app ask the SW to show a local notification ----
- * Used by scheduler.js when a run produces an alert while the app is open or
- * being closed, on platforms where we don't have server push. Best-effort. */
+/* ---- message channel: version update only ----
+ * No notifications: a PWA can't reliably wake to notify when closed, so the app
+ * shows a live countdown beside the departure time instead. */
 self.addEventListener("message", (event) => {
   const msg = event.data || {};
   if (msg.type === "SKIP_WAITING") {
     // app detected a new version and asked us to take over now
     self.skipWaiting();
-    return;
-  }
-  if (msg.type === "SHOW_LOCAL_NOTIFICATION") {
-    const { title, ...options } = msg.notification || {};
-    self.registration.showNotification(title || "Ride the Wind", options);
   }
 });
