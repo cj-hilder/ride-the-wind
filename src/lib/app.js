@@ -510,7 +510,7 @@ export function createAppController(deps = {}) {
     // Reconstruct the wind_factor for this ride from the forecast it carried.
     let windFactor = capture.windFactor;
     let predictedTimeSec = capture.predictedTimeSec ?? null;
-    if (windFactor == null && capture.forecastWind) {
+    if (windFactor == null && capture.forecastWind && capture.forecastWind.length) {
       const stationSeries = capture.forecastWind; // [{lat,lon,series}]
       const predictForArrival = makePredictor({
         route,
@@ -566,10 +566,18 @@ export function createAppController(deps = {}) {
     const trace = [];
     let prev = null;
     let stoppedSince = null;
+    // Pause support: total paused ms is excluded from the ride time, so a rider
+    // can stop (lights, coffee, mechanical) without inflating the learned time.
+    let paused = false;
+    let pauseStartedAt = null;
+    let totalPausedMs = 0;
 
     const watchId = geoApi.watchPosition(
       (pos) => {
         const fix = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: Date.now() };
+        // While paused, ignore movement entirely — no distance, no finish
+        // detection, no trace growth, and the clock is held.
+        if (paused) { prev = fix; return; }
         if (prev) {
           // distance accrual
           const moved = haversineLocal(prev.lat, prev.lon, fix.lat, fix.lon);
@@ -587,7 +595,7 @@ export function createAppController(deps = {}) {
             } else stoppedSince = null;
           } else stoppedSince = null;
 
-          if (onTick) onTick({ elapsedSec: (fix.t - startedAt) / 1000, distanceM: traceDistance(trace) });
+          if (onTick) onTick({ elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000, distanceM: traceDistance(trace) });
           if (finished) { stop(); if (onFinish) onFinish(buildResult(fix.t)); }
         } else {
           trace.push(fix);
@@ -599,14 +607,22 @@ export function createAppController(deps = {}) {
     );
 
     function buildResult(endedAt) {
+      // close an open pause at finish
+      const pausedMs = totalPausedMs + (paused && pauseStartedAt ? (endedAt - pauseStartedAt) : 0);
       return {
-        actualSec: (endedAt - startedAt) / 1000,
+        actualSec: (endedAt - startedAt - pausedMs) / 1000,
         distanceM: traceDistance(trace),
-        trace, startedAt, endedAt, forecastWind,
+        trace, startedAt, endedAt, pausedSec: pausedMs / 1000, forecastWind,
       };
     }
     function stop() { geoApi.clearWatch(watchId); }
-    return { stop, manualFinish: () => { stop(); if (onFinish) onFinish(buildResult(now())); } };
+    return {
+      stop,
+      pause: () => { if (!paused) { paused = true; pauseStartedAt = Date.now(); } },
+      resume: () => { if (paused) { totalPausedMs += Date.now() - pauseStartedAt; paused = false; pauseStartedAt = null; } },
+      isPaused: () => paused,
+      manualFinish: () => { stop(); if (onFinish) onFinish(buildResult(now())); },
+    };
   }
 
   function traceDistance(trace) {
