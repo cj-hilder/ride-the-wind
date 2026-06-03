@@ -196,7 +196,7 @@ export function createAppController(deps = {}) {
    * Full home verdict for a route: the alert verdict plus the forecast range
    * and confidence, ready for the UI. Fetches the live forecast.
    */
-  async function getHomeVerdict(routeId, dayMs = null, exploredHHMM = null) {
+  async function getHomeVerdict(routeId, dayMs = null, exploredHHMM = null, forceDepart = false) {
     const route = await store.getRoute(routeId);
     if (!route) return null;
     const model = await store.getModel(routeId);
@@ -278,7 +278,9 @@ export function createAppController(deps = {}) {
     // Departure AND headline both drive off the slow end (the safe number).
     let conservative = null;
     let windEffect = null;
-    const timeMode = route.timeMode === "depart" ? "depart" : "arrive";
+    // Go now (Explore) forces this one instance to be treated as a departure at
+    // the given time, regardless of the route's configured mode.
+    const timeMode = forceDepart ? "depart" : (route.timeMode === "depart" ? "depart" : "arrive");
     // `next.arrivalMs` is the entered-time instant: an arrival in arrive mode,
     // a departure in depart mode.
     const baselineDepartureMs =
