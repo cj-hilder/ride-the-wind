@@ -478,6 +478,15 @@ export function createAppController(deps = {}) {
       };
     }
 
+    // Carry the wind strength onto windEffect so the UI can apply the
+    // "light" / "no wind effect" thresholds (7.5 km/h). meanHeadKmh is the
+    // magnitude of the time-weighted mean headwind; windSpeedKmh the forecast
+    // wind speed sampled mid-route.
+    if (windEffect && debug) {
+      windEffect.meanHeadKmh = Math.abs(debug.meanHeadwindKmh ?? 0);
+      windEffect.windSpeedKmh = debug.windSpeedKmh ?? 0;
+    }
+
     return { route, verdict, range, conservative, windEffect, rangeUnavailable, confidence: conf, expect, debug, model };
   }
 
