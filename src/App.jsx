@@ -5,7 +5,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
  *
  * The thin top layer that ties the three screens together over the real
  * AppController (app.js → composes gpxRoute, windModel, learning, alertEngine,
- * prediction, storage, scheduler). This file owns navigation and the live data
+ * prediction, storage). This file owns navigation and the live data
  * lifecycle; the screens are presentational and receive controller results.
  *
  * In production this imports the real controller:
@@ -65,6 +65,22 @@ const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "
 
 // Wind-effect description: direction word + effect as a range of minutes.
 // loMin/hiMin are (predicted − baseline) at the fast/slow ends; + = slower.
+/* Live countdown to the displayed departure time. Shown only within the window
+ * from 2 hours before to 1 hour after. Returns "" outside that window so the
+ * time alone stands. No scheduler/notifications — this is the passive, always-
+ * correct replacement, useful exactly while the app is open. */
+function countdownPhrase(departMs, nowMs) {
+  if (departMs == null) return "";
+  const diffMin = Math.round((departMs - nowMs) / 60000); // + = future
+  if (diffMin > 120 || diffMin < -60) return "";
+  if (diffMin === 0) return "now";
+  if (diffMin < 0) return `${-diffMin} min${diffMin === -1 ? "" : "s"} ago`;
+  if (diffMin < 60) return `in ${diffMin} min${diffMin === 1 ? "" : "s"}`;
+  const h = Math.floor(diffMin / 60), m = diffMin % 60;
+  if (m === 0) return `in ${h} hour${h === 1 ? "" : "s"}`;
+  return `in ${h} hour${h === 1 ? "" : "s"} ${m} min${m === 1 ? "" : "s"}`;
+}
+
 function windEffectPhrase(we, light = false) {
   if (!we) return "";
   const WIND_FLOOR = 7.5; // km/h
@@ -114,7 +130,6 @@ export default function App() {
   const [activeRouteId, setActiveRouteId] = useState(null);
   const activeRouteIdRef = useRef(null);
   useEffect(() => { activeRouteIdRef.current = activeRouteId; }, [activeRouteId]);
-  const [banner, setBanner] = useState(null); // alert summary banner
   const [showHelp, setShowHelp] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now()); // drives the Plan day strip; bumped on midnight rollover
   const [forecastGen, setForecastGen] = useState(0); // bumped whenever routes/forecasts refresh, so Plan recomputes in place
@@ -148,19 +163,14 @@ export default function App() {
   }, [controller]);
 
   useEffect(() => {
-    controller.start({
-      onAlerts: (produced) => {
-        const notable = produced.filter((p) => p.verdict.verdict !== "normal");
-        if (notable.length) setBanner(notable[0].verdict.message);
-      },
-    });
+    controller.start();
     refresh();
 
     // Keep a long-open session fresh: recompute the verdict periodically and on
     // regaining focus. The forecast fetch itself is throttled by the cache TTL,
     // so frequent recompute is cheap and only re-fetches when data is stale.
-    // This also handles midnight rollover (the "next ride" day advancing) since
-    // listRoutesWithVerdict re-evaluates nextActiveArrival each time.
+    // This also handles midnight rollover (the day strip advancing) since the
+    // Plan tab recomputes against the new day on each refresh.
     let lastDay = new Date().getDate();
     const tick = () => {
       if (document.visibilityState !== "visible") return;
@@ -204,15 +214,6 @@ export default function App() {
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         input::placeholder { color: rgba(255,255,255,0.3);} input { color-scheme: dark; }
       `}</style>
-
-      {banner && (
-        <div onClick={() => setBanner(null)} style={{
-          position: "absolute", top: 0, left: 0, right: 0, zIndex: 50, cursor: "pointer",
-          padding: "14px 18px calc(14px + env(safe-area-inset-top))",
-          background: "rgba(91,143,199,0.95)", backdropFilter: "blur(8px)", color: "#fff",
-          fontSize: 13.5, fontWeight: 500, animation: "slidedown 0.4s both",
-        }}>{banner} <span style={{ opacity: 0.6, marginLeft: 6 }}>· tap to dismiss</span></div>
-      )}
 
       <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
         <ScreenBoundary resetKey={screen}>
@@ -414,6 +415,13 @@ function ExplorePicker({ timeMode, current, hasOverride, onApply, onRestore, onC
 /* Plan detail body for the selected route+day (the former Home centre block). */
 function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDebug,
   timeMode, exploredHHMM, showExplore, setShowExplore, onExplore, onRestore }) {
+  // Per-minute tick so the live countdown beside the time stays current without
+  // depending on forecast refreshes. Declared before any early return (hooks).
+  const [nowMs, setNowMs] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 30 * 1000);
+    return () => clearInterval(id);
+  }, []);
   if (fetching && !verdict) {
     return <div style={{ flex: 1, display: "grid", placeItems: "center", color: "rgba(255,255,255,0.5)", fontSize: 14 }}>Checking the forecast…</div>;
   }
@@ -431,6 +439,9 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
     ? { headwind: "Leave early", tailwind: "Leave late", normal: "Usual time" }[verdict.verdict]
     : { headwind: "Slow", tailwind: "Fast", normal: "Usual speed" }[verdict.verdict];
   const hasWindow = conservative && conservative.windowMin >= 2;
+  // Countdown targets the displayed leave-by/leave-at time (which already
+  // reflects any explored/custom time). Shown only within −2h…+1h.
+  const countdown = countdownPhrase(verdict.departureMs, nowMs);
 
   return (
     <div style={{ position: "relative", zIndex: 2, flex: 1, display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "18px 24px 16px", overflowY: "auto" }}>
@@ -455,12 +466,15 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
             <ExplorePicker timeMode={timeMode} current={exploredHHMM || verdict.arrivalHHMM}
               hasOverride={!!exploredHHMM} onApply={onExplore} onRestore={onRestore} onCancel={() => setShowExplore(false)} />
           )}
-          <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
             <span style={{ fontFamily: "'Fraunces', serif", fontSize: 56, fontWeight: 600, lineHeight: 1, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
               {verdict.departureHHMM}
             </span>
             {!isDepart && verdict.verdict !== "normal" && (
               <span style={{ fontSize: 15, color: "rgba(255,255,255,0.55)", textDecoration: "line-through" }}>{verdict.normalDepartureHHMM}</span>
+            )}
+            {countdown && (
+              <span style={{ fontSize: 15, fontWeight: 600, color: countdown === "now" ? "#6fd49a" : "#e0a45e" }}>{countdown}</span>
             )}
           </div>
           <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", marginTop: 10 }}>
