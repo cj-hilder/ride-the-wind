@@ -20,6 +20,33 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 
 import { createAppController } from "./lib/app.js";
 
+/* Error boundary around the active screen. A render error in one screen (e.g. a
+ * transient bad shape during a forecast refresh) must NOT tear down the whole
+ * app and the tab bar — the user has to be able to navigate away. This catches
+ * the error, shows a recoverable message, and keeps the tabs alive. The reset
+ * key (the current screen) clears the error when the user switches tabs. */
+class ScreenBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidUpdate(prev) {
+    // Clear the error when the reset key changes (e.g. user switched screen).
+    if (this.state.error && prev.resetKey !== this.props.resetKey) this.setState({ error: null });
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ height: "100%", display: "grid", placeItems: "center", padding: 28, textAlign: "center", color: "rgba(255,255,255,0.7)", background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)" }}>
+          <div>
+            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, color: "#fff", marginBottom: 8 }}>Something went wrong here</div>
+            <div style={{ fontSize: 13.5, lineHeight: 1.5 }}>This screen hit a snag. Use the tabs below to switch away and back, or pull a fresh forecast.</div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 /* dawn-to-dusk palette shared with the screens */
 const SKY = {
   predawn: ["#12152b", "#1d1b38", "#281f44"],
@@ -180,6 +207,7 @@ export default function App() {
       )}
 
       <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+        <ScreenBoundary resetKey={screen}>
         {loading ? (
           <Loading progress={progress} />
         ) : screen === "home" ? (
@@ -201,6 +229,7 @@ export default function App() {
           <Capture controller={controller} route={active?.route}
             onDone={async () => { await refresh(); setScreen("home"); }} />
         )}
+        </ScreenBoundary>
       </div>
 
       <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} />
@@ -427,7 +456,9 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
             )}
           </div>
           <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", marginTop: 10 }}>
-            {isDepart
+            {!conservative
+              ? <>to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}</>
+              : isDepart
               ? (hasWindow
                   ? <>arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
                   : <>arrive around {conservative.earliestArrivalHHMM} {dayLabel(conservative.earliestArrivalMs)}</>)
