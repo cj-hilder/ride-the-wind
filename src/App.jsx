@@ -38,7 +38,7 @@ const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "
 
 // Wind-effect description: direction word + effect as a range of minutes.
 // loMin/hiMin are (predicted − baseline) at the fast/slow ends; + = slower.
-function windEffectPhrase(we) {
+function windEffectPhrase(we, light = false) {
   if (!we) return "";
   const fast = we.fastMin, slow = we.slowMin, likely = we.likelyMin;
   const ride = fast === slow
@@ -46,7 +46,13 @@ function windEffectPhrase(we) {
     : `ride for ${fast} to ${slow} mins (likely ${likely} mins)`;
   if (we.direction === "calm") return `No wind: ${ride}`;
   if (we.direction === "mixed") return `${we.headPct}% chance headwind: ${ride}`;
-  const label = we.direction === "headwind" ? "Headwind" : "Tailwind";
+  // A definite head/tailwind whose time effect is under the alert threshold
+  // (verdict "normal") is described as "light", so the line agrees with a
+  // "Usual time/speed" or "Leave late" headline rather than overstating it.
+  const base = we.direction === "headwind" ? "headwind" : "tailwind";
+  const label = light
+    ? `Light ${base}`
+    : base.charAt(0).toUpperCase() + base.slice(1);
   return `${label}: ${ride}`;
 }
 
@@ -379,9 +385,14 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
   }
   const { range, conservative, windEffect, rangeUnavailable, confidence, expect, debug } = dayVerdict;
   const isDepart = conservative && conservative.mode === "depart";
-  const headline = isDepart
-    ? { headwind: "Headwind", tailwind: "Tailwind", normal: "Usual time" }[verdict.verdict]
-    : { headwind: "Early start", tailwind: "Late start", normal: "Usual time" }[verdict.verdict];
+  // "Leave early / Usual time / Leave late" (an instruction to shift departure)
+  // applies ONLY to an arrival-anchored route shown at its real scheduled time.
+  // For departure-based routes, or any explored/custom time, the useful framing
+  // is how the ride compares: Slow / Usual speed / Fast.
+  const useAction = !isDepart && !exploredHHMM;
+  const headline = useAction
+    ? { headwind: "Leave early", tailwind: "Leave late", normal: "Usual time" }[verdict.verdict]
+    : { headwind: "Slow", tailwind: "Fast", normal: "Usual speed" }[verdict.verdict];
   const hasWindow = conservative && conservative.windowMin >= 2;
 
   return (
@@ -426,7 +437,7 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
           </div>
           {windEffect && (
             <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 6 }}>
-              {windEffectPhrase(windEffect)}
+              {windEffectPhrase(windEffect, verdict.verdict === "normal")}
             </div>
           )}
           {rangeUnavailable && (
