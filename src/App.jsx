@@ -1017,8 +1017,9 @@ function Capture({ controller, route, onDone }) {
               </div>
 
               {/* Accept / discard */}
-              <div style={{ marginTop: 22, fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, textAlign: "center" }}>Was this a typical ride?</div>
-              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", textAlign: "center", margin: "6px 0 18px" }}>Accept to train the model, or discard if it wasn't a normal ride.</div>
+              <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", textAlign: "center", margin: "24px 0 16px", lineHeight: 1.45 }}>
+                Accept to train the model, or discard if it isn't representative.
+              </div>
               <div style={{ display: "flex", gap: 10 }}>
                 <button onClick={discard} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "none", color: "#f0a08c", border: "1px solid rgba(224,120,94,0.4)" }}>Discard</button>
                 <button onClick={() => submit()} style={{ flex: 1.3, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#6fd49a", color: "#0f2a1c", border: "none" }}>Accept</button>
