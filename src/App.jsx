@@ -132,6 +132,7 @@ export default function App() {
   const [screen, setScreen] = useState("home"); // home | setup | capture
   const [routes, setRoutes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [activeRouteId, setActiveRouteId] = useState(null);
   const activeRouteIdRef = useRef(null);
@@ -153,19 +154,27 @@ export default function App() {
   }, [controller]);
 
   const refresh = useCallback(async (opts = {}) => {
-    if (!opts.quiet) { setLoading(true); setProgress({ done: 0, total: 0 }); }
-    const list = await controller.listRoutesWithVerdict(
-      opts.quiet ? undefined : (done, total) => setProgress({ done, total })
-    );
-    setRoutes(list);
-    // Only auto-select when nothing is chosen yet (first load). Read the live
-    // value via ref so this stable callback never stomps an existing selection
-    // on a background refresh.
-    if (!activeRouteIdRef.current && list[0]) setActiveRouteId(list[0].route.id);
-    if (!opts.quiet) setLoading(false);
-    // Signal the Plan tab to recompute the displayed ride against fresh data,
-    // preserving its day/route/explored-time selection.
-    setForecastGen((g) => g + 1);
+    if (!opts.quiet) { setLoading(true); setProgress({ done: 0, total: 0 }); setLoadError(null); }
+    try {
+      const list = await controller.listRoutesWithVerdict(
+        opts.quiet ? undefined : (done, total) => setProgress({ done, total })
+      );
+      setRoutes(list);
+      // Only auto-select when nothing is chosen yet (first load). Read the live
+      // value via ref so this stable callback never stomps an existing selection
+      // on a background refresh.
+      if (!activeRouteIdRef.current && list[0]) setActiveRouteId(list[0].route.id);
+      // Signal the Plan tab to recompute the displayed ride against fresh data,
+      // preserving its day/route/explored-time selection.
+      setForecastGen((g) => g + 1);
+    } catch (e) {
+      // A forecast fetch can fail (offline, API outage). Never leave the loader
+      // hanging — surface it and let the user retry. A quiet background refresh
+      // fails silently, keeping whatever is already on screen.
+      if (!opts.quiet) setLoadError(e && e.message ? e.message : "Couldn’t reach the forecast.");
+    } finally {
+      if (!opts.quiet) setLoading(false);
+    }
   }, [controller]);
 
   useEffect(() => {
@@ -225,6 +234,8 @@ export default function App() {
         <ScreenBoundary resetKey={screen}>
         {loading ? (
           <Loading progress={progress} />
+        ) : loadError && screen === "home" ? (
+          <LoadErrorScreen message={loadError} onRetry={() => refresh()} />
         ) : screen === "home" ? (
           <Home controller={controller} activeRouteId={activeRouteId} routes={routes}
             setActiveRouteId={setActiveRouteId} nowMs={nowTick} forecastGen={forecastGen} />
@@ -1473,6 +1484,23 @@ function HelpPanel({ onClose }) {
           width: "100%", padding: 14, borderRadius: 12, border: "none", cursor: "pointer",
           fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a",
         }}>Got it</button>
+      </div>
+    </div>
+  );
+}
+
+function LoadErrorScreen({ message, onRetry }) {
+  return (
+    <div style={{ height: "100%", display: "grid", placeItems: "center", background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff", textAlign: "center", padding: 30 }}>
+      <div style={{ maxWidth: 300 }}>
+        <div style={{ fontFamily: "'Fraunces',serif", fontSize: 22, fontWeight: 600, marginBottom: 8 }}>Couldn’t reach the forecast</div>
+        <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 18, lineHeight: 1.5 }}>
+          {message ? `${message}.` : ""} Check your connection and try again — your routes are saved.
+        </div>
+        <button onClick={onRetry} style={{
+          padding: "12px 28px", borderRadius: 12, border: "none", cursor: "pointer",
+          fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a",
+        }}>Try again</button>
       </div>
     </div>
   );
