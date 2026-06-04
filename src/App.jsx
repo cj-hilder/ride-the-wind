@@ -1383,6 +1383,7 @@ function HelpPanel({ onClose }) {
   const installed = platform === "installed";
   const h3 = { fontFamily: "'Fraunces',serif", fontSize: 17, fontWeight: 600, color: "#fff", margin: "0 0 6px" };
   const p = { fontSize: 13.5, color: "rgba(255,255,255,0.75)", lineHeight: 1.5, margin: "0 0 4px" };
+  const ol = { fontSize: 13.5, color: "rgba(255,255,255,0.75)", lineHeight: 1.55, margin: "2px 0 4px", paddingLeft: 20 };
   const section = { padding: "16px 0", borderBottom: "1px solid rgba(255,255,255,0.1)" };
 
   return (
@@ -1405,22 +1406,54 @@ function HelpPanel({ onClose }) {
         )}
 
         <div style={section}>
-          <h3 style={h3}>Add a route (you’ll need a GPX file)</h3>
+          <h3 style={h3}>The three tabs</h3>
           <p style={p}>
-            A GPX is just the route’s path. Plan it in a route planner (like Mapy.com) — draw the route and export the <b>.gpx</b> — or use a ride you’ve already recorded in Strava, Komoot, Garmin, etc. and export its GPX. Open the file here to add the route.
+            <b>Plan</b> shows when to leave for the selected route on any day this week — tap a day along the top. The headline tells you if the wind means leaving earlier or later than usual, with the leave‑by time and a live countdown when it’s near.
+          </p>
+          <p style={p}>
+            <b>Ride</b> records an actual ride by GPS. Pause for stops, and at the end nudge the time or discard it — accepted rides train the model.
+          </p>
+          <p style={p}>
+            <b>Routes</b> is where you add and tune routes, and set the margin of error.
           </p>
           <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
-            A planner’s ride-time estimate is a good starting value for the still-air time we ask for at setup. Each direction is its own route — an out-and-back is two routes.
+            On the Plan tab, <b>Explore</b> lets you check a different time on the chosen day, and <b>Go now</b> shows the ride if you left this minute.
           </p>
         </div>
 
         <div style={section}>
-          <h3 style={h3}>How many rides to train it</h3>
+          <h3 style={h3}>Tuning a route</h3>
           <p style={p}>
-            Usable from your first ride — it starts from the times you enter at setup. It sharpens as you log rides and is well-tuned after about <b>10 rides in each direction</b> (headwind and tailwind days are learned separately). After that you can stop logging; it keeps adapting to the rides you do log.
+            Each route starts from two things you set: your <b>still‑air speed</b> and a <b>terrain effect</b> (how sheltered or exposed the route is, which sets how much wind slows or speeds you). That’s enough to use it from day one.
+          </p>
+          <p style={p}>
+            As you log rides it learns your real numbers — separately for headwind and tailwind days — and takes over the tuning, well‑settled after about <b>ten rides in each direction</b>. If the learned times aren’t working for you, just move a slider to go back to setting them by hand.
           </p>
           <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
-            Behind each forecast, the app pulls an ensemble of about 50 separate wind forecasts for your route — more detailed wind data than a typical weather app shows.
+            Behind each forecast the app blends an ensemble of about 50 separate wind forecasts for your route — more detailed wind data than a typical weather app shows. Each destination needs two routes, one going and one returning.
+          </p>
+        </div>
+
+        <div style={section}>
+          <h3 style={h3}>Making a GPX file for a route</h3>
+          <p style={p}>
+            A route needs a GPX file (its path on the map). If you’ve already got one from Strava, Komoot, Garmin or similar, just open it here. Otherwise it takes a minute to make one:
+          </p>
+          <p style={{ ...p, fontWeight: 600, color: "rgba(255,255,255,0.85)", marginTop: 8 }}>Mapy.com — good for dedicated bike lanes</p>
+          <ol style={ol}>
+            <li>Open <b>Mapy.com</b>, then the planner (menu → directions).</li>
+            <li>Choose the <b>bike</b> mode so it routes along bike‑friendly streets.</li>
+            <li>Type your start in box A and destination in box B — the line draws itself.</li>
+            <li>Expand the route panel, scroll down, and tap <b>Export</b>.</li>
+          </ol>
+          <p style={{ ...p, fontWeight: 600, color: "rgba(255,255,255,0.85)", marginTop: 8 }}>OnTheGoMap.com — the fast click‑and‑go way</p>
+          <ol style={ol}>
+            <li>Open <b>OnTheGoMap.com</b> and set the mode to <b>bike</b> (top centre).</li>
+            <li>Click your start on the map, then your destination — it snaps to the roads.</li>
+            <li>Open the menu (top right) and tap <b>Export as GPX</b>.</li>
+          </ol>
+          <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
+            Either way the file lands in your Downloads folder — open it here to add the route.
           </p>
         </div>
 
