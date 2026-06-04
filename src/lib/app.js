@@ -101,19 +101,18 @@ export function createAppController(deps = {}) {
 
   async function stationSeriesFor(route) {
     const stations = chooseStations(route);
-    const series = [];
-    for (const st of stations) {
+    // Stations are independent fetches — run them in parallel (a route has only
+    // a few). Each still checks/populates the shared TTL cache.
+    return Promise.all(stations.map(async (st) => {
       const key = `${st.lat.toFixed(2)},${st.lon.toFixed(2)}`;
       const hit = forecastCache.get(key);
       if (hit && now() - hit.at < FORECAST_TTL) {
-        series.push({ lat: st.lat, lon: st.lon, series: hit.series });
-        continue;
+        return { lat: st.lat, lon: st.lon, series: hit.series };
       }
-      const s = await fetchForecastFor(st.lat, st.lon);
-      forecastCache.set(key, { series: s, at: now() });
-      series.push({ lat: st.lat, lon: st.lon, series: s });
-    }
-    return series;
+      const series = await fetchForecastFor(st.lat, st.lon);
+      forecastCache.set(key, { series, at: now() });
+      return { lat: st.lat, lon: st.lon, series };
+    }));
   }
 
   const ensembleCache = new Map();
@@ -123,19 +122,17 @@ export function createAppController(deps = {}) {
   async function ensembleStationsFor(route) {
     try {
       const stations = chooseStations(route);
-      const out = [];
-      for (const st of stations) {
+      // Independent per-station fetches — run in parallel; each uses the cache.
+      return await Promise.all(stations.map(async (st) => {
         const key = `${st.lat.toFixed(2)},${st.lon.toFixed(2)}`;
         const hit = ensembleCache.get(key);
         if (hit && now() - hit.at < FORECAST_TTL) {
-          out.push({ lat: st.lat, lon: st.lon, members: hit.members });
-          continue;
+          return { lat: st.lat, lon: st.lon, members: hit.members };
         }
         const members = await fetchEnsembleFor(st.lat, st.lon);
         ensembleCache.set(key, { members, at: now() });
-        out.push({ lat: st.lat, lon: st.lon, members });
-      }
-      return out;
+        return { lat: st.lat, lon: st.lon, members };
+      }));
     } catch {
       return null;
     }
@@ -537,11 +534,23 @@ export function createAppController(deps = {}) {
     const routes = await store.listRoutes();
     const total = routes.length;
     if (onProgress) onProgress(0, total);
-    const out = [];
-    for (let i = 0; i < routes.length; i++) {
-      out.push(await getHomeVerdict(routes[i].id));
-      if (onProgress) onProgress(i + 1, total);
+    const out = new Array(total);
+    let done = 0;
+    // Bounded concurrency: process a few routes at once so several slow fetches
+    // overlap instead of running strictly one-after-another, without firing all
+    // routes simultaneously (which would flood a slow link and lose the benefit
+    // of the per-station cache warming as earlier routes complete).
+    const LIMIT = 4;
+    let next = 0;
+    async function worker() {
+      while (next < total) {
+        const i = next++;
+        out[i] = await getHomeVerdict(routes[i].id);
+        done++;
+        if (onProgress) onProgress(done, total);
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(LIMIT, total) }, worker));
     return out;
   }
 
