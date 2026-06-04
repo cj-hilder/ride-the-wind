@@ -200,44 +200,76 @@ export function predictWithRange(args, arrivalMs, opts = {}) {
  * @param {number} arrivalMs
  * @param {Object} [opts]
  * @param {number} [opts.loPct=10] @param {number} [opts.hiPct=90]
+ * @param {number} [opts.detSec] - deterministic predicted time, included as an
+ *        extra weighted "member" (it is just another forecast, often better at
+ *        short lead). Center and spread then emerge from ONE population.
+ * @param {number} [opts.detFactor] - its signed wind_factor (for headProb)
+ * @param {number} [opts.detWeight=0] - how many ordinary members it counts as
  * @returns {{centerSec, lowSec, highSec, members:number}|null}
  */
 export function predictEnsembleRange(args, arrivalMs, opts = {}) {
-  const { loPct = 10, hiPct = 90 } = opts;
+  const { loPct = 10, hiPct = 90, detSec = null, detFactor = null, detWeight = 0 } = opts;
   const stations = args.ensembleStations;
   if (!stations || stations.length === 0) return null;
   const memberCount = Math.min(...stations.map((s) => s.members.length));
   if (!(memberCount > 1)) return null;
 
-  const times = [];
-  const factors = []; // signed wind_factor per member, for direction
+  const samples = []; // { t, w, f } weighted population
   for (let m = 0; m < memberCount; m++) {
-    // build a stationSeries using member m's wind at each station
     const stationSeries = stations.map((s) => ({
       lat: s.lat, lon: s.lon, series: s.members[m],
     }));
     const p = makePredictor({ ...args, stationSeries })(arrivalMs);
-    if (p.predictedSec > 0) {
-      times.push(p.predictedSec);
-      factors.push(p.windFactor);
-    }
+    if (p.predictedSec > 0) samples.push({ t: p.predictedSec, w: 1, f: p.windFactor });
   }
-  if (times.length < 2) return null;
-  times.sort((a, b) => a - b);
+  if (samples.length < 2) return null;
 
-  // Headwind probability = fraction of members that slow the rider (positive
-  // wind_factor). No dead-band: every member is head or tail by sign. Zero is
-  // treated as tail (not slowing).
-  const headCount = factors.filter((f) => f > 0).length;
+  // Include the deterministic forecast as one more member, weighted by our
+  // belief that it is better at short lead. weight 0 → pure ensemble.
+  if (detSec > 0 && detWeight > 0) {
+    samples.push({ t: detSec, w: detWeight, f: detFactor ?? 0 });
+  }
+
+  samples.sort((a, b) => a.t - b.t);
+  const totalW = samples.reduce((s, x) => s + x.w, 0);
+
+  // Weighted headwind probability (fraction of weighted members that slow).
+  const headW = samples.reduce((s, x) => s + (x.f > 0 ? x.w : 0), 0);
 
   return {
-    centerSec: percentile(times, 50),
-    lowSec: percentile(times, loPct),
-    highSec: percentile(times, hiPct),
-    members: times.length,
-    headCount,
-    headProb: times.length ? headCount / factors.length : 0,
+    centerSec: weightedPercentile(samples, 50, totalW),
+    lowSec: weightedPercentile(samples, loPct, totalW),
+    highSec: weightedPercentile(samples, hiPct, totalW),
+    members: samples.length,
+    headCount: Math.round(headW),
+    headProb: totalW ? headW / totalW : 0,
   };
+}
+
+/**
+ * Weighted percentile over [{t, w}] sorted ascending by t. Uses the standard
+ * cumulative-weight method with linear interpolation between adjacent samples,
+ * so a fractional weight ramps the result smoothly (no integer jumps).
+ */
+export function weightedPercentile(samples, p, totalW) {
+  if (samples.length === 1) return samples[0].t;
+  const target = (p / 100) * totalW;
+  let cum = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const wMid = samples[i].w; // place each sample's mass at its midpoint
+    const prevCum = cum;
+    cum += wMid;
+    // cumulative midpoint position of this sample
+    const pos = prevCum + wMid / 2;
+    if (pos >= target) {
+      if (i === 0) return samples[0].t;
+      const prevPos = (cum - wMid) - samples[i - 1].w / 2;
+      const span = pos - prevPos;
+      const frac = span > 0 ? (target - prevPos) / span : 0;
+      return samples[i - 1].t + (samples[i].t - samples[i - 1].t) * Math.max(0, Math.min(1, frac));
+    }
+  }
+  return samples[samples.length - 1].t;
 }
 
 /** Linear-interpolated percentile of a sorted array. */

@@ -258,16 +258,44 @@ export function createAppController(deps = {}) {
         // ensemble. Default 95 (≈ rarely late) rather than 90 (≈1-in-10 late).
         const hiPct = clampPct(await store.getSetting("conservatismPct", 95));
         const loPct = 100 - hiPct;
+
+        // The deterministic forecast is just another forecast — often better at
+        // short lead (high resolution, near current conditions) but not a
+        // different kind of thing. So we fold it INTO the ensemble as one extra
+        // weighted member and let a single percentile computation produce the
+        // center and the spread together (consistent by construction). Its
+        // weight (how many ordinary members it counts as) ramps from M/2 at
+        // lead 0 — making it ≈⅓ of the weighted population — down to 0 at 12 h,
+        // AND is forced to 0 for any arrival after tonight (tomorrow on is pure
+        // ensemble). Whichever zeros it first wins.
+        const memberCount = Math.min(...ensembleStations.map((s) => s.members.length));
+        const leadH = (next.arrivalMs - nowMs) / 3600000;
+        const endOfToday = (() => { const d = new Date(nowMs); d.setHours(24, 0, 0, 0); return d.getTime(); })();
+        const ramp = Math.max(0, Math.min(1, (12 - leadH) / 12)); // 1 at lead 0 → 0 at 12h
+        const isToday = next.arrivalMs < endOfToday;
+        const detWeight = isToday ? ramp * (memberCount / 2) : 0;
+
         range = predictEnsembleRange(
           { ...rangeArgs, ensembleStations },
           next.arrivalMs,
-          { loPct, hiPct }
+          {
+            loPct, hiPct,
+            detSec: verdict ? verdict.predictedSec : null,
+            detFactor: verdict ? verdict.windFactor : null,
+            detWeight,
+          }
         );
+        // Keep the displayed central estimate ("likely", arrival, delta, debug)
+        // equal to the unified weighted median, so everything agrees.
+        if (range && verdict && Number.isFinite(range.centerSec)) {
+          verdict.predictedSec = range.centerSec;
+        }
       }
       if (!range) rangeUnavailable = true;
     } else if (next) {
       rangeUnavailable = true; // forecast horizon doesn't reach the ride
     }
+
 
     const conf = learning.confidence(
       model ? model.regressionState : learning.createModelState()
