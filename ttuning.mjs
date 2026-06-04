@@ -1,0 +1,18 @@
+import { createAppController } from './src/lib/app.js';
+import { MemoryBackend } from './src/lib/storage.js';
+import { parseForecast } from './src/lib/windModel.js';
+import { DOMParser } from '/home/claude/domshim.mjs';
+let pts=''; for(let i=0;i<=50;i++) pts+=`<trkpt lat="0" lon="${(i*0.0009).toFixed(5)}"><ele>10</ele></trkpt>`;
+const gpx=`<?xml version="1.0"?><gpx><trk><trkseg>${pts}</trkseg></trk></gpx>`;
+const det=()=>Promise.resolve(parseForecast({hourly:{time:[Math.floor(Date.now()/1000)],wind_speed_10m:[10],wind_direction_10m:[90],temperature_2m:[10],precipitation:[0],precipitation_probability:[0]}}));
+const app=createAppController({backend:new MemoryBackend(),fetchForecastFor:det,fetchEnsembleFor:()=>{throw 0;},now:()=>Date.now(),domParser:new DOMParser()});
+let pass=0,fail=0; const ok=(n,c,d='')=>{c?(pass++,console.log('  PASS '+n)):(fail++,console.log('  FAIL '+n+'  '+d));};
+const r=await app.createRoute(gpx,{name:'R',seedStillAirSec:1800,seedHeadwind20Sec:2700,seedTailwind20Sec:900,targetArrival:'08:30',timeMode:'arrive',activeDays:['MO']});
+const t=await app.routeTuning(r.id);
+ok('returns distanceM', t.distanceM>0);
+ok('manual speed derived', t.manual.speedKmh>0, t.manual.speedKmh);
+ok('manual kHead ~0.5', Math.abs(t.manual.kHead-0.5)<0.01, t.manual.kHead);
+ok('manual kTail ~0.5', Math.abs(t.manual.kTail-0.5)<0.01, t.manual.kTail);
+ok('no learned (0 rides)', t.learned===null);
+ok('stats present', t.stats && t.stats.totalDistance>0 && t.stats.pointCount>1, JSON.stringify(t.stats));
+console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail?1:0);
