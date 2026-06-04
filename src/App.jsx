@@ -807,10 +807,11 @@ function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, onComm
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>
         <span>Sheltered</span><span>Urban</span><span>Open</span><span>Exposed</span>
       </div>
-      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 6 }}>
+      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 6, lineHeight: 1.4 }}>
+        <span style={{ color: "rgba(255,255,255,0.45)" }}>example ride with 20 km/h wind</span><br />
         {showBoth
-          ? <>head <b style={{ color: "rgba(255,255,255,0.85)" }}>{headT} min</b> / tail <b style={{ color: "rgba(255,255,255,0.85)" }}>{tailT} min</b></>
-          : <>{sign === -1 ? "tail" : "head"} <b style={{ color: "rgba(255,255,255,0.85)" }}>{oneT} min</b></>}
+          ? <>headwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{headT} min</b> / tailwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{tailT} min</b></>
+          : <>{sign === -1 ? "tailwind" : "headwind"} <b style={{ color: "rgba(255,255,255,0.85)" }}>{oneT} min</b></>}
       </div>
     </div>
   );
@@ -926,6 +927,13 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
 
       {/* Tuning: speed + terrain, manual or learned */}
       <div style={{ marginTop: 18, padding: "14px 14px", borderRadius: 12, background: "rgba(0,0,0,0.18)" }}>
+        {tuning.stats && (
+          <div style={{ display: "flex", gap: 18, marginBottom: 14, paddingBottom: 12, borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+            <Stat label="Distance" value={`${(tuning.stats.totalDistance / 1000).toFixed(2)} km`} />
+            <Stat label="Elevation" value={tuning.stats.hasElevation ? `${Math.round(tuning.stats.climb)} m` : "—"} />
+            <Stat label="Points" value={tuning.stats.pointCount} />
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.85)" }}>Ride times</span>
           <span style={{ fontSize: 11.5, color: isLearned ? "#6fd49a" : "rgba(255,255,255,0.45)" }}>
