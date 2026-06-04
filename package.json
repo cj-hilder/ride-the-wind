@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "for f in test*.mjs; do node \"$f\" || exit 1; done"
   },
   "dependencies": {
     "react": "^18.3.1",
