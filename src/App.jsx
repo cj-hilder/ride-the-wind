@@ -721,19 +721,139 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
   );
 }
 
+/* ============================================================================
+ * TerrainControls — physically-meaningful manual tuning shared by Setup and
+ * RouteEditor. Speed spinner + "Terrain effect" slider(s) + split switch.
+ * Maps to the existing seeds (no model change): baselineSec = D / speed;
+ * head = baseline·(1+kHead), tail = baseline·(1−kTail).
+ * ========================================================================== */
+const TERRAIN_MIN = 0.15, TERRAIN_MAX = 0.8;
+const kClampUI = (k) => Math.max(TERRAIN_MIN, Math.min(TERRAIN_MAX, k));
+const timeAt = (baselineSec, k, sign) => Math.round((baselineSec * (1 + sign * k)) / 60);
+
+function TerrainControls({ distanceM, value, onChange, learned, onLearnedEdit }) {
+  const isLearned = !!learned;
+  const speedKmh = value.speedKmh;
+  const baselineSec = distanceM / (speedKmh / 3.6);
+  const baselineMin = Math.round(baselineSec / 60);
+
+  const commit = (next) => { if (isLearned) onLearnedEdit(next); else onChange(next); };
+  const setSpeed = (kmh) => commit({ ...value, speedKmh: Math.max(1, Math.min(50, Math.round(kmh))) });
+  const setK = (which, k) => {
+    const kk = kClampUI(k);
+    if (value.split) commit({ ...value, [which]: kk });
+    else commit({ ...value, kHead: kk, kTail: kk });
+  };
+
+  return (
+    <div>
+      <label style={lbl}>Still-air speed</label>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+        <button onClick={() => setSpeed(speedKmh - 1)} style={spinBtn} aria-label="slower">−</button>
+        <div style={{ flex: 1, textAlign: "center" }}>
+          <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{speedKmh}</span>
+          <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}> km/h</span>
+        </div>
+        <button onClick={() => setSpeed(speedKmh + 1)} style={spinBtn} aria-label="faster">+</button>
+      </div>
+      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginBottom: 16 }}>
+        Still-air ride time: <b style={{ color: "rgba(255,255,255,0.85)" }}>{baselineMin} min</b>
+      </div>
+
+      {!value.split ? (
+        <TerrainSlider title="Terrain effect" k={value.kHead} baselineSec={baselineSec}
+          learnedK={isLearned ? learned.kHead : null} showBoth onCommit={(k) => setK("kHead", k)} />
+      ) : (
+        <>
+          <TerrainSlider title="Terrain effect on headwind" k={value.kHead} baselineSec={baselineSec}
+            learnedK={isLearned ? learned.kHead : null} sign={+1} onCommit={(k) => setK("kHead", k)} />
+          <TerrainSlider title="Terrain effect on tailwind" k={value.kTail} baselineSec={baselineSec}
+            learnedK={isLearned ? learned.kTail : null} sign={-1} onCommit={(k) => setK("kTail", k)} />
+        </>
+      )}
+
+      <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14, cursor: "pointer" }}>
+        <span style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)" }}>Split headwind &amp; tailwind</span>
+        <input type="checkbox" checked={!!value.split}
+          onChange={(e) => { if (e.target.checked) commit({ ...value, split: true }); else commit({ ...value, split: false, _collapse: true }); }}
+          style={{ width: 40, height: 22, accentColor: "#e0a45e", cursor: "pointer" }} />
+      </label>
+    </div>
+  );
+}
+
+function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, onCommit }) {
+  const [local, setLocal] = useState(kClampUI(k));
+  useEffect(() => { setLocal(kClampUI(k)); }, [k]);
+  const offLow = learnedK != null && learnedK < TERRAIN_MIN;
+  const offHigh = learnedK != null && learnedK > TERRAIN_MAX;
+  const effK = learnedK != null ? learnedK : local;
+  const headT = timeAt(baselineSec, effK, +1);
+  const tailT = timeAt(baselineSec, effK, -1);
+  const oneT = sign === -1 ? tailT : headT;
+
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+        {offLow && <span style={{ color: "#e0a45e", fontWeight: 700 }} title="Learned value is below the scale">◄</span>}
+        <span style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)", flex: 1 }}>{title}</span>
+        {offHigh && <span style={{ color: "#e0a45e", fontWeight: 700 }} title="Learned value is above the scale">►</span>}
+      </div>
+      <input type="range" min={TERRAIN_MIN} max={TERRAIN_MAX} step={0.01} value={local}
+        onChange={(e) => setLocal(Number(e.target.value))}
+        onMouseUp={(e) => onCommit(Number(e.target.value))}
+        onTouchEnd={(e) => onCommit(Number(e.target.value))}
+        style={{ width: "100%", accentColor: "#e0a45e" }} />
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>
+        <span>Sheltered</span><span>Urban</span><span>Open</span><span>Exposed</span>
+      </div>
+      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 6 }}>
+        {showBoth
+          ? <>head <b style={{ color: "rgba(255,255,255,0.85)" }}>{headT} min</b> / tail <b style={{ color: "rgba(255,255,255,0.85)" }}>{tailT} min</b></>
+          : <>{sign === -1 ? "tail" : "head"} <b style={{ color: "rgba(255,255,255,0.85)" }}>{oneT} min</b></>}
+      </div>
+    </div>
+  );
+}
+
+const spinBtn = { width: 44, height: 44, borderRadius: 12, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.08)", color: "#fff", fontSize: 22, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 };
+
 function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
   const [name, setName] = useState(route.name);
   const [arrival, setArrival] = useState(route.targetArrival);
   const [days, setDays] = useState(route.activeDays);
   const [threshold, setThreshold] = useState(route.alertThresholdMin ?? "");
   const [confirmDel, setConfirmDel] = useState(false);
-  // base values (minutes) for an optional data reset
-  const minsOf = (sec) => (sec ? String(Math.round(sec / 60)) : "");
-  const [still, setStill] = useState(minsOf(route.seedStillAirSec));
-  const [head, setHead] = useState(minsOf(route.seedHeadwind20Sec));
-  const [tail, setTail] = useState(minsOf(route.seedTailwind20Sec));
-  const [confirmReset, setConfirmReset] = useState(false);
   const toggleDay = (d) => setDays(days.includes(d) ? days.filter((x) => x !== d) : [...days, d]);
+
+  // Tuning: load manual + learned state from the controller.
+  const [tuning, setTuning] = useState(null); // { distanceM, manual, learned }
+  const [val, setVal] = useState(null);       // { speedKmh, kHead, kTail, split }
+  const [pending, setPending] = useState(null); // a Learned-state edit awaiting confirm
+  const [collapseAsk, setCollapseAsk] = useState(null); // {next} split-off, which to keep
+  useEffect(() => {
+    let alive = true;
+    controller.routeTuning(route.id).then((t) => {
+      if (!alive || !t) return;
+      setTuning(t);
+      const src = t.learned || t.manual;
+      const split = Math.abs((t.learned ? t.learned.kHead : t.manual.kHead) - (t.learned ? t.learned.kTail : t.manual.kTail)) > 0.02;
+      setVal({ speedKmh: src.speedKmh, kHead: src.kHead, kTail: src.kTail, split });
+    });
+    return () => { alive = false; };
+  }, [controller, route.id]);
+
+  const isLearned = !!(tuning && tuning.learned);
+
+  // Convert widget values → seed fields.
+  const valToSeeds = (v) => {
+    const baselineSec = tuning.distanceM / (v.speedKmh / 3.6);
+    return {
+      seedStillAirSec: Math.round(baselineSec),
+      seedHeadwind20Sec: Math.round(baselineSec * (1 + v.kHead)),
+      seedTailwind20Sec: Math.round(baselineSec * (1 - v.kTail)),
+    };
+  };
 
   const save = async () => {
     await controller.updateRoute(route.id, {
@@ -745,19 +865,41 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
     onSaved();
   };
   const del = async () => { await controller.deleteRoute(route.id); onDeleted(); };
-  const doReset = async () => {
-    await controller.resetRoute(route.id, {
-      seedStillAirSec: still ? Math.round(parseFloat(still) * 60) : route.seedStillAirSec,
-      seedHeadwind20Sec: head ? Math.round(parseFloat(head) * 60) : null,
-      seedTailwind20Sec: tail ? Math.round(parseFloat(tail) * 60) : null,
-    });
-    // also save any name/schedule edits made alongside
+
+  // Manual edit: apply locally (and persist as seeds on Save changes).
+  const onManualChange = (next) => {
+    if (next._collapse) { delete next._collapse; setCollapseAsk({ next }); return; }
+    setVal(next);
+  };
+  // Learned edit: hold it pending and ask to discard learning.
+  const onLearnedEdit = (next) => {
+    if (next._collapse) { delete next._collapse; setCollapseAsk({ next, learned: true }); return; }
+    setPending(next);
+  };
+  // Apply a manual change immediately when in Manual state (persist seeds now so
+  // the route's prediction reflects it without waiting for a ride).
+  const applyManualSeeds = async (v) => {
+    await controller.resetRoute(route.id, valToSeeds(v));
+  };
+  const confirmDiscard = async () => {
+    const v = pending;
+    setVal(v); setPending(null);
+    await controller.resetRoute(route.id, valToSeeds(v));
     await controller.updateRoute(route.id, {
       name: name.trim() || route.name, targetArrival: arrival, activeDays: days,
       alertThresholdMin: threshold === "" ? null : Math.round(parseFloat(threshold)),
     });
     onSaved();
   };
+  const resolveCollapse = (keep) => {
+    const base = collapseAsk.next;
+    const k = keep === "head" ? val.kHead : val.kTail;
+    const next = { ...base, split: false, kHead: k, kTail: k };
+    setCollapseAsk(null);
+    if (collapseAsk.learned) setPending(next); else setVal(next);
+  };
+
+  if (!val) return <div style={{ padding: 20, color: "rgba(255,255,255,0.5)" }}>Loading…</div>;
 
   return (
     <div style={{ padding: "4px 16px 16px", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
@@ -782,34 +924,54 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
       <label style={{ ...lbl, marginTop: 12 }}>Alert threshold (minutes) <span style={{ color: "rgba(255,255,255,0.35)" }}>· blank = default</span></label>
       <input value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="decimal" placeholder="4" style={INP} />
 
+      {/* Tuning: speed + terrain, manual or learned */}
+      <div style={{ marginTop: 18, padding: "14px 14px", borderRadius: 12, background: "rgba(0,0,0,0.18)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.85)" }}>Ride times</span>
+          <span style={{ fontSize: 11.5, color: isLearned ? "#6fd49a" : "rgba(255,255,255,0.45)" }}>
+            {isLearned ? "learned from your rides" : "manual"}
+          </span>
+        </div>
+        <TerrainControls distanceM={tuning.distanceM} value={val}
+          onChange={(next) => { onManualChange(next); }}
+          learned={isLearned ? tuning.learned : null}
+          onLearnedEdit={onLearnedEdit} />
+        {!isLearned && (
+          <button onClick={() => applyManualSeeds(val)} style={{ ...backupBtn, width: "100%", marginTop: 10 }}>
+            Apply these times
+          </button>
+        )}
+      </div>
+
       <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
         <button onClick={onCancel} style={backupBtn}>Cancel</button>
         <button onClick={save} style={{ flex: 1, padding: 13, borderRadius: 12, border: "none", cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a" }}>Save changes</button>
       </div>
 
-      {/* Reset base values + discard ride data */}
-      <div style={{ marginTop: 20, padding: "12px 14px", borderRadius: 12, background: "rgba(0,0,0,0.18)" }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.8)", marginBottom: 4 }}>Reset learning</div>
-        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginBottom: 10, lineHeight: 1.4 }}>
-          Re-enter base ride times. This throws away all logged rides and starts learning fresh from these values.
+      {/* Confirm: discard learning to use manual edit */}
+      {pending && (
+        <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 12, background: "rgba(224,164,94,0.12)", border: "1px solid rgba(224,164,94,0.4)" }}>
+          <div style={{ fontSize: 13, color: "#f0d8a8", marginBottom: 10, lineHeight: 1.45 }}>
+            This route is tuned from your logged rides. Switch to these manual settings and discard the learned data?
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setPending(null)} style={backupBtn}>Keep learning</button>
+            <button onClick={confirmDiscard} style={{ ...backupBtn, background: "rgba(224,164,94,0.9)", color: "#1a1f3a", border: "none" }}>Use manual</button>
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input value={still} onChange={(e) => setStill(e.target.value)} inputMode="decimal" placeholder="still-air min" style={{ ...INP, fontSize: 13 }} />
-          <input value={head} onChange={(e) => setHead(e.target.value)} inputMode="decimal" placeholder="headwind" style={{ ...INP, fontSize: 13 }} />
-          <input value={tail} onChange={(e) => setTail(e.target.value)} inputMode="decimal" placeholder="tailwind" style={{ ...INP, fontSize: 13 }} />
+      )}
+
+      {/* Split-off: which value to keep */}
+      {collapseAsk && (
+        <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 12, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.18)" }}>
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", marginBottom: 10 }}>Keep which terrain setting for both directions?</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => resolveCollapse("head")} style={backupBtn}>Headwind</button>
+            <button onClick={() => resolveCollapse("tail")} style={backupBtn}>Tailwind</button>
+            <button onClick={() => setCollapseAsk(null)} style={{ ...backupBtn, flex: 0.6 }}>Cancel</button>
+          </div>
         </div>
-        <div style={{ marginTop: 10 }}>
-          {!confirmReset ? (
-            <button onClick={() => setConfirmReset(true)} style={{ ...backupBtn, width: "100%", color: "#f0c08c", borderColor: "rgba(224,164,94,0.4)" }}>Reset data to these values</button>
-          ) : (
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ flex: 1, fontSize: 12.5, color: "#f0d8a8" }}>Discard all logged rides?</span>
-              <button onClick={() => setConfirmReset(false)} style={backupBtn}>Cancel</button>
-              <button onClick={doReset} style={{ ...backupBtn, background: "rgba(224,164,94,0.9)", color: "#1a1f3a", border: "none" }}>Reset</button>
-            </div>
-          )}
-        </div>
-      </div>
+      )}
 
       {/* Delete route entirely */}
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
@@ -837,7 +999,7 @@ function Setup({ controller, onDone, onCancel }) {
   const [gpxText, setGpxText] = useState(null);
   const [preview, setPreview] = useState(null);
   const [err, setErr] = useState(null);
-  const [form, setForm] = useState({ name: "", still: "", head: "", tail: "", arrival: "08:45", timeMode: "arrive", days: ["MO", "TU", "WE", "TH", "FR"] });
+  const [form, setForm] = useState({ name: "", speedKmh: 16, kHead: 0.35, kTail: 0.35, split: false, arrival: "08:45", timeMode: "arrive", days: ["MO", "TU", "WE", "TH", "FR"] });
   const [saving, setSaving] = useState(false);
   const fileRef = useRef();
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -852,14 +1014,15 @@ function Setup({ controller, onDone, onCancel }) {
     } catch (e) { setErr(e.message); }
   };
 
-  const valid = preview && form.name.trim() && parseFloat(form.still) > 0 && form.days.length;
+  const valid = preview && form.name.trim() && form.speedKmh > 0 && form.days.length;
   const save = async () => {
     setSaving(true);
+    const baselineSec = preview.totalDistance / (form.speedKmh / 3.6);
     await controller.createRoute(gpxText, {
       name: form.name.trim(),
-      seedStillAirSec: Math.round(parseFloat(form.still) * 60),
-      seedHeadwind20Sec: form.head ? Math.round(parseFloat(form.head) * 60) : null,
-      seedTailwind20Sec: form.tail ? Math.round(parseFloat(form.tail) * 60) : null,
+      seedStillAirSec: Math.round(baselineSec),
+      seedHeadwind20Sec: Math.round(baselineSec * (1 + form.kHead)),
+      seedTailwind20Sec: Math.round(baselineSec * (1 - form.kTail)),
       targetArrival: form.arrival, timeMode: form.timeMode, activeDays: form.days,
     });
     onDone();
@@ -903,12 +1066,18 @@ function Setup({ controller, onDone, onCancel }) {
           <Block n="2" title="Name">
             <input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Home → Office" style={INP} />
           </Block>
-          <Block n="3" title="Your usual times (minutes)">
-            <input value={form.still} onChange={(e) => set("still", e.target.value)} inputMode="decimal" placeholder="Still-air ride time *" style={INP} />
-            <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-              <input value={form.head} onChange={(e) => set("head", e.target.value)} inputMode="decimal" placeholder="20km/h headwind" style={INP} />
-              <input value={form.tail} onChange={(e) => set("tail", e.target.value)} inputMode="decimal" placeholder="20km/h tailwind" style={INP} />
-            </div>
+          <Block n="3" title="Ride times">
+            <TerrainControls distanceM={preview.totalDistance}
+              value={{ speedKmh: form.speedKmh, kHead: form.kHead, kTail: form.kTail, split: form.split }}
+              onChange={(next) => {
+                if (next._collapse) {
+                  // collapsing the split during setup: keep the headwind value
+                  // (setup is always manual; no confirm needed)
+                  setForm((f) => ({ ...f, split: false, kHead: f.kHead, kTail: f.kHead }));
+                  return;
+                }
+                setForm((f) => ({ ...f, speedKmh: next.speedKmh, kHead: next.kHead, kTail: next.kTail, split: next.split }));
+              }} />
           </Block>
           <Block n="4" title="When you ride">
             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
