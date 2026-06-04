@@ -60,6 +60,12 @@ const skyFor = (hour) =>
 const ACCENT = { headwind: "#5b8fc7", tailwind: "#e0a45e", normal: "#9aa7b0" };
 const fmtMin = (sec) => `${Math.round(sec / 60)} min`;
 
+// "Margin of error" slider speaks 0–100% (how much of the forecast spread to
+// apply); the model wants a percentile in 50–99. 0% → 50 (median, no margin),
+// 100% → 99 (most cautious). Linear map, with a clean round-trip.
+const sliderToPct = (s) => Math.round(50 + (Math.max(0, Math.min(100, s)) / 100) * 49);
+const pctToSlider = (p) => Math.round(((Math.max(50, Math.min(99, p)) - 50) / 49) * 100);
+
 // Label the forecast day: "today"/"tomorrow" when close, else the weekday name.
 const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -584,21 +590,24 @@ const DAY_CODES = [["MO", "M"], ["TU", "T"], ["WE", "W"], ["TH", "T"], ["FR", "F
 
 function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
   const [editing, setEditing] = useState(null); // route id being edited
-  const [conservatism, setConservatism] = useState(95);
+  const [conservatism, setConservatism] = useState(pctToSlider(95));
   const fileRef = useRef();
 
   useEffect(() => {
     let alive = true;
     controller.store.getSetting("conservatismPct", 95).then((v) => {
-      if (alive && v != null) setConservatism(Number(v));
+      if (alive && v != null) setConservatism(pctToSlider(Number(v)));
     });
     return () => { alive = false; };
   }, [controller]);
 
-  const saveConservatism = async (v) => {
-    const n = Math.max(50, Math.min(99, Math.round(Number(v) || 95)));
-    setConservatism(n);
-    await controller.store.setSetting("conservatismPct", n);
+  // The slider speaks 0–100% ("how much of the forecast margin to apply"); the
+  // model wants a percentile in 50–99 (50 = median, no margin; 99 = most
+  // cautious). Map linearly between the two.
+  const saveConservatism = async (sliderVal) => {
+    const s = Math.max(0, Math.min(100, Math.round(Number(sliderVal) || 0)));
+    setConservatism(s);
+    await controller.store.setSetting("conservatismPct", sliderToPct(s));
     await onChanged();
   };
 
@@ -630,21 +639,21 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
         }}>+ New</button>
       </div>
       <div style={{ padding: "0 22px 16px", fontSize: 13.5, color: "rgba(255,255,255,0.55)" }}>
-        Each direction of a commute is its own route.
+        Each destination needs two routes, one going and one returning.
       </div>
 
       <div style={{ margin: "0 22px 18px", padding: "12px 14px", borderRadius: 14, background: "rgba(255,255,255,0.06)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 14 }}>Caution level</span>
-          <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{conservatism}</span>
+          <span style={{ fontSize: 14 }}>Margin of error</span>
+          <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{conservatism}%</span>
         </div>
-        <input type="range" min={50} max={99} value={conservatism}
+        <input type="range" min={0} max={100} value={conservatism}
           onChange={(e) => setConservatism(Number(e.target.value))}
           onMouseUp={(e) => saveConservatism(e.target.value)}
           onTouchEnd={(e) => saveConservatism(e.target.value)}
           style={{ width: "100%", marginTop: 8, accentColor: "#e0a45e" }} />
         <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 4, lineHeight: 1.4 }}>
-          Higher = leave earlier, rarely late. This is how cautious the departure window is against forecast spread — a safety margin, not a guaranteed on-time percentage.
+          Ride the Wind uses multiple forecast models to calculate a margin of error for the forecast. This setting controls how much of that margin of error is applied to your ride times. Higher will have you leave earlier to be more likely on time.
         </div>
       </div>
 
@@ -865,7 +874,7 @@ function Setup({ controller, onDone, onCancel }) {
         )}
         <span style={{ fontFamily: "'Fraunces',serif", fontSize: 26, fontWeight: 600 }}>New route</span>
       </div>
-      <div style={{ padding: "0 22px 16px", fontSize: 13.5, color: "rgba(255,255,255,0.55)" }}>Each direction is its own route.</div>
+      <div style={{ padding: "0 22px 16px", fontSize: 13.5, color: "rgba(255,255,255,0.55)" }}>Each destination needs two routes, one going and one returning.</div>
 
       <Block n="1" title="Load GPX">
         {!preview ? (
