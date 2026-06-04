@@ -579,6 +579,41 @@ export function createAppController(deps = {}) {
   const recomputeModel = (routeId) => store.recomputeModel(routeId);
 
   /**
+   * Tuning state for the route editor's manual controls. Returns the route's
+   * distance, the current manual (seed-derived) speed/k, and — when the model
+   * has learned at least one direction — the learned speed/k and which
+   * directions are identifiable. The editor uses this to decide Manual vs
+   * Learned display and to drive the off-scale indicators.
+   */
+  async function routeTuning(routeId) {
+    const route = await store.getRoute(routeId);
+    if (!route) return null;
+    const model = await store.getModel(routeId);
+    const seed = await seedFor(route, model);
+    const distanceM = route.totalDistance;
+
+    // Manual (seed) view: speed from baseline, k from seeds.
+    const manualSpeedKmh = Math.round((distanceM / route.baselineTimeSec) * 3.6);
+    const manual = { speedKmh: manualSpeedKmh, kHead: seed.kHead, kTail: seed.kTail };
+
+    // Learned view: fit the accumulated rides. Identifiable per direction.
+    let learned = null;
+    if (model && model.regressionState) {
+      const fit = learning.fitModel(model.regressionState, {
+        seedKHead: seed.kHead, seedKTail: seed.kTail, seedBaselineSec: route.baselineTimeSec,
+      });
+      if (fit && (fit.identifiableHead || fit.identifiableTail)) {
+        learned = {
+          speedKmh: Math.round((distanceM / fit.baselineSec) * 3.6),
+          kHead: fit.kHead, kTail: fit.kTail,
+          idHead: !!fit.identifiableHead, idTail: !!fit.identifiableTail,
+        };
+      }
+    }
+    return { distanceM, manual, learned };
+  }
+
+  /**
    * Begin a real GPS ride capture for a route. Uses watchPosition and the same
    * finish detector logic as the tested capture screen. Returns a handle:
    *   { stop() }  — call to cancel
@@ -690,7 +725,7 @@ export function createAppController(deps = {}) {
     store,
     createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute,
     getHomeVerdict, listRoutesWithVerdict,
-    recordRide, listRides, recomputeModel, startRide,
+    recordRide, listRides, recomputeModel, startRide, routeTuning,
     start,
     exportAll, importAll, requestPersistence,
     stationSeriesFor,
