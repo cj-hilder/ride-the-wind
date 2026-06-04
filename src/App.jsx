@@ -575,6 +575,7 @@ function DebugReadout({ debug }) {
       <div>wind: {debug.windSpeedKmh} km/h from {debug.windFromDeg}°</div>
       <div>route avg bearing: {debug.avgBearingDeg}°</div>
       <div>mean headwind: {debug.meanHeadwindKmh} km/h <span style={{ color: "rgba(255,255,255,0.5)" }}>({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</span></div>
+      {debug.effortHeadwindKmh != null && <div>effort headwind: {debug.effortHeadwindKmh} km/h <span style={{ color: "rgba(255,255,255,0.5)" }}>(drives wind factor)</span></div>}
       <div>mean crosswind: {debug.meanCrosswindKmh} km/h</div>
       <div>wind_factor: {debug.windFactor} <span style={{ color: "rgba(255,255,255,0.5)" }}>({debug.windFactor >= 0 ? "slows" : "speeds"})</span></div>
       <div>baseline {Math.round(debug.baselineSec / 60)}m → predicted {Math.round(debug.predictedSec / 60)}m</div>
