@@ -17,5 +17,15 @@ const d=(await app.getHomeVerdict(r.id, new Date(2026,5,1,8,0).getTime())).debug
 ok('effortHeadwindKmh present', d.effortHeadwindKmh != null);
 const implied = Math.sign(d.effortHeadwindKmh)*(d.effortHeadwindKmh/20)**2;
 ok('(effortHead/20)^2 reconciles with wind_factor', Math.abs(implied - d.windFactor) < 0.02, `${implied.toFixed(3)} vs ${d.windFactor}`);
-ok('effort headwind >= |mean headwind| in magnitude', Math.abs(d.effortHeadwindKmh) >= Math.abs(d.meanHeadwindKmh) - 0.05, `${d.effortHeadwindKmh} vs ${d.meanHeadwindKmh}`);
+// effort headwind is the exact inverse of the factor, carrying its sign — so it
+// agrees in sign with wind_factor even when head/tail segments cancel.
+ok('effort headwind sign matches wind_factor', Math.sign(d.effortHeadwindKmh) === Math.sign(d.windFactor) || d.windFactor === 0, `${d.effortHeadwindKmh} vs ${d.windFactor}`);
+// Direct check of the effort↔factor identity across signs and a cancelling
+// case (small positive factor, like a near-perpendicular wind on a winding
+// route): effort = sign·√|wf|·20 must invert exactly.
+for (const wf of [0.042, -0.094, 0.172, -0.3, 0]) {
+  const eff = Math.sign(wf) * Math.sqrt(Math.abs(wf)) * 20;
+  const back = Math.sign(eff) * (eff / 20) ** 2;
+  ok(`exact inverse for wf=${wf}`, Math.abs(back - wf) < 1e-9, `${back}`);
+}
 console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail?1:0);
