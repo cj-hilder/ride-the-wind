@@ -475,17 +475,16 @@ export function createAppController(deps = {}) {
       const departMs = conservative ? conservative.departureMs : next.arrivalMs - verdict.predictedSec * 1000;
       expect = whatToExpect({ segments: route.segments, times, windFn, departMs });
 
-      // Diagnostics. Sample the wind PER SEGMENT at the time the rider reaches
-      // it — the same wind the model's wind_factor uses — so the readout is
-      // self-consistent (the old version used one midpoint sample, which made a
-      // winding route's factor look unjustified next to a single "mean wind").
+      // Diagnostics. The linear mean headwind and crosswind are sampled per
+      // segment at the time the rider reaches it; they describe the wind but do
+      // NOT by themselves determine wind_factor (which is a signed, quadratic,
+      // time-weighted quantity that head/tail segments can cancel within).
       const DEG = Math.PI / 180;
       let sx = 0, sy = 0, head = 0, cross = 0, tt = 0;
-      let rmsHeadNum = 0;          // time-weighted Σ t·h² (effort scale)
-      let segMs = departMs;        // arrival time at the start of each segment
+      let segMs = departMs;
       let firstW = null;
       route.segments.forEach((s, i) => {
-        const mid = segMs + (times[i] * 1000) / 2; // mid-segment instant
+        const mid = segMs + (times[i] * 1000) / 2;
         const ws = windFn(s.lat, s.lon, mid);
         if (i === Math.floor(route.segments.length / 2)) firstW = ws;
         sx += Math.cos(s.bearing * DEG); sy += Math.sin(s.bearing * DEG);
@@ -493,24 +492,26 @@ export function createAppController(deps = {}) {
         const c = ws.speed * Math.sin((ws.fromDeg - s.bearing) * DEG);
         head += h * times[i];
         cross += Math.abs(c) * times[i];
-        rmsHeadNum += h * h * times[i];
         tt += times[i];
         segMs += times[i] * 1000;
       });
       const w = firstW || windFn(route.segments[0].lat, route.segments[0].lon, departMs);
       const avgBearing = (Math.atan2(sy / route.segments.length, sx / route.segments.length) / DEG + 360) % 360;
-      // Effort-weighted headwind: the RMS headwind, signed by the net head/tail.
-      // wind_factor ≈ sign · (rmsHead / 20)², so this is the wind the factor
-      // actually reflects — typically larger than the linear mean on a route
-      // whose bearing wanders relative to the wind.
       const meanHead = head / tt;
-      const rmsHead = Math.sqrt(rmsHeadNum / tt) * Math.sign(meanHead || 1);
+      // Effort headwind: the single equivalent headwind that, run through the
+      // signed effort law, reproduces wind_factor exactly —
+      // wind_factor = sign · (effortHead/20)², so effortHead = sign·√|wf|·20.
+      // Defined as the inverse of the factor (not an RMS of segment headwinds),
+      // so it reconciles in every case, including a near-perpendicular wind on a
+      // winding route where head and tail segments largely cancel.
+      const wf = verdict.windFactor ?? 0;
+      const effortHead = Math.sign(wf) * Math.sqrt(Math.abs(wf)) * 20;
       debug = {
         windFromDeg: Math.round(w.fromDeg),
         windSpeedKmh: Math.round(w.speed),
         avgBearingDeg: Math.round(avgBearing),
         meanHeadwindKmh: +meanHead.toFixed(1),      // linear time-weighted mean
-        effortHeadwindKmh: +rmsHead.toFixed(1),     // effort (RMS) headwind — drives wind_factor
+        effortHeadwindKmh: +effortHead.toFixed(1),  // equivalent headwind behind wind_factor
         meanCrosswindKmh: +(cross / tt).toFixed(1),
         windFactor: +(verdict.windFactor ?? 0).toFixed(3),
         baselineSec: Math.round(route.baselineTimeSec),
