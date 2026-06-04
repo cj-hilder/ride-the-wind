@@ -805,7 +805,10 @@ function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, onComm
         onTouchEnd={(e) => onCommit(Number(e.target.value))}
         style={{ width: "100%", accentColor: "#e0a45e" }} />
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>
-        <span>Sheltered</span><span>Urban</span><span>Open</span><span>Exposed</span>
+        <span style={{ textAlign: "center" }}>Sheltered<br />steep</span>
+        <span>Urban</span>
+        <span>Open</span>
+        <span style={{ textAlign: "center" }}>Exposed<br />flat</span>
       </div>
       <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 6, lineHeight: 1.4 }}>
         <span style={{ color: "rgba(255,255,255,0.45)" }}>example ride with 20 km/h wind</span><br />
@@ -823,7 +826,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
   const [name, setName] = useState(route.name);
   const [arrival, setArrival] = useState(route.targetArrival);
   const [days, setDays] = useState(route.activeDays);
-  const [threshold, setThreshold] = useState(route.alertThresholdMin ?? "");
+  const [timeMode, setTimeMode] = useState(route.timeMode === "depart" ? "depart" : "arrive");
   const [confirmDel, setConfirmDel] = useState(false);
   const toggleDay = (d) => setDays(days.includes(d) ? days.filter((x) => x !== d) : [...days, d]);
 
@@ -861,7 +864,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
       name: name.trim() || route.name,
       targetArrival: arrival,
       activeDays: days,
-      alertThresholdMin: threshold === "" ? null : Math.round(parseFloat(threshold)),
+      timeMode,
     });
     onSaved();
   };
@@ -887,8 +890,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
     setVal(v); setPending(null);
     await controller.resetRoute(route.id, valToSeeds(v));
     await controller.updateRoute(route.id, {
-      name: name.trim() || route.name, targetArrival: arrival, activeDays: days,
-      alertThresholdMin: threshold === "" ? null : Math.round(parseFloat(threshold)),
+      name: name.trim() || route.name, targetArrival: arrival, activeDays: days, timeMode,
     });
     onSaved();
   };
@@ -907,7 +909,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
       <label style={lbl}>Route name</label>
       <input value={name} onChange={(e) => setName(e.target.value)} style={INP} />
 
-      <label style={{ ...lbl, marginTop: 12 }}>{route.timeMode === "depart" ? "Departure time" : "Target arrival"}</label>
+      <label style={{ ...lbl, marginTop: 12 }}>{timeMode === "depart" ? "Departure time" : "Target arrival"}</label>
       <input type="time" value={arrival} onChange={(e) => setArrival(e.target.value)} style={INP} />
 
       <label style={{ ...lbl, marginTop: 12 }}>Active days</label>
@@ -922,8 +924,17 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
         ))}
       </div>
 
-      <label style={{ ...lbl, marginTop: 12 }}>Alert threshold (minutes) <span style={{ color: "rgba(255,255,255,0.35)" }}>· blank = default</span></label>
-      <input value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="decimal" placeholder="4" style={INP} />
+      <label style={{ ...lbl, marginTop: 12 }}>Time mode</label>
+      <div style={{ display: "flex", gap: 6 }}>
+        {[["arrive", "Arrive by"], ["depart", "Depart at"]].map(([m, l]) => (
+          <button key={m} onClick={() => setTimeMode(m)} style={{
+            flex: 1, padding: "10px 0", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: 600,
+            border: `1px solid ${timeMode === m ? "#e0a45e" : "rgba(255,255,255,0.16)"}`,
+            background: timeMode === m ? "rgba(224,164,94,0.18)" : "transparent",
+            color: timeMode === m ? "#fff" : "rgba(255,255,255,0.45)",
+          }}>{l}</button>
+        ))}
+      </div>
 
       {/* Tuning: speed + terrain, manual or learned */}
       <div style={{ marginTop: 18, padding: "14px 14px", borderRadius: 12, background: "rgba(0,0,0,0.18)" }}>
