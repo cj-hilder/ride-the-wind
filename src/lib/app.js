@@ -592,6 +592,17 @@ export function createAppController(deps = {}) {
     const seed = await seedFor(route, model);
     const distanceM = route.totalDistance;
 
+    // Route stats for the same panel shown at GPX load (derived from the stored
+    // segments — no re-parse needed).
+    let climb = 0;
+    if (route.hasElevation) for (const s of route.segments) if (s.eleDelta > 0) climb += s.eleDelta;
+    const stats = {
+      totalDistance: distanceM,
+      hasElevation: route.hasElevation,
+      climb: route.hasElevation ? climb : null,
+      pointCount: route.segments.length + 1,
+    };
+
     // Manual (seed) view: speed from baseline, k from seeds.
     const manualSpeedKmh = Math.round((distanceM / route.baselineTimeSec) * 3.6);
     const manual = { speedKmh: manualSpeedKmh, kHead: seed.kHead, kTail: seed.kTail };
@@ -610,7 +621,7 @@ export function createAppController(deps = {}) {
         };
       }
     }
-    return { distanceM, manual, learned };
+    return { distanceM, stats, manual, learned };
   }
 
   /**
