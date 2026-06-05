@@ -169,6 +169,7 @@ export function createAppController(deps = {}) {
     return {
       meanBearingDeg: Math.round(meanBearing),
       headBearingLabel: compass16(meanBearing),
+      tailBearingLabel: compass16((meanBearing + 180) % 360),
       headFactor: computeWindFactor(segments, steady(meanBearing), w),
       tailFactor: computeWindFactor(segments, steady((meanBearing + 180) % 360), w),
     };
