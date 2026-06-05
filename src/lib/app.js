@@ -22,6 +22,7 @@ import {
   parseForecast,
   makeWindFn,
   segmentTimes,
+  computeWindFactor,
   seriesCovers,
 } from "./windModel.js";
 import * as learning from "./learning.js";
@@ -43,6 +44,12 @@ import {
   IndexedDBBackend,
   requestPersistentStorage,
 } from "./storage.js";
+
+// 8-point compass label (e.g. 295° → "NW") — at most two letters, per spec.
+const COMPASS8 = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+function compass16(deg) {
+  return COMPASS8[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+}
 
 // Local HH:MM (24h) formatter, device local time.
 function hhmm(ms) {
@@ -147,6 +154,26 @@ export function createAppController(deps = {}) {
    * point count, warnings). Throws GpxError on invalid files so the UI can show
    * the message.
    */
+  // Geometry-only example wind factors for the ground-effect display: a steady
+  // 20 km/h wind from the route's mean bearing (headward) and its opposite
+  // (tailward), simulated over the actual segments. k-independent. Weight by
+  // segment distance (the factor is a weighted mean of a speed-independent
+  // per-segment quantity, so exact timing isn't needed for the example).
+  function exampleFor(segments) {
+    const DEG = Math.PI / 180;
+    let bx = 0, by = 0;
+    for (const s of segments) { bx += Math.cos(s.bearing * DEG); by += Math.sin(s.bearing * DEG); }
+    const meanBearing = (Math.atan2(by / segments.length, bx / segments.length) / DEG + 360) % 360;
+    const w = segments.map((s) => s.distance || 1);
+    const steady = (fromDeg) => () => ({ speed: 20, fromDeg });
+    return {
+      meanBearingDeg: Math.round(meanBearing),
+      headBearingLabel: compass16(meanBearing),
+      headFactor: computeWindFactor(segments, steady(meanBearing), w),
+      tailFactor: computeWindFactor(segments, steady((meanBearing + 180) % 360), w),
+    };
+  }
+
   async function previewGpx(gpxText) {
     const p = processGpx(gpxText, { domParser: deps.domParser });
     let climb = 0;
@@ -157,6 +184,7 @@ export function createAppController(deps = {}) {
       climb: p.hasElevation ? climb : null,
       pointCount: p.segments.length + 1,
       warnings: p.warnings || [],
+      example: exampleFor(p.segments),
     };
   }
 
@@ -649,7 +677,7 @@ export function createAppController(deps = {}) {
         };
       }
     }
-    return { distanceM, stats, manual, learned };
+    return { distanceM, stats, manual, learned, example: exampleFor(route.segments) };
   }
 
   /**
