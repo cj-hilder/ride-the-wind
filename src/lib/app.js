@@ -175,6 +175,21 @@ export function createAppController(deps = {}) {
     };
   }
 
+  // Downsampled lat/lon polyline for a static map: all segment start points
+  // plus the final end point, reduced to ~maxPts (always keeping first & last)
+  // so it fits within a static-map URL length budget. Shape reads fine for a
+  // commute at this resolution.
+  function routePolyline(segments, end, maxPts = 40) {
+    const pts = segments.map((s) => ({ lat: s.lat, lon: s.lon }));
+    if (end) pts.push({ lat: end.lat, lon: end.lon });
+    if (pts.length <= maxPts) return pts;
+    const step = (pts.length - 1) / (maxPts - 1);
+    const out = [];
+    for (let i = 0; i < maxPts; i++) out.push(pts[Math.round(i * step)]);
+    out[out.length - 1] = pts[pts.length - 1]; // guarantee the true end
+    return out;
+  }
+
   async function previewGpx(gpxText) {
     const p = processGpx(gpxText, { domParser: deps.domParser });
     let climb = 0;
@@ -186,6 +201,7 @@ export function createAppController(deps = {}) {
       pointCount: p.segments.length + 1,
       warnings: p.warnings || [],
       example: exampleFor(p.segments),
+      polyline: routePolyline(p.segments, p.end),
     };
   }
 
@@ -678,7 +694,8 @@ export function createAppController(deps = {}) {
         };
       }
     }
-    return { distanceM, stats, manual, learned, example: exampleFor(route.segments) };
+    return { distanceM, stats, manual, learned, example: exampleFor(route.segments),
+      polyline: routePolyline(route.segments, route.endRegion) };
   }
 
   /**
