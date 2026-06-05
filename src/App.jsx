@@ -810,7 +810,13 @@ function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, exampl
   const headT = Math.round((baselineSec * (1 + effK * hf)) / 60);
   const tailT = Math.round((baselineSec * (1 + effK * tf)) / 60);
   const oneT = sign === -1 ? tailT : headT;
-  const dirLabel = example ? example.headBearingLabel : "";
+  const headLabel = example ? example.headBearingLabel : "";
+  const tailLabel = example ? example.tailBearingLabel : "";
+  // Unsplit covers both examples → name both directions (head/tail are
+  // opposite). Split: each slider uses its own wind direction.
+  const dirLabel = showBoth
+    ? `${headLabel}/${tailLabel}`
+    : (sign === -1 ? tailLabel : headLabel);
 
   return (
     <div style={{ marginBottom: 14 }}>
