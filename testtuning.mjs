@@ -15,4 +15,7 @@ ok('manual kHead ~0.5', Math.abs(t.manual.kHead-0.5)<0.01, t.manual.kHead);
 ok('manual kTail ~0.5', Math.abs(t.manual.kTail-0.5)<0.01, t.manual.kTail);
 ok('no learned (0 rides)', t.learned===null);
 ok('stats present', t.stats && t.stats.totalDistance>0 && t.stats.pointCount>1, JSON.stringify(t.stats));
+ok('example present', t.example && typeof t.example.headFactor==='number');
+ok('example has compass label (<=2 letters)', /^[NESW]{1,2}$/.test(t.example.headBearingLabel), t.example.headBearingLabel);
+ok('head factor positive, tail factor negative', t.example.headFactor>0 && t.example.tailFactor<0, `${t.example.headFactor} / ${t.example.tailFactor}`);
 console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail?1:0);
