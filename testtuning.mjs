@@ -18,4 +18,5 @@ ok('stats present', t.stats && t.stats.totalDistance>0 && t.stats.pointCount>1, 
 ok('example present', t.example && typeof t.example.headFactor==='number');
 ok('example has compass label (<=2 letters)', /^[NESW]{1,2}$/.test(t.example.headBearingLabel), t.example.headBearingLabel);
 ok('head factor positive, tail factor negative', t.example.headFactor>0 && t.example.tailFactor<0, `${t.example.headFactor} / ${t.example.tailFactor}`);
+ok('polyline present and bounded', Array.isArray(t.polyline) && t.polyline.length>=2 && t.polyline.length<=40, t.polyline && t.polyline.length);
 console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail?1:0);
