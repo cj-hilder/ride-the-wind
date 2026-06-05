@@ -734,6 +734,47 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
 }
 
 /* ============================================================================
+ * RouteMap — a keyless static map of the route (OSM staticmap service), drawn
+ * as a polyline with start/end pins. Needs a network connection to load the
+ * tiles; on any failure (offline, service down) it falls back to a tidy note
+ * rather than a broken image. The polyline is pre-downsampled by the controller
+ * to fit the static-map URL length budget.
+ * ========================================================================== */
+function RouteMap({ polyline }) {
+  const [failed, setFailed] = useState(false);
+  if (!polyline || polyline.length < 2) return null;
+
+  // OSM staticmap: path=color,weight|lat,lon|… and markers for start/end.
+  const pathPts = polyline.map((p) => `${p.lat.toFixed(5)},${p.lon.toFixed(5)}`).join("|");
+  const start = polyline[0], end = polyline[polyline.length - 1];
+  const base = "https://staticmap.openstreetmap.de/staticmap.php";
+  const params =
+    `?size=600x300&maptype=mapnik` +
+    `&path=color:0xe0a45eff|weight:4|${pathPts}` +
+    `&markers=${start.lat.toFixed(5)},${start.lon.toFixed(5)},lightgreen` +
+    `&markers=${end.lat.toFixed(5)},${end.lon.toFixed(5)},red`;
+  const url = base + params;
+
+  if (failed) {
+    return (
+      <div style={{
+        borderRadius: 12, padding: "18px 14px", marginBottom: 12, textAlign: "center",
+        background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
+        fontSize: 12.5, color: "rgba(255,255,255,0.5)",
+      }}>
+        Map needs a connection — distance and elevation are shown below.
+      </div>
+    );
+  }
+  return (
+    <div style={{ borderRadius: 12, overflow: "hidden", marginBottom: 12, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(0,0,0,0.2)" }}>
+      <img src={url} alt="Route map" onError={() => setFailed(true)}
+        style={{ display: "block", width: "100%", height: "auto" }} />
+    </div>
+  );
+}
+
+/* ============================================================================
  * TerrainControls — physically-meaningful manual tuning shared by Setup and
  * RouteEditor. Speed spinner + "Ground effect" slider(s) + split switch.
  * Maps to the existing seeds (no model change): baselineSec = D / speed;
@@ -967,6 +1008,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
 
       {/* Tuning: speed + terrain, manual or learned */}
       <div style={{ marginTop: 18, padding: "14px 14px", borderRadius: 12, background: "rgba(0,0,0,0.18)" }}>
+        <RouteMap polyline={tuning.polyline} />
         {tuning.stats && (
           <div style={{ display: "flex", gap: 18, marginBottom: 14, paddingBottom: 12, borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
             <Stat label="Distance" value={`${(tuning.stats.totalDistance / 1000).toFixed(2)} km`} />
@@ -1098,6 +1140,7 @@ function Setup({ controller, onDone, onCancel }) {
           </div>
         ) : (
           <div style={{ borderRadius: 16, padding: 16, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)" }}>
+            <RouteMap polyline={preview.polyline} />
             <div style={{ display: "flex", gap: 18 }}>
               <Stat label="Distance" value={`${(preview.totalDistance / 1000).toFixed(2)} km`} />
               <Stat label="Elevation" value={preview.hasElevation ? `${Math.round(preview.climb)} m` : "—"} />
