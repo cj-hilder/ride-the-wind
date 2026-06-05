@@ -970,6 +970,19 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
   };
 
   const save = async () => {
+    // In Manual state, persist the speed/ground-effect values as seeds — but
+    // ONLY if they actually changed, because reseeding throws away any logged
+    // rides. An unrelated edit (rename, schedule) must not wipe ride history.
+    // In Learned state the seeds are model-driven and only change through the
+    // explicit discard-learning confirm, so Save never reseeds here.
+    if (!isLearned && val && tuning) {
+      const m = tuning.manual;
+      const changed =
+        val.speedKmh !== m.speedKmh ||
+        Math.abs(val.kHead - m.kHead) > 0.001 ||
+        Math.abs(val.kTail - m.kTail) > 0.001;
+      if (changed) await controller.resetRoute(route.id, valToSeeds(val));
+    }
     await controller.updateRoute(route.id, {
       name: name.trim() || route.name,
       targetArrival: arrival,
@@ -989,11 +1002,6 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
   const onLearnedEdit = (next) => {
     if (next._collapse) { delete next._collapse; setCollapseAsk({ next, learned: true }); return; }
     setPending(next);
-  };
-  // Apply a manual change immediately when in Manual state (persist seeds now so
-  // the route's prediction reflects it without waiting for a ride).
-  const applyManualSeeds = async (v) => {
-    await controller.resetRoute(route.id, valToSeeds(v));
   };
   const confirmDiscard = async () => {
     const v = pending;
@@ -1066,11 +1074,6 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
           onChange={(next) => { onManualChange(next); }}
           learned={isLearned ? tuning.learned : null}
           onLearnedEdit={onLearnedEdit} example={tuning.example} />
-        {!isLearned && (
-          <button onClick={() => applyManualSeeds(val)} style={{ ...backupBtn, width: "100%", marginTop: 10 }}>
-            Apply these times
-          </button>
-        )}
       </div>
 
       <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
