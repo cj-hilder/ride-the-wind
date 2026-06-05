@@ -735,15 +735,14 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
 
 /* ============================================================================
  * TerrainControls — physically-meaningful manual tuning shared by Setup and
- * RouteEditor. Speed spinner + "Terrain effect" slider(s) + split switch.
+ * RouteEditor. Speed spinner + "Ground effect" slider(s) + split switch.
  * Maps to the existing seeds (no model change): baselineSec = D / speed;
  * head = baseline·(1+kHead), tail = baseline·(1−kTail).
  * ========================================================================== */
 const TERRAIN_MIN = 0.15, TERRAIN_MAX = 0.8;
 const kClampUI = (k) => Math.max(TERRAIN_MIN, Math.min(TERRAIN_MAX, k));
-const timeAt = (baselineSec, k, sign) => Math.round((baselineSec * (1 + sign * k)) / 60);
 
-function TerrainControls({ distanceM, value, onChange, learned, onLearnedEdit }) {
+function TerrainControls({ distanceM, value, onChange, learned, onLearnedEdit, example }) {
   const isLearned = !!learned;
   const speedKmh = value.speedKmh;
   const baselineSec = distanceM / (speedKmh / 3.6);
@@ -773,14 +772,17 @@ function TerrainControls({ distanceM, value, onChange, learned, onLearnedEdit })
       </div>
 
       {!value.split ? (
-        <TerrainSlider title="Terrain effect" k={value.kHead} baselineSec={baselineSec}
-          learnedK={isLearned ? learned.kHead : null} showBoth onCommit={(k) => setK("kHead", k)} />
+        <TerrainSlider title="Ground effect" k={value.kHead} baselineSec={baselineSec}
+          learnedK={isLearned ? learned.kHead : null} showBoth example={example}
+          onCommit={(k) => setK("kHead", k)} />
       ) : (
         <>
-          <TerrainSlider title="Terrain effect on headwind" k={value.kHead} baselineSec={baselineSec}
-            learnedK={isLearned ? learned.kHead : null} sign={+1} onCommit={(k) => setK("kHead", k)} />
-          <TerrainSlider title="Terrain effect on tailwind" k={value.kTail} baselineSec={baselineSec}
-            learnedK={isLearned ? learned.kTail : null} sign={-1} onCommit={(k) => setK("kTail", k)} />
+          <TerrainSlider title="Ground effect on headwind" k={value.kHead} baselineSec={baselineSec}
+            learnedK={isLearned ? learned.kHead : null} sign={+1} example={example}
+            onCommit={(k) => setK("kHead", k)} />
+          <TerrainSlider title="Ground effect on tailwind" k={value.kTail} baselineSec={baselineSec}
+            learnedK={isLearned ? learned.kTail : null} sign={-1} example={example}
+            onCommit={(k) => setK("kTail", k)} />
         </>
       )}
 
@@ -794,15 +796,21 @@ function TerrainControls({ distanceM, value, onChange, learned, onLearnedEdit })
   );
 }
 
-function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, onCommit }) {
+function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, example, onCommit }) {
   const [local, setLocal] = useState(kClampUI(k));
   useEffect(() => { setLocal(kClampUI(k)); }, [k]);
   const offLow = learnedK != null && learnedK < TERRAIN_MIN;
   const offHigh = learnedK != null && learnedK > TERRAIN_MAX;
   const effK = learnedK != null ? learnedK : local;
-  const headT = timeAt(baselineSec, effK, +1);
-  const tailT = timeAt(baselineSec, effK, -1);
+  // Example times come from the real route geometry: a steady 20 km/h wind from
+  // the route's mean bearing (headward) or its opposite (tailward). The factors
+  // are k-independent, so time = baseline·(1 + k·factor).
+  const hf = example ? example.headFactor : 1;
+  const tf = example ? example.tailFactor : -1;
+  const headT = Math.round((baselineSec * (1 + effK * hf)) / 60);
+  const tailT = Math.round((baselineSec * (1 + effK * tf)) / 60);
   const oneT = sign === -1 ? tailT : headT;
+  const dirLabel = example ? example.headBearingLabel : "";
 
   return (
     <div style={{ marginBottom: 14 }}>
@@ -822,8 +830,11 @@ function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, onComm
         <span>Open</span>
         <span style={{ textAlign: "center" }}>Exposed<br />flat</span>
       </div>
-      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 6, lineHeight: 1.4 }}>
-        <span style={{ color: "rgba(255,255,255,0.45)" }}>example ride with 20 km/h wind</span><br />
+      <div style={{ fontSize: 11.5, color: "#e0a45e", marginTop: 6 }}>
+        ground effect factor k={effK.toFixed(2)}
+      </div>
+      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 3, lineHeight: 1.4 }}>
+        <span style={{ color: "rgba(255,255,255,0.45)" }}>example ride, steady 20 km/h wind from {dirLabel}</span><br />
         {showBoth
           ? <>headwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{headT} min</b> / tailwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{tailT} min</b></>
           : <>{sign === -1 ? "tailwind" : "headwind"} <b style={{ color: "rgba(255,255,255,0.85)" }}>{oneT} min</b></>}
@@ -966,7 +977,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
         <TerrainControls distanceM={tuning.distanceM} value={val}
           onChange={(next) => { onManualChange(next); }}
           learned={isLearned ? tuning.learned : null}
-          onLearnedEdit={onLearnedEdit} />
+          onLearnedEdit={onLearnedEdit} example={tuning.example} />
         {!isLearned && (
           <button onClick={() => applyManualSeeds(val)} style={{ ...backupBtn, width: "100%", marginTop: 10 }}>
             Apply these times
@@ -995,7 +1006,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
       {/* Split-off: which value to keep */}
       {collapseAsk && (
         <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 12, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.18)" }}>
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", marginBottom: 10 }}>Keep which terrain setting for both directions?</div>
+          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", marginBottom: 10 }}>Keep which ground effect setting for both directions?</div>
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={() => resolveCollapse("head")} style={backupBtn}>Headwind</button>
             <button onClick={() => resolveCollapse("tail")} style={backupBtn}>Tailwind</button>
@@ -1108,7 +1119,7 @@ function Setup({ controller, onDone, onCancel }) {
                   return;
                 }
                 setForm((f) => ({ ...f, speedKmh: next.speedKmh, kHead: next.kHead, kTail: next.kTail, split: next.split }));
-              }} />
+              }} example={preview.example} />
           </Block>
           <Block n="4" title="When you ride">
             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
@@ -1436,7 +1447,7 @@ function HelpPanel({ onClose }) {
         <div style={section}>
           <h3 style={h3}>Tuning a route</h3>
           <p style={p}>
-            Each route starts from two things you set: your <b>still‑air speed</b> and a <b>terrain effect</b> (how sheltered or exposed the route is, which sets how much wind slows or speeds you). That’s enough to use it from day one.
+            Each route starts from two things you set: your <b>still‑air speed</b> and a <b>ground effect</b> (how sheltered or exposed the route is, which sets how much wind slows or speeds you). That’s enough to use it from day one.
           </p>
           <p style={p}>
             As you log rides it learns your real numbers — separately for headwind and tailwind days — and takes over the tuning, well‑settled after about <b>ten rides in each direction</b>. If the learned times aren’t working for you, just move a slider to go back to setting them by hand.
