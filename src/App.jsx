@@ -734,27 +734,67 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
 }
 
 /* ============================================================================
- * RouteMap — a keyless static map of the route (OSM staticmap service), drawn
- * as a polyline with start/end pins. Needs a network connection to load the
- * tiles; on any failure (offline, service down) it falls back to a tidy note
- * rather than a broken image. The polyline is pre-downsampled by the controller
- * to fit the static-map URL length budget.
+ * RouteMap — an interactive map of the route (Leaflet + OpenStreetMap tiles),
+ * drawn as a polyline with start/end pins. Keyless. Leaflet is loaded from CDN
+ * on first use. Needs a network connection for the tiles; on any failure
+ * (offline, CDN/tiles unreachable) it falls back to a tidy note rather than a
+ * blank box. The polyline is pre-downsampled by the controller.
  * ========================================================================== */
+const LEAFLET_CSS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+const LEAFLET_JS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+let _leafletPromise = null;
+function loadLeaflet() {
+  if (typeof window !== "undefined" && window.L) return Promise.resolve(window.L);
+  if (_leafletPromise) return _leafletPromise;
+  _leafletPromise = new Promise((resolve, reject) => {
+    if (!document.querySelector(`link[href="${LEAFLET_CSS}"]`)) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet"; link.href = LEAFLET_CSS;
+      document.head.appendChild(link);
+    }
+    const s = document.createElement("script");
+    s.src = LEAFLET_JS; s.async = true;
+    s.onload = () => resolve(window.L);
+    s.onerror = () => reject(new Error("leaflet load failed"));
+    document.head.appendChild(s);
+  });
+  return _leafletPromise;
+}
+
 function RouteMap({ polyline }) {
+  const elRef = useRef(null);
+  const mapRef = useRef(null);
   const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!polyline || polyline.length < 2) return;
+    let cancelled = false;
+    loadLeaflet().then((L) => {
+      if (cancelled || !elRef.current) return;
+      // Guard against re-init on the same node.
+      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+      const latlngs = polyline.map((p) => [p.lat, p.lon]);
+      const map = L.map(elRef.current, {
+        zoomControl: true, attributionControl: true, scrollWheelZoom: false,
+      });
+      mapRef.current = map;
+      const tiles = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19, attribution: "© OpenStreetMap contributors",
+      });
+      tiles.addTo(map);
+      const line = L.polyline(latlngs, { color: "#e0a45e", weight: 4, opacity: 0.95 }).addTo(map);
+      const dot = (latlng, color) => L.circleMarker(latlng, { radius: 6, color: "#1a1f3a", weight: 2, fillColor: color, fillOpacity: 1 }).addTo(map);
+      dot(latlngs[0], "#6fd49a");
+      dot(latlngs[latlngs.length - 1], "#e0785e");
+      map.fitBounds(line.getBounds(), { padding: [20, 20] });
+    }).catch(() => { if (!cancelled) setFailed(true); });
+    return () => {
+      cancelled = true;
+      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+    };
+  }, [polyline]);
+
   if (!polyline || polyline.length < 2) return null;
-
-  // OSM staticmap: path=color,weight|lat,lon|… and markers for start/end.
-  const pathPts = polyline.map((p) => `${p.lat.toFixed(5)},${p.lon.toFixed(5)}`).join("|");
-  const start = polyline[0], end = polyline[polyline.length - 1];
-  const base = "https://staticmap.openstreetmap.de/staticmap.php";
-  const params =
-    `?size=600x300&maptype=mapnik` +
-    `&path=color:0xe0a45eff|weight:4|${pathPts}` +
-    `&markers=${start.lat.toFixed(5)},${start.lon.toFixed(5)},lightgreen` +
-    `&markers=${end.lat.toFixed(5)},${end.lon.toFixed(5)},red`;
-  const url = base + params;
-
   if (failed) {
     return (
       <div style={{
@@ -762,15 +802,15 @@ function RouteMap({ polyline }) {
         background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
         fontSize: 12.5, color: "rgba(255,255,255,0.5)",
       }}>
-        Map needs a connection — distance and elevation are shown below.
+        Map couldn’t load — distance and elevation are shown below.
       </div>
     );
   }
   return (
-    <div style={{ borderRadius: 12, overflow: "hidden", marginBottom: 12, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(0,0,0,0.2)" }}>
-      <img src={url} alt="Route map" onError={() => setFailed(true)}
-        style={{ display: "block", width: "100%", height: "auto" }} />
-    </div>
+    <div ref={elRef} style={{
+      height: 220, borderRadius: 12, overflow: "hidden", marginBottom: 12,
+      border: "1px solid rgba(255,255,255,0.12)", background: "rgba(0,0,0,0.2)",
+    }} />
   );
 }
 
