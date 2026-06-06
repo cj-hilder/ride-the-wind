@@ -75,6 +75,22 @@ console.log('\nSnow & fog:');
   // present at ANY point: snow only on the second segment
   let n=0; const partialFn=()=>({speed:5,fromDeg:0,tempC:0,precipMm:0,precipProb:0,snowfallCm:(n++ ? 0.5 : 0),weatherCode:3});
   ok('snow on any segment flags snow', whatToExpect({segments:segs,times,windFn:partialFn,departMs:0}).tokens.includes('snow'));
+  // thunderstorm (95) and with hail (99)
+  const thunderFn=()=>({speed:10,fromDeg:0,tempC:18,precipMm:2,precipProb:90,snowfallCm:0,weatherCode:95});
+  ok('thunderstorm code flags thunderstorms', whatToExpect({segments:segs,times,windFn:thunderFn,departMs:0}).tokens.includes('thunderstorms'));
+  const hailFn=()=>({speed:10,fromDeg:0,tempC:18,precipMm:2,precipProb:90,snowfallCm:0,weatherCode:99});
+  ok('thunderstorm-with-hail (99) flags thunderstorms', whatToExpect({segments:segs,times,windFn:hailFn,departMs:0}).tokens.includes('thunderstorms'));
+  // freezing rain (66) and freezing drizzle (57)
+  const fzRainFn=()=>({speed:6,fromDeg:0,tempC:0,precipMm:1,precipProb:80,snowfallCm:0,weatherCode:66});
+  const fzr=whatToExpect({segments:segs,times,windFn:fzRainFn,departMs:0});
+  ok('freezing rain (66) flags freezing rain', fzr.tokens.includes('freezing rain'));
+  ok('freezing rain not flagged as snow', !fzr.tokens.includes('snow'));
+  const fzDrizFn=()=>({speed:6,fromDeg:0,tempC:0,precipMm:0.3,precipProb:80,snowfallCm:0,weatherCode:57});
+  ok('freezing drizzle (57) flags freezing rain', whatToExpect({segments:segs,times,windFn:fzDrizFn,departMs:0}).tokens.includes('freezing rain'));
+  // ordering: thunderstorms before snow
+  const allFn=()=>({speed:6,fromDeg:0,tempC:0,precipMm:2,precipProb:90,snowfallCm:0.5,weatherCode:95});
+  const allTokens=whatToExpect({segments:segs,times,windFn:allFn,departMs:0}).tokens;
+  ok('thunderstorms ordered before snow', allTokens.indexOf('thunderstorms') < allTokens.indexOf('snow'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
