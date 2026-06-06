@@ -534,7 +534,7 @@ export function createAppController(deps = {}) {
       // NOT by themselves determine wind_factor (which is a signed, quadratic,
       // time-weighted quantity that head/tail segments can cancel within).
       const DEG = Math.PI / 180;
-      let sx = 0, sy = 0, head = 0, cross = 0, tt = 0;
+      let sx = 0, sy = 0, head = 0, cross = 0, spd = 0, tt = 0;
       let segMs = departMs;
       let firstW = null;
       route.segments.forEach((s, i) => {
@@ -546,6 +546,7 @@ export function createAppController(deps = {}) {
         const c = ws.speed * Math.sin((ws.fromDeg - s.bearing) * DEG);
         head += h * times[i];
         cross += Math.abs(c) * times[i];
+        spd += ws.speed * times[i];
         tt += times[i];
         segMs += times[i] * 1000;
       });
@@ -564,7 +565,7 @@ export function createAppController(deps = {}) {
       debug = {
         windFromDeg: Math.round(w.fromDeg),
         windFromLabel: compass16(w.fromDeg),
-        windSpeedKmh: Math.round(w.speed),
+        windSpeedKmh: Math.round(spd / tt),
         avgBearingDeg: Math.round(avgBearing),
         meanHeadwindKmh: +meanHead.toFixed(1),      // linear time-weighted mean
         effortHeadwindKmh: +effortHead.toFixed(1),  // equivalent headwind behind wind_factor
