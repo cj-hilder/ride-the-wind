@@ -1675,12 +1675,20 @@ function HelpPanel({ onClose }) {
 }
 
 function LoadErrorScreen({ message, onRetry }) {
+  // Don't assert a cause we can't be sure of. A 429 (rate limit) is the server
+  // throttling us, not the user's connection — give accurate guidance for it.
+  const rateLimited = message && /\b429\b/.test(message);
+  const guidance = rateLimited
+    ? "The forecast service is busy right now (too many requests). Wait a minute, then try again — your routes are saved."
+    : "The forecast couldn’t be loaded. Try again in a moment — your routes are saved.";
   return (
     <div style={{ height: "100%", display: "grid", placeItems: "center", background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff", textAlign: "center", padding: 30 }}>
       <div style={{ maxWidth: 300 }}>
-        <div style={{ fontFamily: "'Fraunces',serif", fontSize: 22, fontWeight: 600, marginBottom: 8 }}>Couldn’t reach the forecast</div>
+        <div style={{ fontFamily: "'Fraunces',serif", fontSize: 22, fontWeight: 600, marginBottom: 8 }}>
+          {rateLimited ? "Forecast service busy" : "Couldn’t load the forecast"}
+        </div>
         <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 18, lineHeight: 1.5 }}>
-          {message ? `${message}.` : ""} Check your connection and try again — your routes are saved.
+          {guidance}
         </div>
         <button onClick={onRetry} style={{
           padding: "12px 28px", borderRadius: 12, border: "none", cursor: "pointer",
