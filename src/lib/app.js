@@ -123,6 +123,18 @@ export function createAppController(deps = {}) {
   }
 
   const ensembleCache = new Map();
+
+  // Most recent forecast fetch time across this route's stations (for the
+  // tech-info panel's "last/next update"). null if none cached yet.
+  function forecastFetchedAt(route) {
+    const stations = chooseStations(route);
+    let latest = null;
+    for (const st of stations) {
+      const hit = forecastCache.get(`${st.lat.toFixed(2)},${st.lon.toFixed(2)}`);
+      if (hit && (latest == null || hit.at > latest)) latest = hit.at;
+    }
+    return latest;
+  }
   // Fetch per-member ensemble wind for each station. Returns null on any
   // failure so the caller can fall back to the deterministic range — the app
   // must never block on the ensemble.
@@ -548,8 +560,10 @@ export function createAppController(deps = {}) {
       // winding route where head and tail segments largely cancel.
       const wf = verdict.windFactor ?? 0;
       const effortHead = Math.sign(wf) * Math.sqrt(Math.abs(wf)) * 20;
+      const fetchedAt = forecastFetchedAt(route);
       debug = {
         windFromDeg: Math.round(w.fromDeg),
+        windFromLabel: compass16(w.fromDeg),
         windSpeedKmh: Math.round(w.speed),
         avgBearingDeg: Math.round(avgBearing),
         meanHeadwindKmh: +meanHead.toFixed(1),      // linear time-weighted mean
@@ -560,6 +574,8 @@ export function createAppController(deps = {}) {
         predictedSec: Math.round(verdict.predictedSec),
         slowSec: range ? Math.round(range.highSec) : null,
         fastSec: range ? Math.round(range.lowSec) : null,
+        forecastUpdatedMs: fetchedAt,
+        forecastNextUpdateMs: fetchedAt != null ? fetchedAt + FORECAST_TTL : null,
       };
     }
 
