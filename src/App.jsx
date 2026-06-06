@@ -1310,7 +1310,11 @@ function Capture({ controller, route, onDone }) {
 
   if (!route) return <Empty />;
 
-  const start = async () => {
+  const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
+
+  // Begin recording. If GPS says we're well away from the route's start, ask
+  // first — guards against accidentally recording from the wrong place.
+  const beginRecording = async () => {
     setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0);
     const handle = await controller.startRide(route, {
       onTick: ({ elapsedSec }) => setElapsed(elapsedSec),
@@ -1320,6 +1324,15 @@ function Capture({ controller, route, onDone }) {
       },
     }).catch((e) => { alert(e.message); setState("armed"); });
     ref.current = { handle };
+  };
+
+  const start = async () => {
+    const metres = await controller.distanceToStart(route);
+    if (metres != null && metres > 100) {
+      setFarConfirm({ metres }); // ask before recording
+      return;
+    }
+    await beginRecording();
   };
 
   // Local display clock so the timer ticks smoothly and freezes on pause,
@@ -1357,7 +1370,7 @@ function Capture({ controller, route, onDone }) {
 
   return (
     <div style={{
-      height: "100%", color: "#fff", padding: 24,
+      height: "100%", color: "#fff", padding: 24, position: "relative",
       background: state === "riding" ? (paused ? "linear-gradient(165deg,#2a2438,#3a3048 55%,#473c52)" : "linear-gradient(165deg,#16324a,#1d4258 55%,#2a5a6e)") : "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)",
       transition: "background 1s", display: "flex", flexDirection: "column",
     }}>
@@ -1372,6 +1385,32 @@ function Capture({ controller, route, onDone }) {
             background: "radial-gradient(circle at 35% 30%, #5b8fc7, #2a5a6e)", color: "#fff",
             fontFamily: "'Fraunces',serif", fontSize: 21, fontWeight: 600, boxShadow: "0 12px 50px rgba(91,143,199,0.4)",
           }}>Start Ride</button>
+        </div>
+      )}
+      {farConfirm && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 20, display: "grid", placeItems: "center",
+          background: "rgba(0,0,0,0.6)", padding: 28,
+        }}>
+          <div style={{
+            maxWidth: 320, background: "#1d1b38", borderRadius: 18, padding: "22px 22px",
+            border: "1px solid rgba(255,255,255,0.14)", textAlign: "center",
+          }}>
+            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 8 }}>
+              Away from the start
+            </div>
+            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 18 }}>
+              You are {farConfirm.metres} metres away from the start of this route. Record anyway?
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setFarConfirm(null)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>
+                No
+              </button>
+              <button onClick={() => { setFarConfirm(null); beginRecording(); }} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 14, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>
+                Yes, record
+              </button>
+            </div>
+          </div>
         </div>
       )}
       {state === "riding" && (
