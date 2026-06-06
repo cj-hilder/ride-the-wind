@@ -628,6 +628,11 @@ function DebugReadout({ debug }) {
         {debug.effortHeadwindKmh != null && (
           <Row label="effort headwind">{debug.effortHeadwindKmh} km/h</Row>
         )}
+        {debug.effortHeadwindKmh != null && (
+          <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "0 0 4px" }}>
+            Wind resistance grows with speed², so uneven wind slows you more than the mean suggests — effort captures that.
+          </div>
+        )}
         <Row label="mean crosswind">{debug.meanCrosswindKmh} km/h</Row>
         <Row label="wind factor">{debug.windFactor} ({debug.windFactor >= 0 ? "slows" : "speeds"})</Row>
         <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
