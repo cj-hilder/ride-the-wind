@@ -591,22 +591,49 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
   );
 }
 
-/* Collapsible debug readout for the Plan detail. */
+/* Tech info panel for the Plan detail — a tidy, labelled readout of the
+ * forecast figures behind the prediction. */
 function DebugReadout({ debug }) {
+  const fmtClock = (ms) => {
+    if (ms == null) return "—";
+    const d = new Date(ms);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+  const Row = ({ label, children }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "3px 0" }}>
+      <span style={{ color: "rgba(255,255,255,0.5)" }}>{label}</span>
+      <span style={{ color: "rgba(255,255,255,0.9)", textAlign: "right" }}>{children}</span>
+    </div>
+  );
   return (
     <div style={{
-      marginTop: 10, padding: "10px 12px", borderRadius: 12, fontSize: 12,
-      fontFamily: "ui-monospace, monospace", lineHeight: 1.6,
-      background: "rgba(0,0,0,0.25)", color: "rgba(255,255,255,0.8)",
+      marginTop: 10, borderRadius: 12, overflow: "hidden",
+      fontSize: 12.5, fontFamily: "ui-monospace, monospace", lineHeight: 1.5,
+      background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)",
     }}>
-      <div>wind: {debug.windSpeedKmh} km/h from {debug.windFromDeg}°</div>
-      <div>route avg bearing: {debug.avgBearingDeg}°</div>
-      <div>mean headwind: {debug.meanHeadwindKmh} km/h <span style={{ color: "rgba(255,255,255,0.5)" }}>({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</span></div>
-      {debug.effortHeadwindKmh != null && <div>effort headwind: {debug.effortHeadwindKmh} km/h <span style={{ color: "rgba(255,255,255,0.5)" }}>(drives wind factor)</span></div>}
-      <div>mean crosswind: {debug.meanCrosswindKmh} km/h</div>
-      <div>wind_factor: {debug.windFactor} <span style={{ color: "rgba(255,255,255,0.5)" }}>({debug.windFactor >= 0 ? "slows" : "speeds"})</span></div>
-      <div>baseline {Math.round(debug.baselineSec / 60)}m → predicted {Math.round(debug.predictedSec / 60)}m</div>
-      {debug.slowSec != null && <div>range {Math.round(debug.fastSec / 60)}–{Math.round(debug.slowSec / 60)}m</div>}
+      <div style={{ fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", padding: "8px 12px 0", fontFamily: "inherit" }}>
+        Tech info
+      </div>
+      {/* Highlighted top line: wind speed + two-letter direction + bearing */}
+      <div style={{
+        margin: "6px 12px 4px", padding: "8px 10px", borderRadius: 8,
+        background: "rgba(224,164,94,0.14)", border: "1px solid rgba(224,164,94,0.3)",
+        color: "#f0d8a8", fontWeight: 600,
+      }}>
+        wind: {debug.windSpeedKmh} km/h {debug.windFromLabel} ({debug.windFromDeg}°)
+      </div>
+      <div style={{ padding: "2px 12px 10px" }}>
+        <Row label="route avg bearing">{debug.avgBearingDeg}°</Row>
+        <Row label="mean headwind">{debug.meanHeadwindKmh} km/h ({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</Row>
+        {debug.effortHeadwindKmh != null && (
+          <Row label="effort headwind">{debug.effortHeadwindKmh} km/h</Row>
+        )}
+        <Row label="mean crosswind">{debug.meanCrosswindKmh} km/h</Row>
+        <Row label="wind factor">{debug.windFactor} ({debug.windFactor >= 0 ? "slows" : "speeds"})</Row>
+        <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
+        <Row label="forecast updated">{fmtClock(debug.forecastUpdatedMs)}</Row>
+        <Row label="next update">{fmtClock(debug.forecastNextUpdateMs)}</Row>
+      </div>
     </div>
   );
 }
