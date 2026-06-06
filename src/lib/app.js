@@ -725,6 +725,29 @@ export function createAppController(deps = {}) {
    * forecastWind is captured at ride start so the model can later reconstruct
    * the wind_factor that actually applied.
    */
+  /**
+   * One-shot distance (metres) from the device's current position to the
+   * route's start point. Resolves to null if geolocation is unavailable, denied,
+   * or times out — callers should treat null as "couldn't check" and proceed
+   * without the warning. Never rejects.
+   */
+  function distanceToStart(route, { geo } = {}) {
+    const geoApi = geo || (typeof navigator !== "undefined" ? navigator.geolocation : null);
+    const start = route.startRegion;
+    if (!geoApi || !start) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+      try {
+        geoApi.getCurrentPosition(
+          (pos) => done(Math.round(haversineLocal(pos.coords.latitude, pos.coords.longitude, start.lat, start.lon))),
+          () => done(null),
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
+        );
+      } catch { done(null); }
+    });
+  }
+
   async function startRide(route, { onTick, onFinish, geo } = {}) {
     const geoApi = geo || (typeof navigator !== "undefined" ? navigator.geolocation : null);
     if (!geoApi) throw new Error("Geolocation unavailable.");
@@ -826,7 +849,7 @@ export function createAppController(deps = {}) {
     store,
     createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute,
     getHomeVerdict, listRoutesWithVerdict,
-    recordRide, listRides, recomputeModel, startRide, routeTuning,
+    recordRide, listRides, recomputeModel, startRide, distanceToStart, routeTuning,
     start,
     exportAll, importAll, requestPersistence,
     stationSeriesFor,
