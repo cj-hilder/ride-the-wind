@@ -53,5 +53,29 @@ console.log('\nAssembly:');
   ok('calm dry -> temp only', r2.line==='14°C', r2.line);
 }
 
+console.log('\nSnow & fog:');
+{
+  const segs=[{lat:0,lon:0,bearing:90},{lat:0,lon:0.01,bearing:90}];
+  const times=[600,600];
+  // snow via snowfall cm
+  const snowFn=()=>({speed:8,fromDeg:0,tempC:-1,precipMm:0,precipProb:0,snowfallCm:0.5,weatherCode:3});
+  ok('snowfall flags snow', whatToExpect({segments:segs,times,windFn:snowFn,departMs:0}).tokens.includes('snow'));
+  // snow via weather code (73 = moderate snow) with no snowfall figure
+  const snowCodeFn=()=>({speed:8,fromDeg:0,tempC:-1,precipMm:0,precipProb:0,snowfallCm:0,weatherCode:73});
+  ok('snow weather code flags snow', whatToExpect({segments:segs,times,windFn:snowCodeFn,departMs:0}).tokens.includes('snow'));
+  // fog (45) flags fog, not snow
+  const fogFn=()=>({speed:3,fromDeg:0,tempC:6,precipMm:0,precipProb:0,snowfallCm:0,weatherCode:45});
+  const fr=whatToExpect({segments:segs,times,windFn:fogFn,departMs:0});
+  ok('fog code flags fog', fr.tokens.includes('fog'));
+  ok('fog does not flag snow', !fr.tokens.includes('snow'));
+  // clear code -> neither
+  const clearFn=()=>({speed:3,fromDeg:0,tempC:10,precipMm:0,precipProb:0,snowfallCm:0,weatherCode:1});
+  const cr=whatToExpect({segments:segs,times,windFn:clearFn,departMs:0});
+  ok('clear -> no snow/fog tokens', !cr.tokens.includes('snow') && !cr.tokens.includes('fog'));
+  // present at ANY point: snow only on the second segment
+  let n=0; const partialFn=()=>({speed:5,fromDeg:0,tempC:0,precipMm:0,precipProb:0,snowfallCm:(n++ ? 0.5 : 0),weatherCode:3});
+  ok('snow on any segment flags snow', whatToExpect({segments:segs,times,windFn:partialFn,departMs:0}).tokens.includes('snow'));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
