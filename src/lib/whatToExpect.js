@@ -21,6 +21,10 @@ export const TEMP_HOT_C = 26; // at/above this, show the max not the min
 export const RAIN_PROB_GATE = 15; // %, below which rain stays blank
 export const RAIN_BANDS = [0.05, 0.5, 2]; // total mm boundaries: maybe / wet / very
 export const SIDEWIND_BANDS = [15, 30]; // km/h: side / strong
+export const SNOW_CM_GATE = 0.1; // cm in an hour: any snow worth flagging
+// WMO weather codes (Open-Meteo `weather_code`) for fog and snow.
+export const FOG_CODES = [45, 48];
+export const SNOW_CODES = [71, 73, 75, 77, 85, 86];
 
 /* ------------------------------------------------------------------ *
  * Per-segment sampling along the arrival window
@@ -42,6 +46,8 @@ export function sampleConditions({ segments, times, windFn, departMs }) {
   const crosswinds = [];
   let precipTotalMm = 0; // mm actually falling during the ride
   const precipProb = [];
+  let snow = false; // snow forecast at any point during the ride
+  let fog = false;  // fog forecast at any point during the ride
   let clock = departMs;
   let totalSec = 0;
 
@@ -57,10 +63,14 @@ export function sampleConditions({ segments, times, windFn, departMs }) {
     // rate prorated by their fraction of the hour. Summed = total over ride.
     precipTotalMm += (w.precipMm || 0) * (times[i] / 3600);
     precipProb.push(w.precipProb || 0);
+    // Snow / fog: present if forecast at ANY point along the ride. snowfall is a
+    // direct cm/hour figure; fog has no dedicated field so we read the WMO code.
+    if ((w.snowfallCm || 0) >= SNOW_CM_GATE || SNOW_CODES.includes(w.weatherCode)) snow = true;
+    if (FOG_CODES.includes(w.weatherCode)) fog = true;
     clock += times[i] * 1000;
     totalSec += times[i];
   }
-  return { temps, crosswinds, precipTotalMm, precipProb, rideHours: totalSec / 3600 };
+  return { temps, crosswinds, precipTotalMm, precipProb, snow, fog, rideHours: totalSec / 3600 };
 }
 
 /* ------------------------------------------------------------------ *
@@ -119,6 +129,8 @@ export function whatToExpect({ segments, times, windFn, departMs }) {
   const tokens = [
     temperatureToken(c.temps),
     rainToken(c.precipTotalMm, c.precipProb),
+    c.snow ? "snow" : null,
+    c.fog ? "fog" : null,
     sideWindToken(c.crosswinds),
   ].filter(Boolean);
   return { tokens, line: tokens.join(" · ") };
