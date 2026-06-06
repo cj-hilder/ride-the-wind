@@ -311,12 +311,20 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
     || (routes[0] && routes[0].route);
   if (!activeRoute) return <Empty />;
 
-  // Build the day strip: today + next 6 days.
+  // Build the day strip: today + next 6 days. Tag each with whether it's one of
+  // the route's active days (for a subtle de-emphasis; still tappable).
+  const DOW_CODES = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+  const activeDays = activeRoute.activeDays || [];
   const days = [];
   for (let i = 0; i < 7; i++) {
     const ms = startOfToday + i * 86400e3;
     const d = new Date(ms);
-    days.push({ ms, label: i === 0 ? "Today" : WEEKDAY_NAMES[d.getDay()].slice(0, 3), isToday: i === 0 });
+    days.push({
+      ms,
+      label: i === 0 ? "Today" : WEEKDAY_NAMES[d.getDay()].slice(0, 3),
+      isToday: i === 0,
+      active: activeDays.includes(DOW_CODES[d.getDay()]),
+    });
   }
 
   const verdict = dayVerdict && dayVerdict.verdict;
@@ -375,6 +383,9 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
                 border: d.isToday ? "1px solid rgba(255,255,255,0.55)" : "1px solid transparent",
                 background: selected ? "#e0a45e" : "rgba(255,255,255,0.1)",
                 color: selected ? "#1a1f3a" : "rgba(255,255,255,0.8)",
+                // Subtle de-emphasis for days the route isn't normally ridden;
+                // still fully tappable.
+                opacity: selected || d.active ? 1 : 0.45,
               }}>{d.label}</button>
             );
           })}
@@ -561,11 +572,16 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
         <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <ConfidenceDots confidence={confidence} />
           {verdict.kHead != null && verdict.kTail != null ? (
-            <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
-              k <span style={{ color: verdict.windFactor >= 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor >= 0 ? 600 : 400 }}>↑{verdict.kHead.toFixed(2)}</span>
-              {" / "}
-              <span style={{ color: verdict.windFactor < 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor < 0 ? 600 : 400 }}>↓{verdict.kTail.toFixed(2)}</span>
-            </span>
+            Math.abs(verdict.kHead - verdict.kTail) < 0.005 ? (
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>k {verdict.kHead.toFixed(2)}</span>
+            ) : (
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
+                {/* headwind slows you → down arrow; tailwind speeds you → up arrow */}
+                k <span style={{ color: verdict.windFactor >= 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor >= 0 ? 600 : 400 }}>↓{verdict.kHead.toFixed(2)}</span>
+                {" / "}
+                <span style={{ color: verdict.windFactor < 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor < 0 ? 600 : 400 }}>↑{verdict.kTail.toFixed(2)}</span>
+              </span>
+            )
           ) : (
             <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>k = {verdict.k?.toFixed(2) ?? "—"}</span>
           )}
@@ -688,7 +704,7 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
                   </span>
                 </div>
                 <div style={{ display: "flex", gap: 12, marginTop: 6, fontSize: 12.5, color: "rgba(255,255,255,0.6)" }}>
-                  <span>arrive {route.targetArrival}</span>
+                  <span>{route.timeMode === "depart" ? "depart" : "arrive"} {route.targetArrival}</span>
                   <span>·</span>
                   <span>{route.activeDays.length} days/wk</span>
                   <span>·</span>
