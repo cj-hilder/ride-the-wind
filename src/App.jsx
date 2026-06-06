@@ -1400,7 +1400,7 @@ function Capture({ controller, route, onDone }) {
               Away from the start
             </div>
             <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 18 }}>
-              You are {farConfirm.metres} metres away from the start of this route. Record anyway?
+              You are {farConfirm.metres >= 1000 ? `${(farConfirm.metres / 1000).toFixed(1)} km` : `${farConfirm.metres} metres`} away from the start of this route. Record anyway?
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setFarConfirm(null)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>
