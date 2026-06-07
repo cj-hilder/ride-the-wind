@@ -636,6 +636,12 @@ function DebugReadout({ debug }) {
         <Row label="mean crosswind">{debug.meanCrosswindKmh} km/h</Row>
         <Row label="wind factor">{debug.windFactor} ({debug.windFactor >= 0 ? "slows" : "speeds"})</Row>
         <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
+        <Row label="wind tuning">
+          {debug.kIdHead && debug.kIdTail ? "head & tail learned"
+            : debug.kIdHead ? "head learned, tail manual"
+            : debug.kIdTail ? "tail learned, head manual"
+            : "manual (not enough windy rides yet)"}
+        </Row>
         <Row label="forecast updated">{fmtClock(debug.forecastUpdatedMs)}</Row>
         <Row label="next update">{fmtClock(debug.forecastNextUpdateMs)}</Row>
       </div>
@@ -980,6 +986,27 @@ function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, exampl
 
 const spinBtn = { width: 44, height: 44, borderRadius: 12, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.08)", color: "#fff", fontSize: 22, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 };
 
+/* Per-direction wind-learning status for the route editor. Reports, for each
+ * direction, whether k has been learned from windy rides or is still using the
+ * user's manual setting. The baseline isn't mentioned — it learns from a single
+ * calm ride and isn't what the user is tracking; only the wind correction is. */
+function WindLearningStatus({ learned }) {
+  const idHead = !!(learned && learned.idHead);
+  const idTail = !!(learned && learned.idTail);
+  const line = (dir, on) => on
+    ? `${dir} learned from your rides.`
+    : `${dir} using your setting until more ${dir.toLowerCase()} rides in windy conditions.`;
+  return (
+    <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.1)", fontSize: 11.5, lineHeight: 1.5 }}>
+      <div style={{ fontSize: 10.5, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", marginBottom: 4 }}>
+        Wind tuning
+      </div>
+      <div style={{ color: idHead ? "#6fd49a" : "rgba(255,255,255,0.55)" }}>{line("Headwind", idHead)}</div>
+      <div style={{ color: idTail ? "#6fd49a" : "rgba(255,255,255,0.55)" }}>{line("Tailwind", idTail)}</div>
+    </div>
+  );
+}
+
 function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
   const [name, setName] = useState(route.name);
   const [arrival, setArrival] = useState(route.targetArrival);
@@ -1122,6 +1149,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
           onChange={(next) => { onManualChange(next); }}
           learned={isLearned ? tuning.learned : null}
           onLearnedEdit={onLearnedEdit} example={tuning.example} />
+        <WindLearningStatus learned={tuning.learned} />
       </div>
 
       <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
@@ -1538,7 +1566,10 @@ function RowLine({ label, value, color }) {
 }
 function ConfidenceDots({ confidence }) {
   const n = confidence?.rides || 0;
-  const dots = confidence?.level === "good" ? 3 : confidence?.level === "learning" ? 2 : 1;
+  // Dots reflect WIND-correction learning per direction (what the user cares
+  // about), not raw ride count: neither / one / both directions learned.
+  const kLevel = confidence?.kLevel || "neither";
+  const dots = kLevel === "both" ? 3 : kLevel === "one" ? 2 : 1;
   return <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, color: "rgba(255,255,255,0.7)" }}>
     <span style={{ display: "inline-flex", gap: 3 }}>{[0, 1, 2].map((i) => <span key={i} style={{ width: 6, height: 6, borderRadius: 6, background: i < dots ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.25)" }} />)}</span>
     {n} rides
