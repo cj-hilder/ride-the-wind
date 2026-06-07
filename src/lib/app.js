@@ -175,6 +175,23 @@ export function createAppController(deps = {}) {
   }
   const isExampleId = (id) => id === EXAMPLE_ID;
 
+  // Update the example's tuning IN MEMORY ONLY, so a user can experiment with
+  // speed/k and see ride times change. Never persisted — resets on restart and
+  // when the example vanishes. Mutates the cached example object in place.
+  function updateExampleSeeds({ speedKmh, kHead, kTail }) {
+    const r = exampleRoute();
+    if (speedKmh != null) {
+      const baselineSec = Math.round(r.totalDistance / (speedKmh / 3.6));
+      r.baselineTimeSec = baselineSec;
+      r.seedStillAirSec = baselineSec;
+    }
+    const kH = kHead != null ? kHead : null;
+    const kT = kTail != null ? kTail : null;
+    if (kH != null) r.seedHeadwind20Sec = Math.round(r.seedStillAirSec * (1 + kH));
+    if (kT != null) r.seedTailwind20Sec = Math.round(r.seedStillAirSec * (1 - kT));
+    r.updatedAt = now();
+  }
+
   // In-memory caches for a session: avoid re-fetching the same station within
   // a short window. Keyed by rounded lat/lon.
   const forecastCache = new Map();
@@ -940,7 +957,7 @@ export function createAppController(deps = {}) {
     store,
     createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute,
     getHomeVerdict, listRoutesWithVerdict,
-    recordRide, listRides, recomputeModel, startRide, distanceToStart, routeTuning,
+    recordRide, listRides, recomputeModel, startRide, distanceToStart, routeTuning, updateExampleSeeds,
     start,
     exportAll, importAll, requestPersistence,
     stationSeriesFor,
