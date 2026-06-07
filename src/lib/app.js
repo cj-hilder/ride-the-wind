@@ -101,6 +101,80 @@ export function createAppController(deps = {}) {
 
   const now = deps.now || (() => Date.now());
 
+  // ----- Ephemeral example route (first-run onboarding) ------------------
+  // Shown ONLY when the user has zero real routes, so a brand-new user can see
+  // a live Plan tab (real forecast + map) and try the Ride flow before adding
+  // anything. NEVER written to storage, never learns, never records — it
+  // vanishes the moment a real route exists. Greymouth → Kumara on NZ's West
+  // Coast: a real, scenic tourist ride, downsampled to ~60 points so the map
+  // and forecast geometry are faithful without bloating the bundle.
+  const EXAMPLE_ID = "__example__";
+  const EXAMPLE_GPX =
+    `<?xml version="1.0"?><gpx version="1.1"><trk><name>Greymouth to Kumara</name><trkseg>` +
+    [
+      [-42.44959,171.20799], [-42.45233,171.20748], [-42.45412,171.20807], [-42.45668,171.20662],
+      [-42.45827,171.20474], [-42.46057,171.20022], [-42.46279,171.19611], [-42.46301,171.19557],
+      [-42.46413,171.19355], [-42.46652,171.19204], [-42.46828,171.19082], [-42.47149,171.18875],
+      [-42.47472,171.18687], [-42.47792,171.18541], [-42.48086,171.18388], [-42.48656,171.18167],
+      [-42.48794,171.18062], [-42.48989,171.17956], [-42.49085,171.17850], [-42.49059,171.17854],
+      [-42.49131,171.17727], [-42.49373,171.17587], [-42.49564,171.17510], [-42.49921,171.17356],
+      [-42.50029,171.17298], [-42.50294,171.17186], [-42.50585,171.17053], [-42.51199,171.16759],
+      [-42.51504,171.16597], [-42.51760,171.16442], [-42.51976,171.16308], [-42.52147,171.16225],
+      [-42.52315,171.16118], [-42.52448,171.16014], [-42.52689,171.15890], [-42.52912,171.15753],
+      [-42.53096,171.15625], [-42.53266,171.15499], [-42.53405,171.15398], [-42.53499,171.15323],
+      [-42.53912,171.15069], [-42.54472,171.14977], [-42.54588,171.14923], [-42.54642,171.14892],
+      [-42.55009,171.14425], [-42.55132,171.14294], [-42.55617,171.13896], [-42.56031,171.14278],
+      [-42.56043,171.14400], [-42.56263,171.14515], [-42.56262,171.14575], [-42.56597,171.14758],
+      [-42.56978,171.14820], [-42.57184,171.14855], [-42.57951,171.15173], [-42.59180,171.15385],
+      [-42.60075,171.15405], [-42.62342,171.17827], [-42.62865,171.18405], [-42.62976,171.18680],
+    ].map(([la, lo]) => `<trkpt lat="${la}" lon="${lo}"><ele>30</ele></trkpt>`).join("") +
+    `</trkseg></trk></gpx>`;
+
+  // Same defaults a brand-new route gets in Setup: 16 km/h still-air, Urban
+  // ground effect (k 0.35 both ways). Seeds are derived from the example's
+  // actual distance with the identical formula Setup uses, so the example
+  // models exactly the starting point a user would create.
+  const EXAMPLE_DEFAULT_SPEED_KMH = 16;
+  const EXAMPLE_DEFAULT_K = 0.35;
+
+  let _exampleRoute = null;
+  function exampleRoute() {
+    if (_exampleRoute) return _exampleRoute;
+    const p = processGpx(EXAMPLE_GPX, { domParser: deps.domParser });
+    const baselineSec = Math.round(p.totalDistance / (EXAMPLE_DEFAULT_SPEED_KMH / 3.6));
+    _exampleRoute = {
+      id: EXAMPLE_ID,
+      name: "Greymouth → Kumara (example)",
+      isExample: true,
+      description: "",
+      segments: p.segments,
+      totalDistance: p.totalDistance,
+      hasElevation: p.hasElevation,
+      startRegion: { lat: p.start.lat, lon: p.start.lon, radius: 60 },
+      endRegion: { lat: p.end.lat, lon: p.end.lon, radius: 60 },
+      baselineTimeSec: baselineSec,
+      seedStillAirSec: baselineSec,
+      seedHeadwind20Sec: Math.round(baselineSec * (1 + EXAMPLE_DEFAULT_K)),
+      seedTailwind20Sec: Math.round(baselineSec * (1 - EXAMPLE_DEFAULT_K)),
+      targetArrival: "08:30",
+      timeMode: "arrive",
+      arrivalOverrides: {},
+      activeDays: ["MO", "TU", "WE", "TH", "FR"],
+      alertThresholdMin: null,
+      createdAt: now(), updatedAt: now(),
+      rawGpx: null,
+    };
+    return _exampleRoute;
+  }
+  // Seeded model for the example (k from its seed times; never trained).
+  function exampleModel() {
+    const r = exampleRoute();
+    const k = computeSeedKSplit(r.seedStillAirSec, r.seedHeadwind20Sec, r.seedTailwind20Sec);
+    return { routeId: EXAMPLE_ID, kHead: k.kHead ?? 1.0, kTail: k.kTail ?? 1.0,
+      regressionState: learning.createModelState(), usableRideCount: 0, lastUpdated: now() };
+  }
+  const isExampleId = (id) => id === EXAMPLE_ID;
+
   // In-memory caches for a session: avoid re-fetching the same station within
   // a short window. Keyed by rounded lat/lon.
   const forecastCache = new Map();
@@ -251,9 +325,9 @@ export function createAppController(deps = {}) {
    * and confidence, ready for the UI. Fetches the live forecast.
    */
   async function getHomeVerdict(routeId, dayMs = null, exploredHHMM = null, forceDepart = false) {
-    const route = await store.getRoute(routeId);
+    const route = isExampleId(routeId) ? exampleRoute() : await store.getRoute(routeId);
     if (!route) return null;
-    const model = await store.getModel(routeId);
+    const model = isExampleId(routeId) ? exampleModel() : await store.getModel(routeId);
     const seed = await seedFor(route, model);
     const stationSeries = await stationSeriesFor(route);
 
@@ -596,6 +670,15 @@ export function createAppController(deps = {}) {
 
   async function listRoutesWithVerdict(onProgress) {
     const routes = await store.listRoutes();
+    // First-run: no real routes yet → show the ephemeral example so the Plan and
+    // Ride tabs are explorable. It is never stored and disappears once a real
+    // route is added.
+    if (routes.length === 0) {
+      if (onProgress) onProgress(0, 1);
+      const v = await getHomeVerdict(EXAMPLE_ID);
+      if (onProgress) onProgress(1, 1);
+      return v ? [v] : [];
+    }
     const total = routes.length;
     if (onProgress) onProgress(0, total);
     const out = new Array(total);
@@ -628,6 +711,11 @@ export function createAppController(deps = {}) {
    * usable rides into the model.
    */
   async function recordRide(capture) {
+    // The example route is ephemeral — a demo ride runs the full flow but
+    // persists nothing and never trains a model.
+    if (isExampleId(capture.routeId)) {
+      return { skipped: true, isExample: true };
+    }
     const route = await store.getRoute(capture.routeId);
     const model = await store.getModel(capture.routeId);
     const seed = await seedFor(route, model);
@@ -678,9 +766,9 @@ export function createAppController(deps = {}) {
    * Learned display and to drive the off-scale indicators.
    */
   async function routeTuning(routeId) {
-    const route = await store.getRoute(routeId);
+    const route = isExampleId(routeId) ? exampleRoute() : await store.getRoute(routeId);
     if (!route) return null;
-    const model = await store.getModel(routeId);
+    const model = isExampleId(routeId) ? exampleModel() : await store.getModel(routeId);
     const seed = await seedFor(route, model);
     const distanceM = route.totalDistance;
 
