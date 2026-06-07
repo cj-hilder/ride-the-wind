@@ -175,10 +175,11 @@ export function createAppController(deps = {}) {
   }
   const isExampleId = (id) => id === EXAMPLE_ID;
 
-  // Update the example's tuning IN MEMORY ONLY, so a user can experiment with
-  // speed/k and see ride times change. Never persisted — resets on restart and
-  // when the example vanishes. Mutates the cached example object in place.
-  function updateExampleSeeds({ speedKmh, kHead, kTail }) {
+  // Update the example's tuning AND schedule IN MEMORY ONLY, so a user can
+  // experiment with speed/k/arrival/days/mode and see the Plan tab respond.
+  // Never persisted — resets on restart and when the example vanishes. Mutates
+  // the cached example object in place.
+  function updateExampleSeeds({ speedKmh, kHead, kTail, targetArrival, activeDays, timeMode }) {
     const r = exampleRoute();
     if (speedKmh != null) {
       const baselineSec = Math.round(r.totalDistance / (speedKmh / 3.6));
@@ -189,6 +190,9 @@ export function createAppController(deps = {}) {
     const kT = kTail != null ? kTail : null;
     if (kH != null) r.seedHeadwind20Sec = Math.round(r.seedStillAirSec * (1 + kH));
     if (kT != null) r.seedTailwind20Sec = Math.round(r.seedStillAirSec * (1 - kT));
+    if (targetArrival != null) r.targetArrival = targetArrival;
+    if (activeDays != null) r.activeDays = activeDays;
+    if (timeMode != null) r.timeMode = timeMode === "depart" ? "depart" : "arrive";
     r.updatedAt = now();
   }
 
