@@ -36,4 +36,16 @@ ok('example gone once a real route exists', list2.length===1 && !list2[0].route.
   ok('fresh controller back to defaults (not persisted)', (await fresh.routeTuning('__example__')).manual.speedKmh===16);
 }
 
+
+// Schedule fields are editable in-memory too (arrival/days/mode), name aside.
+{
+  const a=mk();
+  a.updateExampleSeeds({targetArrival:'07:15', activeDays:['MO','WE','FR'], timeMode:'depart'});
+  const r=(await a.listRoutesWithVerdict())[0].route;
+  ok('example arrival editable in-memory', r.targetArrival==='07:15');
+  ok('example activeDays editable in-memory', JSON.stringify(r.activeDays)===JSON.stringify(['MO','WE','FR']));
+  ok('example timeMode editable in-memory', r.timeMode==='depart');
+  ok('schedule edit persists nothing', (await a.listRoutes()).length===0);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);process.exit(fail?1:0);
