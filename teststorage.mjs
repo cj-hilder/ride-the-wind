@@ -127,5 +127,18 @@ console.log('\nPersistent storage request shim:');
   ok('passes through false', (await requestPersistentStorage({storage:{persist:async()=>false}}))===false);
 }
 
+// Reorder routes: explicit order persists and listRoutes returns sorted.
+{
+  const s = mkStore();
+  const r1 = await s.createRoute(processed, { ...setup, name:'One' }, { kHead:1, kTail:1 });
+  const r2 = await s.createRoute(processed, { ...setup, name:'Two' }, { kHead:1, kTail:1 });
+  const r3 = await s.createRoute(processed, { ...setup, name:'Three' }, { kHead:1, kTail:1 });
+  let names = (await s.listRoutes()).map(r=>r.name);
+  ok('routes list in creation order', JSON.stringify(names)===JSON.stringify(['One','Two','Three']), names.join(','));
+  await s.reorderRoutes([r3.id, r1.id, r2.id]);
+  names = (await s.listRoutes()).map(r=>r.name);
+  ok('reorder persists new order', JSON.stringify(names)===JSON.stringify(['Three','One','Two']), names.join(','));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
