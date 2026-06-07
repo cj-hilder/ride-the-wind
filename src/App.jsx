@@ -1061,7 +1061,14 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
     // see ride times change, but never persist (it stays ephemeral). Skip all
     // storage writes (name/schedule aren't meaningful to change on the demo).
     if (route.isExample) {
-      if (val) controller.updateExampleSeeds({ speedKmh: val.speedKmh, kHead: val.kHead, kTail: val.kTail });
+      controller.updateExampleSeeds({
+        speedKmh: val ? val.speedKmh : undefined,
+        kHead: val ? val.kHead : undefined,
+        kTail: val ? val.kTail : undefined,
+        targetArrival: arrival,
+        activeDays: days,
+        timeMode,
+      });
       onSaved();
       return;
     }
@@ -1120,7 +1127,8 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
   return (
     <div style={{ padding: "4px 16px 16px", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
       <label style={lbl}>Route name</label>
-      <input value={name} onChange={(e) => setName(e.target.value)} style={INP} />
+      <input value={name} onChange={(e) => setName(e.target.value)} disabled={route.isExample}
+        style={{ ...INP, ...(route.isExample ? { opacity: 0.5, cursor: "not-allowed" } : {}) }} />
 
       <label style={{ ...lbl, marginTop: 12 }}>{timeMode === "depart" ? "Departure time" : "Target arrival"}</label>
       <input type="time" value={arrival} onChange={(e) => setArrival(e.target.value)} style={INP} />
@@ -1202,10 +1210,11 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
         </div>
       )}
 
-      {/* Delete route entirely (not for the ephemeral example) */}
-      {!route.isExample && (
+      {/* Delete route entirely (disabled for the ephemeral example) */}
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-        {!confirmDel ? (
+        {route.isExample ? (
+          <button disabled style={{ ...backupBtn, color: "#f0a08c", borderColor: "rgba(224,120,94,0.4)", opacity: 0.4, cursor: "not-allowed" }}>Delete route</button>
+        ) : !confirmDel ? (
           <button onClick={() => setConfirmDel(true)} style={{ ...backupBtn, color: "#f0a08c", borderColor: "rgba(224,120,94,0.4)" }}>Delete route</button>
         ) : (
           <>
@@ -1215,7 +1224,6 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
           </>
         )}
       </div>
-      )}
     </div>
   );
 }
