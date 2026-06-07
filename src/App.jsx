@@ -368,6 +368,15 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
 
       {/* Header: route selector pills (if >1) handled below; title + day strip */}
       <div style={{ position: "relative", zIndex: 2, padding: "calc(22px + env(safe-area-inset-top)) 16px 0" }}>
+        {activeRoute.isExample && (
+          <div style={{
+            margin: "0 8px 10px", padding: "8px 12px", borderRadius: 10,
+            background: "rgba(224,164,94,0.16)", border: "1px solid rgba(224,164,94,0.32)",
+            fontSize: 12.5, color: "#f0d8a8", lineHeight: 1.45,
+          }}>
+            <b>Example route.</b> This is a demo so you can see how it works — add your own route to get started.
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "0 8px 12px" }}>
           <span style={{ fontFamily: "'Fraunces', serif", fontSize: 19, fontWeight: 600, color: "rgba(255,255,255,0.95)" }}>Plan</span>
           <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)" }}>{activeRoute.name}</span>
@@ -1360,10 +1369,14 @@ function Capture({ controller, route, onDone }) {
   };
 
   const start = async () => {
-    const metres = await controller.distanceToStart(route);
-    if (metres != null && metres > 100) {
-      setFarConfirm({ metres }); // ask before recording
-      return;
+    // Skip the distance guard for the ephemeral example — it's a demo, the
+    // rider isn't expected to be at the example's start.
+    if (!route.isExample) {
+      const metres = await controller.distanceToStart(route);
+      if (metres != null && metres > 100) {
+        setFarConfirm({ metres }); // ask before recording
+        return;
+      }
     }
     await beginRecording();
   };
@@ -1495,7 +1508,9 @@ function Capture({ controller, route, onDone }) {
 
               {/* Accept / discard */}
               <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", textAlign: "center", margin: "24px 0 16px", lineHeight: 1.45 }}>
-                Accept to train the model, or discard if it isn't representative.
+                {route.isExample
+                  ? "This is an example route — your ride time will not be saved. Create your first real route to save actual ride times."
+                  : "Accept to train the model, or discard if it isn't representative."}
               </div>
               <div style={{ display: "flex", gap: 10 }}>
                 <button onClick={discard} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "none", color: "#f0a08c", border: "1px solid rgba(224,120,94,0.4)" }}>Discard</button>
@@ -1508,7 +1523,7 @@ function Capture({ controller, route, onDone }) {
             <div style={{ marginTop: 36, textAlign: "center" }}>
               <div style={{ fontSize: 36 }}>{confirm === "yes" ? "✓" : "✕"}</div>
               <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginTop: 6 }}>
-                {confirm === "yes" ? "Added to your model" : "Ride discarded"}
+                {confirm === "yes" ? (route.isExample ? "Demo complete" : "Added to your model") : "Ride discarded"}
               </div>
               <button onClick={onDone} style={{ marginTop: 26, width: "100%", padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Done</button>
             </div>
