@@ -160,10 +160,13 @@ export default function App() {
         opts.quiet ? undefined : (done, total) => setProgress({ done, total })
       );
       setRoutes(list);
-      // Only auto-select when nothing is chosen yet (first load). Read the live
-      // value via ref so this stable callback never stomps an existing selection
-      // on a background refresh.
-      if (!activeRouteIdRef.current && list[0]) setActiveRouteId(list[0].route.id);
+      // Auto-select on first load, AND re-point if the current selection is no
+      // longer in the list — e.g. after deleting the last real route, the list
+      // becomes just the example, so the stale id must hand off to it without a
+      // restart.
+      const cur = activeRouteIdRef.current;
+      const stillPresent = cur && list.some((r) => r.route.id === cur);
+      if (!stillPresent && list[0]) setActiveRouteId(list[0].route.id);
       // Signal the Plan tab to recompute the displayed ride against fresh data,
       // preserving its day/route/explored-time selection.
       setForecastGen((g) => g + 1);
@@ -1054,6 +1057,14 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
   };
 
   const save = async () => {
+    // Example route: in-memory only — let the user experiment with speed/k and
+    // see ride times change, but never persist (it stays ephemeral). Skip all
+    // storage writes (name/schedule aren't meaningful to change on the demo).
+    if (route.isExample) {
+      if (val) controller.updateExampleSeeds({ speedKmh: val.speedKmh, kHead: val.kHead, kTail: val.kTail });
+      onSaved();
+      return;
+    }
     // In Manual state, persist the speed/ground-effect values as seeds — but
     // ONLY if they actually changed, because reseeding throws away any logged
     // rides. An unrelated edit (rename, schedule) must not wipe ride history.
@@ -1191,7 +1202,8 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
         </div>
       )}
 
-      {/* Delete route entirely */}
+      {/* Delete route entirely (not for the ephemeral example) */}
+      {!route.isExample && (
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
         {!confirmDel ? (
           <button onClick={() => setConfirmDel(true)} style={{ ...backupBtn, color: "#f0a08c", borderColor: "rgba(224,120,94,0.4)" }}>Delete route</button>
@@ -1203,6 +1215,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
           </>
         )}
       </div>
+      )}
     </div>
   );
 }
