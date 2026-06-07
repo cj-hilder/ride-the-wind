@@ -1617,6 +1617,7 @@ function HelpPanel({ onClose }) {
   const h3 = { fontFamily: "'Fraunces',serif", fontSize: 17, fontWeight: 600, color: "#fff", margin: "0 0 6px" };
   const p = { fontSize: 13.5, color: "rgba(255,255,255,0.75)", lineHeight: 1.5, margin: "0 0 4px" };
   const ol = { fontSize: 13.5, color: "rgba(255,255,255,0.75)", lineHeight: 1.55, margin: "2px 0 4px", paddingLeft: 20 };
+  const lnk = { color: "#e0a45e", textDecoration: "underline", fontWeight: 600 };
   const section = { padding: "16px 0", borderBottom: "1px solid rgba(255,255,255,0.1)" };
 
   return (
@@ -1672,16 +1673,20 @@ function HelpPanel({ onClose }) {
           <p style={p}>
             A route needs a GPX file (its path on the map). If you’ve already got one from Strava, Komoot, Garmin or similar, just open it here. Otherwise it takes a minute to make one:
           </p>
-          <p style={{ ...p, fontWeight: 600, color: "rgba(255,255,255,0.85)", marginTop: 8 }}>Mapy.com — good for dedicated bike lanes</p>
+          <p style={{ ...p, fontWeight: 600, color: "rgba(255,255,255,0.85)", marginTop: 8 }}>
+            <a href="https://mapy.com" target="_blank" rel="noopener noreferrer" style={lnk}>Mapy.com</a> — good for dedicated bike lanes
+          </p>
           <ol style={ol}>
-            <li>Open <b>Mapy.com</b>, then the planner (menu → directions).</li>
+            <li>Open <a href="https://mapy.com" target="_blank" rel="noopener noreferrer" style={lnk}>Mapy.com</a>, then the planner (menu → directions).</li>
             <li>Choose the <b>bike</b> mode so it routes along bike‑friendly streets.</li>
             <li>Type your start in box A and destination in box B — the line draws itself.</li>
             <li>Expand the route panel, scroll down, and tap <b>Export</b>.</li>
           </ol>
-          <p style={{ ...p, fontWeight: 600, color: "rgba(255,255,255,0.85)", marginTop: 8 }}>OnTheGoMap.com — the fast click‑and‑go way</p>
+          <p style={{ ...p, fontWeight: 600, color: "rgba(255,255,255,0.85)", marginTop: 8 }}>
+            <a href="https://onthegomap.com" target="_blank" rel="noopener noreferrer" style={lnk}>OnTheGoMap.com</a> — the fast click‑and‑go way
+          </p>
           <ol style={ol}>
-            <li>Open <b>OnTheGoMap.com</b> and set the mode to <b>bike</b> (top centre).</li>
+            <li>Open <a href="https://onthegomap.com" target="_blank" rel="noopener noreferrer" style={lnk}>OnTheGoMap.com</a> and set the mode to <b>bike</b> (top centre).</li>
             <li>Click your start on the map, then your destination — it snaps to the roads.</li>
             <li>Open the menu (top right) and tap <b>Export as GPX</b>.</li>
           </ol>
