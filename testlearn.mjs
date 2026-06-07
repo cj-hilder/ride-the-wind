@@ -82,6 +82,21 @@ console.log('\nConfidence levels:');
   for(let i=0;i<12;i++) s=updateModel(s,0.1*(i%5)-0.2,1000); ok('good at 18', confidence(s).level==='good');
 }
 
+console.log('\nConfidence carries per-direction k-learning status:');
+{
+  // Empty: nothing learned.
+  const c0=confidence(createModelState());
+  ok('empty -> kLevel neither', c0.kLevel==='neither');
+  ok('empty -> idHead/idTail false', c0.idHead===false && c0.idTail===false);
+  ok('kLevel field always present', typeof c0.kLevel==='string');
+  // Many headwind rides with spread -> head becomes identifiable, kLevel reflects it.
+  let sh=createModelState();
+  for(let i=0;i<20;i++) sh=updateModel(sh, 0.1+0.2*(i%5), 1000+50*(i%5)); // positive wind_factor spread (headwind)
+  const ch=confidence(sh);
+  ok('headwind spread -> idHead true', ch.idHead===true, JSON.stringify(ch));
+  ok('kLevel one or both when a direction identified', ch.kLevel==='one'||ch.kLevel==='both');
+}
+
 console.log('\nOnline == rebuild:');
 {
   const wfs=[-0.5,-0.2,0.1,0.3,-0.4,0.5,0.2,-0.1,0.6,-0.3];
