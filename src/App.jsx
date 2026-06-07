@@ -671,6 +671,58 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
   const [conservatism, setConservatism] = useState(pctToSlider(95));
   const fileRef = useRef();
 
+  // Drag-to-reorder: keep a local id order so the list rearranges live while
+  // dragging; persist on drop. Synced to props whenever the route set changes.
+  const [order, setOrder] = useState(() => routes.map((r) => r.route.id));
+  const [dragId, setDragId] = useState(null);
+  const dragRef = useRef({ id: null, y: 0 });
+  useEffect(() => {
+    // Re-sync when routes are added/removed (not on every render).
+    const ids = routes.map((r) => r.route.id);
+    setOrder((prev) => {
+      const same = prev.length === ids.length && prev.every((p) => ids.includes(p));
+      return same ? prev : ids;
+    });
+  }, [routes]);
+
+  const byId = new Map(routes.map((r) => [r.route.id, r]));
+  const orderedRoutes = order.map((id) => byId.get(id)).filter(Boolean);
+  const isExampleList = routes.length === 1 && routes[0].route.isExample;
+  const canReorder = routes.length > 1 && !isExampleList;
+
+  const onHandleDown = (id) => (e) => {
+    e.stopPropagation();
+    dragRef.current = { id, y: e.clientY };
+    setDragId(id);
+  };
+  const onPointerMove = (e) => {
+    const d = dragRef.current;
+    if (!d.id) return;
+    const cards = Array.from(e.currentTarget.querySelectorAll("[data-route-card]"));
+    const overEl = cards.find((c) => {
+      const r = c.getBoundingClientRect();
+      return e.clientY >= r.top && e.clientY <= r.bottom;
+    });
+    if (!overEl) return;
+    const overId = overEl.getAttribute("data-route-card");
+    if (overId === d.id) return;
+    setOrder((prev) => {
+      const from = prev.indexOf(d.id), to = prev.indexOf(overId);
+      if (from < 0 || to < 0) return prev;
+      const next = prev.slice();
+      next.splice(to, 0, next.splice(from, 1)[0]);
+      return next;
+    });
+  };
+  const endDrag = async () => {
+    const d = dragRef.current;
+    dragRef.current = { id: null, y: 0 };
+    if (!d.id) return;
+    setDragId(null);
+    await controller.reorderRoutes(order);
+    await onChanged();
+  };
+
   useEffect(() => {
     let alive = true;
     controller.store.getSetting("conservatismPct", 95).then((v) => {
@@ -740,25 +792,40 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
           No routes yet. Tap <b style={{ color: "#e0a45e" }}>+ New</b> to add one from a GPX file.
         </div>
       ) : (
-        <div style={{ padding: "0 16px" }}>
-          {routes.map(({ route, verdict, confidence }) => (
-            <div key={route.id} style={{
+        <div style={{ padding: "0 16px" }}
+          onPointerMove={canReorder ? onPointerMove : undefined}
+          onPointerUp={canReorder ? endDrag : undefined}
+          onPointerCancel={canReorder ? endDrag : undefined}>
+          {orderedRoutes.map(({ route, verdict, confidence }) => (
+            <div key={route.id} data-route-card={route.id} style={{
               marginBottom: 12, borderRadius: 16, overflow: "hidden",
               background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)",
+              opacity: dragId === route.id ? 0.5 : 1,
+              boxShadow: dragId === route.id ? "0 6px 20px rgba(0,0,0,0.4)" : "none",
+              touchAction: dragId ? "none" : "auto",
             }}>
-              <div onClick={() => setEditing(editing === route.id ? null : route.id)} style={{ padding: "14px 16px", cursor: "pointer" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                  <span style={{ fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{route.name}</span>
-                  <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)" }}>
-                    {(route.totalDistance / 1000).toFixed(1)} km
-                  </span>
-                </div>
-                <div style={{ display: "flex", gap: 12, marginTop: 6, fontSize: 12.5, color: "rgba(255,255,255,0.6)" }}>
-                  <span>{route.timeMode === "depart" ? "depart" : "arrive"} {route.targetArrival}</span>
-                  <span>·</span>
-                  <span>{route.activeDays.length} days/wk</span>
-                  <span>·</span>
+              <div style={{ display: "flex", alignItems: "stretch" }}>
+                {canReorder && (
+                  <div onPointerDown={onHandleDown(route.id)} title="Drag to reorder" style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    padding: "0 12px", cursor: "grab", touchAction: "none",
+                    color: "rgba(255,255,255,0.35)", fontSize: 18, userSelect: "none",
+                  }}>⋮⋮</div>
+                )}
+                <div onClick={() => setEditing(editing === route.id ? null : route.id)} style={{ flex: 1, padding: canReorder ? "14px 16px 14px 0" : "14px 16px", cursor: "pointer" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span style={{ fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{route.name}</span>
+                    <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)" }}>
+                      {(route.totalDistance / 1000).toFixed(1)} km
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: 12, marginTop: 6, fontSize: 12.5, color: "rgba(255,255,255,0.6)" }}>
+                    <span>{route.timeMode === "depart" ? "depart" : "arrive"} {route.targetArrival}</span>
+                    <span>·</span>
+                    <span>{route.activeDays.length} days/wk</span>
+                    <span>·</span>
                   <span>{confidence?.rides ?? 0} rides</span>
+                </div>
                 </div>
               </div>
               {editing === route.id && (
