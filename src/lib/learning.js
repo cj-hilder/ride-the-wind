@@ -394,9 +394,18 @@ export function predict(state, windFactor, seed, opts = {}) {
 export function confidence(state, opts = {}) {
   const { provisionalBelow = 5, goodAbove = 15 } = opts;
   const n = state.n;
-  if (n < provisionalBelow) return { level: "provisional", rides: n };
-  if (n < goodAbove) return { level: "learning", rides: n };
-  return { level: "good", rides: n };
+  // Per-direction k identifiability: whether enough rides WITH WIND in each
+  // direction have accumulated to actually learn the wind sensitivity (k), as
+  // opposed to just counting rides. This is what the user cares about — the
+  // baseline learns from one calm ride, but k needs windy rides per direction.
+  const fit = fitModel(state) || {};
+  const idHead = !!fit.identifiableHead;
+  const idTail = !!fit.identifiableTail;
+  // kLevel reflects WIND learning, not ride count: neither / one / both.
+  const kLevel = idHead && idTail ? "both" : (idHead || idTail ? "one" : "neither");
+  if (n < provisionalBelow) return { level: "provisional", rides: n, idHead, idTail, kLevel };
+  if (n < goodAbove) return { level: "learning", rides: n, idHead, idTail, kLevel };
+  return { level: "good", rides: n, idHead, idTail, kLevel };
 }
 
 /* ------------------------------------------------------------------ *

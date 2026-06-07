@@ -577,6 +577,8 @@ export function createAppController(deps = {}) {
         fastSec: range ? Math.round(range.lowSec) : null,
         forecastUpdatedMs: fetchedAt,
         forecastNextUpdateMs: fetchedAt != null ? fetchedAt + FORECAST_TTL : null,
+        kIdHead: !!conf.idHead,
+        kIdTail: !!conf.idTail,
       };
     }
 
