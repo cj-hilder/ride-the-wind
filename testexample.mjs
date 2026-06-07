@@ -22,4 +22,18 @@ let pts=''; for(let i=0;i<=30;i++) pts+=`<trkpt lat="${(-45.8+i*0.001).toFixed(5
 await app.createRoute(`<?xml version="1.0"?><gpx><trk><trkseg>${pts}</trkseg></trk></gpx>`,{name:'Real',seedStillAirSec:1500,targetArrival:'08:30',activeDays:['MO']});
 const list2=await app.listRoutesWithVerdict();
 ok('example gone once a real route exists', list2.length===1 && !list2[0].route.isExample);
+
+// In-memory K experimentation: edits stick in-session, never persist.
+{
+  const a=mk();
+  let t=await a.routeTuning('__example__');
+  ok('example defaults speed 16 / k 0.35', t.manual.speedKmh===16 && Math.abs(t.manual.kHead-0.35)<0.001);
+  a.updateExampleSeeds({speedKmh:24, kHead:0.5, kTail:0.2});
+  t=await a.routeTuning('__example__');
+  ok('in-memory edit sticks (speed 24, k 0.5/0.2)', t.manual.speedKmh===24 && Math.abs(t.manual.kHead-0.5)<0.01 && Math.abs(t.manual.kTail-0.2)<0.01);
+  ok('editing example persists nothing', (await a.listRoutes()).length===0);
+  const fresh=mk();
+  ok('fresh controller back to defaults (not persisted)', (await fresh.routeTuning('__example__')).manual.speedKmh===16);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);process.exit(fail?1:0);
