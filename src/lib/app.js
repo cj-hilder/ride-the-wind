@@ -328,6 +328,7 @@ export function createAppController(deps = {}) {
   const updateRoute = (id, patch) => store.updateRoute(id, patch);
   const resetRoute = (id, baseValues) => store.resetRoute(id, baseValues);
   const deleteRoute = (id) => store.deleteRoute(id);
+  const reorderRoutes = (orderedIds) => store.reorderRoutes(orderedIds);
 
   /* ---------------------------------------------------------------- *
    * Prediction / verdict for the home screen
@@ -959,7 +960,7 @@ export function createAppController(deps = {}) {
 
   return {
     store,
-    createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute,
+    createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
     getHomeVerdict, listRoutesWithVerdict,
     recordRide, listRides, recomputeModel, startRide, distanceToStart, routeTuning, updateExampleSeeds,
     start,

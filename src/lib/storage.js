@@ -254,6 +254,7 @@ export class Store {
       alertThresholdMin: setup.alertThresholdMin ?? null,
       createdAt: now,
       updatedAt: now,
+      order: now, // explicit ordering; new routes append (drag to reorder)
       rawGpx: setup.rawGpx ?? null,
     };
     await this.b.put(STORES.ROUTES, route);
@@ -274,8 +275,22 @@ export class Store {
   getRoute(id) {
     return this.b.get(STORES.ROUTES, id);
   }
-  listRoutes() {
-    return this.b.getAll(STORES.ROUTES);
+  async listRoutes() {
+    const routes = await this.b.getAll(STORES.ROUTES);
+    // Stable explicit ordering. Routes created before the `order` field fall
+    // back to createdAt so they keep a sensible, stable position.
+    return routes.sort((a, b) =>
+      (a.order ?? a.createdAt ?? 0) - (b.order ?? b.createdAt ?? 0));
+  }
+
+  /** Persist a new route order from an array of ids (first = top). */
+  async reorderRoutes(orderedIds) {
+    const routes = await this.b.getAll(STORES.ROUTES);
+    const rank = new Map(orderedIds.map((id, i) => [id, i]));
+    for (const r of routes) {
+      const next = rank.has(r.id) ? rank.get(r.id) : Number.MAX_SAFE_INTEGER;
+      if (r.order !== next) await this.b.put(STORES.ROUTES, { ...r, order: next });
+    }
   }
 
   async updateRoute(id, patch) {
