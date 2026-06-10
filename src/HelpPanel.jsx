@@ -19,9 +19,9 @@ function detectInstall() {
 }
 
 const INSTALL_TEXT = {
-  ios: "Tap the Share button, then "Add to Home Screen".",
-  android: "Open the browser menu, then "Install app" (or "Add to Home Screen").",
-  desktop: "Click the install icon in the address bar, or browser menu → "Install".",
+  ios: 'Tap the Share button, then \u201cAdd to Home Screen\u201d.',
+  android: 'Open the browser menu, then \u201cInstall app\u201d (or \u201cAdd to Home Screen\u201d).',
+  desktop: 'Click the install icon in the address bar, or browser menu \u2192 \u201cInstall\u201d.',
   unknown: "Add this page to your home screen from your browser's menu.",
 };
 
