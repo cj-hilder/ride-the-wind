@@ -102,7 +102,7 @@ export default function HelpPanel({ onClose }) {
             <li>Open the menu (top right) and tap <b>Export as GPX</b>.</li>
           </ol>
           <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
-            Either way the file lands in your Downloads folder — open it in Ride the Wind to add the route. You actually need to make two GPX files, one for riding out, and one for the return ride.
+            Either way the file lands in your Downloads folder. Choose <b>New</b> in Ride the Wind to load the GPX and add the route. You actually need to make two GPX files and add two routes, one for riding out, and one for the return ride.
           </p>
         </div>
 
