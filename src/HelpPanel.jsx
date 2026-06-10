@@ -42,7 +42,7 @@ export default function HelpPanel({ onClose }) {
       <div style={{ flex: 1, overflowY: "auto", padding: "calc(28px + env(safe-area-inset-top)) 24px 20px" }}>
         <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600, marginBottom: 2 }}>Ride the Wind</div>
         <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 14 }}>
-          Predicts your bike commute time from the forecast wind, so you know when to leave.
+          Predicts your bike commute time from the forecast wind for your exact route. Uses multiple forecasts to give you a range of ride times, let's you apply a customisable margin of error, then recommends when to leave in order to arrive on time.
         </div>
 
         {!installed && (
@@ -56,29 +56,26 @@ export default function HelpPanel({ onClose }) {
         <div style={section}>
           <h3 style={h3}>The three tabs</h3>
           <p style={p}>
-            <b>Plan</b> shows when to leave for the selected route on any day this week — tap a day along the top. The headline tells you if the wind means leaving earlier or later than usual, with the leave‑by time and a live countdown when it's near.
+            <b>Plan</b> shows forecast ride times and recommended departures for the week ahead. Also alerts you when rain, snow, fog, thunderstorms or sidewinds are forecast for your ride. 
           </p>
           <p style={p}>
-            <b>Ride</b> records an actual ride by GPS. Pause for stops, and at the end nudge the time or discard it — accepted rides train the model.
+            <b>Ride</b> let's you record actual ride times which are then used to tune the model and make more accurate predictions. 
           </p>
           <p style={p}>
-            <b>Routes</b> is where you add and tune routes, and set the margin of error.
-          </p>
-          <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
-            On the Plan tab, <b>Explore</b> lets you check a different time on the chosen day, and <b>Go now</b> shows the ride if you left this minute.
+            <b>Routes</b> is where you add and tune your routes, and set the margin of error.
           </p>
         </div>
 
         <div style={section}>
           <h3 style={h3}>Tuning a route</h3>
           <p style={p}>
-            Each route starts from two things you set: your <b>still‑air speed</b> and a <b>ground effect</b> (how sheltered or exposed the route is, which sets how much wind slows or speeds you). That's enough to use it from day one.
+            Each route starts from two things you set: your <b>still‑air speed</b> and a <b>ground effect</b> (how much wind slows or speeds you on this particular route). That's enough to use it from day one.
           </p>
           <p style={p}>
-            As you log rides it learns your real numbers — separately for headwind and tailwind days — and takes over the tuning, well‑settled after about <b>ten rides in each direction</b>. If the learned times aren't working for you, just move a slider to go back to setting them by hand.
+            As you record rides it learns your real numbers — separately for headwind and tailwind days — and takes over the tuning. You might need about <b>ten rides in each direction</b>. If the learned times aren't working for you, just move a slider to go back to setting them by hand.
           </p>
           <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
-            Behind each forecast the app blends an ensemble of about 50 separate wind forecasts for your route — more detailed wind data than a typical weather app shows. Each destination needs two routes, one going and one returning.
+           The app blends about 50 wind forecasts for your route. This enables it to predict a best case and worst case ride time by applying a margin of error taken from the spread of the forecasts. This means it can recommend departure times with a higher level of certainty of getting you there on time than a single forecast. You configure the margin of error according to how important it is for you to arrive on time.
           </p>
         </div>
 
@@ -105,13 +102,13 @@ export default function HelpPanel({ onClose }) {
             <li>Open the menu (top right) and tap <b>Export as GPX</b>.</li>
           </ol>
           <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
-            Either way the file lands in your Downloads folder — open it here to add the route.
+            Either way the file lands in your Downloads folder — open it in Ride the Wind to add the route. You actually need to make two GPX files, one for riding out, and one for the return ride.
           </p>
         </div>
 
         <div style={{ padding: "16px 0 4px" }}>
           <p style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.55, margin: 0 }}>
-            Ride the Wind gives estimates from weather forecasts. Forecasts are uncertain and conditions change — treat the times as a guide, not a guarantee, and ride safely and within the law. Provided as is, with no warranty and no liability for lateness or any other outcome. It's free and open source — made by Chris Hilder and released under the MIT License, so anyone can use, study, modify, and share it.
+            Ride the Wind gives estimates from weather forecasts. Provided as is, with no warranty and no liability for lateness or any other outcome. It's free and open source — made by Chris Hilder and released under the MIT License, so anyone can use, study, modify, and share it.
           </p>
         </div>
       </div>
