@@ -42,7 +42,7 @@ export default function HelpPanel({ onClose }) {
       <div style={{ flex: 1, overflowY: "auto", padding: "calc(28px + env(safe-area-inset-top)) 24px 20px" }}>
         <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600, marginBottom: 16 }}>Ride the Wind</div>
         <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 14 }}>
-         <ul style={ol}><li>Predicts your bike commute time from the forecast wind for your exact route.
+         <ul style={ol}><li>Predicts your bike commute time from the forecast wind for your exact route at the time you ride.
 </li><li>Uses multiple forecasts to give you a range of predicted ride times.
 </li><li>You control how much the spread of forecasts affects your ride times by adjusting the <i>margin of error</i>.
 </li><li>Recommends when to leave in order to arrive on time, based on those ride times.</li></ul>
@@ -111,7 +111,7 @@ export default function HelpPanel({ onClose }) {
 
         <div style={{ padding: "16px 0 4px" }}>
           <p style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.55, margin: 0 }}>
-            Ride the Wind gives estimates from weather forecasts. Provided as is, with no warranty and no liability for lateness or any other outcome. It's free and open source — made by Chris Hilder and released under the MIT License, so anyone can use, study, modify, and share it.
+            Ride the Wind gives estimates from weather forecasts. It is provided as is, with no warranty and no liability for lateness, wet socks, lightning strike or any other outcome. It's free and open source — made by Chris Hilder and released under the MIT License.
           </p>
         </div>
       </div>
