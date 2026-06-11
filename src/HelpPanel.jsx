@@ -40,7 +40,7 @@ export default function HelpPanel({ onClose }) {
       background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff",
     }}>
       <div style={{ flex: 1, overflowY: "auto", padding: "calc(28px + env(safe-area-inset-top)) 24px 20px" }}>
-        <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600, marginBottom: 2 }}>Ride the Wind</div>
+        <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600, marginBottom: 16 }}>Ride the Wind</div>
         <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 14 }}>
          <ul style={ol}><li>Predicts your bike commute time from the forecast wind for your exact route.
 </li><li>Uses multiple forecasts to give you a range of predicted ride times.
