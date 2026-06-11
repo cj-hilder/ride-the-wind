@@ -42,10 +42,10 @@ export default function HelpPanel({ onClose }) {
       <div style={{ flex: 1, overflowY: "auto", padding: "calc(28px + env(safe-area-inset-top)) 24px 20px" }}>
         <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600, marginBottom: 2 }}>Ride the Wind</div>
         <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 14 }}>
-         <ul><li>Predicts your bike commute time from the forecast wind for your exact route.
-</li><li>Uses multiple forecasts to give you a range of ride times.
-</li><li>Let's you apply a customisable margin of error.
-</li><li>Recommends when to leave in order to arrive on time.</li></ul>
+         <ul style={ol}><li>Predicts your bike commute time from the forecast wind for your exact route.
+</li><li>Uses multiple forecasts to give you a range of predicted ride times.
+</li><li>You control how much the spread of forecasts affects your ride times by adjusting the <i>margin of error</i>.
+</li><li>Recommends when to leave in order to arrive on time, based on those ride times.</li></ul>
         </div>
 
         {!installed && (
