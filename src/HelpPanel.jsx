@@ -51,21 +51,20 @@ export default function HelpPanel({ onClose }) {
         {!installed && (
           <div style={section}>
             <h3 style={h3}>Install it</h3>
-            <p style={p}>{INSTALL_TEXT[platform] || INSTALL_TEXT.unknown}</p>
-            <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>Gives a full-screen app that works offline and opens like any other.</p>
+            <p style={p}>This is a web app. You can use it in your browser, or add it to your home screen to use as an app.  {INSTALL_TEXT[platform] || INSTALL_TEXT.unknown}</p>
           </div>
         )}
 
         <div style={section}>
           <h3 style={h3}>The three tabs</h3>
           <p style={p}>
-            <b>1. Plan</b> shows forecast ride times and recommended departures for the week ahead. Also alerts you when rain, snow, fog, thunderstorms or sidewinds are forecast for your ride. 
+            <b>1. Plan</b> shows forecast ride times and recommended departures for the week ahead. Also alerts you when rain, snow, fog, thunderstorms or sidewinds are forecast for your ride. Tap the temperature to display more info about the forecast wind.
           </p>
           <p style={p}>
             <b>2. Ride</b> let's you record actual ride times which are then used to tune the model and make more accurate predictions. 
           </p>
           <p style={p}>
-            <b>3. Routes</b> is where you add and tune your routes, and set the margin of error.
+            <b>3. Routes</b> is where you add new routes, hand tune your routes, and set the margin of error.
           </p>
         </div>
 
