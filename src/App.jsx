@@ -621,7 +621,7 @@ function DebugReadout({ debug }) {
   return (
     <div style={{
       marginTop: 10, borderRadius: 12, overflow: "hidden",
-      fontSize: 12.5, fontFamily: "ui-monospace, monospace", lineHeight: 1.5,
+      fontSize: 12.5, lineHeight: 1.5,
       background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)",
     }}>
       <div style={{ fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", padding: "8px 12px 0", fontFamily: "inherit" }}>
