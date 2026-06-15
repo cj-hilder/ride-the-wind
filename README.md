@@ -66,8 +66,8 @@ run the test suites in the project root with `node test*.mjs`.
 
 ## Deploy
 
-Pushing to `main` triggers the GitHub Action, which builds with Vite and
-publishes to GitHub Pages at
+Pushing to `main` triggers a CloudFlare worker, which builds with Vite and
+publishes at
 [ridethewind.nz](https://ridethewind.nz/).
 
 ## License
