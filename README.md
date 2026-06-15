@@ -1,6 +1,6 @@
 # Ride the Wind
 
-**[Open the app → cj-hilder.github.io/ride-the-wind](https://cj-hilder.github.io/ride-the-wind/)**
+**[Open the app → ridethewind.nz](https://ridethewind.nz/)**
 
 A Progressive Web App that predicts your bike commute time from the forecast
 wind and tells you when to leave. For a fixed arrival ("at work by 8:30") it
@@ -68,7 +68,7 @@ run the test suites in the project root with `node test*.mjs`.
 
 Pushing to `main` triggers the GitHub Action, which builds with Vite and
 publishes to GitHub Pages at
-[cj-hilder.github.io/ride-the-wind](https://cj-hilder.github.io/ride-the-wind/).
+[ridethewind.nz](https://ridethewind.nz/).
 
 ## License
 
