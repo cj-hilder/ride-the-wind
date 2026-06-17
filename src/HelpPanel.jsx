@@ -1,5 +1,12 @@
 import React from "react";
 
+/* Injected at build time by vite.config.js — see the `define` block there.
+ * __APP_VERSION__ is the deliberate semver from package.json (bump by hand).
+ * __BUILD_HASH__ / __BUILD_DATE__ are captured automatically on every build
+ * (git short hash + UTC date), so each deploy is independently identifiable
+ * without any manual step. */
+/* global __APP_VERSION__, __BUILD_HASH__, __BUILD_DATE__ */
+
 /* ============================================================================
  * HelpPanel — full-screen overlay shown on first launch and via the help
  * button on the Routes tab. Edit this file to update the help content without
@@ -111,6 +118,9 @@ export default function HelpPanel({ onClose }) {
         <div style={{ padding: "16px 0 4px" }}>
           <p style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.55, margin: 0 }}>
             Ride the Wind gives estimates from weather forecasts provided by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer" style={lnk}>Open-Meteo</a>, a free, open-source forecast service. Ride the Wind is provided as is, with no warranty and no liability for lateness, wet socks, lightning strike or any other outcome. It's free and open source — made by <a href="https://github.com/cj-hilder/ride-the-wind" target="_blank" rel="noopener noreferrer" style={lnk}>Chris Hilder</a> and released under the MIT License.
+          </p>
+          <p style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", margin: "8px 0 0" }}>
+            v{__APP_VERSION__} · build {__BUILD_HASH__} · {__BUILD_DATE__}
           </p>
         </div>
       </div>
