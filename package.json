@@ -6,8 +6,8 @@
   "author": "Chris Hilder",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "node generate-env.mjs dev && vite",
+    "build": "node generate-env.mjs && vite build",
     "preview": "vite preview",
     "test": "for f in test*.mjs; do node \"$f\" || exit 1; done"
   },
