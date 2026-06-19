@@ -4,13 +4,22 @@
 // them via import.meta.env.
 //
 // Version: bump the `version` field in package.json to mark a release.
-// Hash + date: captured automatically from the Cloudflare Pages env var
-// (CF_PAGES_COMMIT_SHA) or falls back to 'dev' for local builds.
+// Hash + date: captured automatically from the build environment (see below
+// for which variable, depending on the deploy pipeline) or falls back to
+// 'dev' for local builds with no matching env var.
 
 import fs from "node:fs";
 
 const pkg = JSON.parse(fs.readFileSync("./package.json", "utf8"));
-const hash = (process.env.CF_PAGES_COMMIT_SHA || process.env.GITHUB_SHA || "dev").slice(0, 7);
+// This project deploys via Workers Builds (npx wrangler deploy), which injects
+// WORKERS_CI_COMMIT_SHA. CF_PAGES_COMMIT_SHA/GITHUB_SHA are kept as fallbacks
+// in case the pipeline ever changes (legacy Pages builds, or GitHub Actions).
+const hash = (
+  process.env.WORKERS_CI_COMMIT_SHA ||
+  process.env.CF_PAGES_COMMIT_SHA ||
+  process.env.GITHUB_SHA ||
+  "dev"
+).slice(0, 7);
 const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
 
 const env = `VITE_APP_VERSION=${pkg.version}
