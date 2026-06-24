@@ -1446,6 +1446,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
         kHead: val ? val.kHead : undefined,
         kTail: val ? val.kTail : undefined,
         targetArrival: arrival, activeDays: days, timeMode,
+        baselineMode: modes.baselineMode, kMode: modes.kMode, split: val ? val.split : undefined,
       });
       onSaved();
       return;
