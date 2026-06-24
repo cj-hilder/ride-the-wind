@@ -1,7 +1,7 @@
 import { DOMParser } from './domshim.mjs';
 import { processGpx } from './src/lib/gpxRoute.js';
 import { parseForecast } from './src/lib/windModel.js';
-import { createModelState } from './src/lib/learning.js';
+// learning is now driven by a ride log + config (no accumulator to seed)
 import { evaluateAlert, arrivalOnDate, VERDICT, formatHHMM } from './src/lib/alertEngine.js';
 import { makePredictor, chooseStations, predictWithRange, speedFromBaseline } from './src/lib/prediction.js';
 
@@ -32,8 +32,9 @@ console.log(`Stations chosen: ${stations.length}`);
 ok('at least one station', stations.length>=1);
 
 // Seed: still-air 1000s (~18km/h over 5km), k=1.0
-const seed={baselineSec:1000, k:1.0};
-const modelState=createModelState();
+// Manual config: still-air 1000s baseline, symmetric k=1.0, no rides logged.
+const rides=[];
+const config={baselineMode:"manual", sliderBaselineSec:1000, kMode:"manual", split:false, sliderKHead:1.0, sliderKTail:1.0};
 
 const sunNight=new Date(2026,4,31,21,0,0).getTime();
 // The caller resolves the arrival (Plan-tab path); evaluateAlert needs it.
@@ -43,7 +44,7 @@ console.log('\nEnd-to-end: EAST route, wind FROM the east (headwind):');
 {
   // Going east (90), wind from east (90) = headwind -> slower -> leave earlier
   const series=stations.map(s=>({...s, series:forecast(90,25)}));
-  const pred=makePredictor({route, modelState, seed, stationSeries:series});
+  const pred=makePredictor({route, rides, config, stationSeries:series});
   const v=evaluateAlert(route, pred, {nowMs:sunNight, fixedArrival:monArrival});
   console.log(`  verdict=${v.verdict} predicted=${(v.predictedSec/60).toFixed(1)}min delta=${v.deltaMin} depart=${v.departureHHMM} (normal ${v.normalDepartureHHMM}) wf=${v.windFactor.toFixed(3)}`);
   ok('headwind -> HEADWIND verdict', v.verdict===VERDICT.HEADWIND, v.verdict);
@@ -56,7 +57,7 @@ console.log('\nEnd-to-end: EAST route, wind FROM the west (tailwind):');
 {
   // wind from west (270) pushing you east = tailwind -> faster -> sleep in
   const series=stations.map(s=>({...s, series:forecast(270,25)}));
-  const pred=makePredictor({route, modelState, seed, stationSeries:series});
+  const pred=makePredictor({route, rides, config, stationSeries:series});
   const v=evaluateAlert(route, pred, {nowMs:sunNight, fixedArrival:monArrival});
   console.log(`  verdict=${v.verdict} predicted=${(v.predictedSec/60).toFixed(1)}min delta=${v.deltaMin} depart=${v.departureHHMM} wf=${v.windFactor.toFixed(3)}`);
   ok('tailwind -> TAILWIND verdict', v.verdict===VERDICT.TAILWIND, v.verdict);
@@ -67,7 +68,7 @@ console.log('\nEnd-to-end: EAST route, wind FROM the west (tailwind):');
 console.log('\nEnd-to-end: crosswind (from north) -> normal:');
 {
   const series=stations.map(s=>({...s, series:forecast(0,25)})); // from north, route east
-  const pred=makePredictor({route, modelState, seed, stationSeries:series});
+  const pred=makePredictor({route, rides, config, stationSeries:series});
   const v=evaluateAlert(route, pred, {nowMs:sunNight, fixedArrival:monArrival});
   console.log(`  verdict=${v.verdict} wf=${v.windFactor.toFixed(4)}`);
   ok('crosswind -> NORMAL', v.verdict===VERDICT.NORMAL, v.verdict);
@@ -77,15 +78,15 @@ console.log('\nEnd-to-end: crosswind (from north) -> normal:');
 console.log('\nConvergence stability (more passes -> same answer):');
 {
   const series=stations.map(s=>({...s, series:forecast(90,30)}));
-  const p2=makePredictor({route, modelState, seed, stationSeries:series, opts:{passes:2}})(new Date(2026,5,1,8,45).getTime());
-  const p5=makePredictor({route, modelState, seed, stationSeries:series, opts:{passes:5}})(new Date(2026,5,1,8,45).getTime());
+  const p2=makePredictor({route, rides, config, stationSeries:series, opts:{passes:2}})(new Date(2026,5,1,8,45).getTime());
+  const p5=makePredictor({route, rides, config, stationSeries:series, opts:{passes:5}})(new Date(2026,5,1,8,45).getTime());
   ok('2 vs 5 passes converge', near(p2.predictedSec,p5.predictedSec,2), `${p2.predictedSec.toFixed(1)} vs ${p5.predictedSec.toFixed(1)}`);
 }
 
 console.log('\nForecast uncertainty range (§5):');
 {
   const series=stations.map(s=>({...s, series:forecast(90,25)}));
-  const r=predictWithRange({route, modelState, seed, stationSeries:series}, new Date(2026,5,1,8,45).getTime());
+  const r=predictWithRange({route, rides, config, stationSeries:series}, new Date(2026,5,1,8,45).getTime());
   console.log(`  low=${(r.lowSec/60).toFixed(1)} center=${(r.centerSec/60).toFixed(1)} high=${(r.highSec/60).toFixed(1)} min`);
   ok('range brackets center', r.lowSec<=r.centerSec && r.centerSec<=r.highSec);
   ok('range has width (headwind uncertain)', r.highSec-r.lowSec>1);

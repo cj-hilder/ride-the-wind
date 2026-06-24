@@ -13,7 +13,7 @@ ok('returns distanceM', t.distanceM>0);
 ok('manual speed derived', t.manual.speedKmh>0, t.manual.speedKmh);
 ok('manual kHead ~0.5', Math.abs(t.manual.kHead-0.5)<0.01, t.manual.kHead);
 ok('manual kTail ~0.5', Math.abs(t.manual.kTail-0.5)<0.01, t.manual.kTail);
-ok('no learned (0 rides)', t.learned===null);
+ok('nothing learned (0 rides)', t.learned.baselineSource==='slider' && t.learned.kHeadSource==='slider' && t.learned.kTailSource==='slider' && t.dots===0);
 ok('stats present', t.stats && t.stats.totalDistance>0 && t.stats.pointCount>1, JSON.stringify(t.stats));
 ok('example present', t.example && typeof t.example.headFactor==='number');
 ok('example has compass label (<=2 letters)', /^[NESW]{1,2}$/.test(t.example.headBearingLabel), t.example.headBearingLabel);

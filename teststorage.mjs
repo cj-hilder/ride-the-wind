@@ -19,71 +19,101 @@ const setup={
   targetArrival:'08:45', activeDays:['MO','TU','WE','TH','FR'],
 };
 
-console.log('Route creation + model init:');
+console.log('Route creation + config init:');
 {
   uid=0; const s=mkStore();
   const route=await s.createRoute(processed, setup, {kHead:0.5,kTail:0.5});
   ok('route stored with id', route.id==='id1');
   ok('baseline seeded', route.baselineTimeSec===1000);
   ok('start region built', route.startRegion.radius===60);
-  const model=await s.getModel(route.id);
-  ok('model created with seeded k', model.kHead===0.5 && model.usableRideCount===0);
+  ok('config: manual modes by default', route.baselineMode==='manual' && route.kMode==='manual' && route.split===false);
+  ok('config: k sliders seeded', route.sliderKHead===0.5 && route.sliderKTail===0.5);
+  const cfg=s.routeConfig(route);
+  ok('routeConfig assembles', cfg.sliderBaselineSec===1000 && cfg.kMode==='manual');
 }
 
-console.log('\nRide capture updates model (usable):');
+console.log('\nRides persist with curation fields; model resolves from log (learn mode):');
 {
   uid=0; const s=mkStore();
   const route=await s.createRoute(processed, setup, {kHead:1.0,kTail:1.0});
-  // record several usable rides matching baseline 1000, k=0.5
-  const wfs=[-1,1,-0.5,0.5,0,0.8,-0.7,0.3];
+  // switch to learn mode for baseline + k
+  await s.updateRoute(route.id, { baselineMode:'learn', kMode:'learn' });
+  // a still ride pins baseline at 1000; windy rides both directions train k=0.5
+  const day=24*60*60*1000; const t0=Date.now();
+  const wfs=[0, -0.5, 0.5, -0.7, 0.7, -0.3, 0.3, -0.9];
   for(let i=0;i<wfs.length;i++){
     await s.recordRide({
-      routeId:route.id, startedAt:1000+i, endedAt:2000+i,
-      actualTimeSec:1000*(1+0.5*wfs[i]), windFactor:wfs[i], usable:true,
+      routeId:route.id, startedAt:t0 - (wfs.length-i)*60000, endedAt:t0,
+      actualTimeSec:1000*(1+0.5*wfs[i]), windFactor:wfs[i],
     });
   }
-  const model=await s.getModel(route.id);
-  ok('ride count tracked', model.usableRideCount===wfs.length, `${model.usableRideCount}`);
-  ok('k learned ~0.5', near(model.kHead,0.5,0.02), `${model.kHead.toFixed(3)}`);
+  const rides=await s.listRides(route.id);
+  ok('all rides stored', rides.length===wfs.length);
+  ok('rides default included', rides.every(r=>r.included===true));
+  ok('rides default current ref', rides.every(r=>r.baselineRef==='current'));
+  const resolved=await s.resolveRouteModel(route.id, t0);
+  ok('baseline learned ~1000 (still ride)', near(resolved.baselineSec,1000,1), `${resolved.baselineSec}`);
+  ok('auto-split both directions', resolved.split===true && resolved.autoSplit===true);
+  ok('kHead learned ~0.5', near(resolved.kHead,0.5,0.03), `${resolved.kHead.toFixed(3)}`);
+  ok('kTail learned ~0.5', near(resolved.kTail,0.5,0.03), `${resolved.kTail.toFixed(3)}`);
   const r2=await s.getRoute(route.id);
-  ok('route baseline updated ~1000', near(r2.baselineTimeSec,1000,5), `${r2.baselineTimeSec.toFixed(1)}`);
-  const rides=await s.listRides(route.id);
-  ok('rides indexed by routeId', rides.length===wfs.length);
+  ok('route cached baseline updated ~1000', near(r2.baselineTimeSec,1000,2), `${r2.baselineTimeSec}`);
 }
 
-console.log('\nUnusable ride stored but excluded from learning:');
+console.log('\nManual mode ignores rides (uses sliders):');
 {
   uid=0; const s=mkStore();
-  const route=await s.createRoute(processed, setup, {kHead:1.0,kTail:1.0});
-  await s.recordRide({routeId:route.id, startedAt:1, endedAt:2, actualTimeSec:9999, windFactor:0.5, usable:false, excludeReason:'puncture'});
-  const model=await s.getModel(route.id);
-  ok('unusable does not bump count', model.usableRideCount===0);
-  const rides=await s.listRides(route.id);
-  ok('unusable still stored', rides.length===1 && rides[0].excludeReason==='puncture');
+  const route=await s.createRoute(processed, setup, {kHead:0.8,kTail:0.3});
+  // default manual; record a wild ride — should not move the resolved model
+  await s.recordRide({routeId:route.id, startedAt:Date.now(), endedAt:Date.now(), actualTimeSec:9999, windFactor:0.5});
+  const resolved=await s.resolveRouteModel(route.id);
+  ok('manual baseline = slider', resolved.baselineSec===1000 && resolved.baselineSource==='slider');
+  ok('manual k = sliders', resolved.kHead===0.8 && resolved.kTail===0.3);
 }
 
-console.log('\nRecompute == online (data spec §4):');
+console.log('\nCuration: exclude, edit duration, exclude-and-earlier:');
 {
   uid=0; const s=mkStore();
-  const route=await s.createRoute(processed, setup, {kHead:1.0,kTail:1.0});
-  const wfs=[-0.8,0.6,0.2,-1,0.9,-0.3,0.5,0,1,-0.6];
-  for(let i=0;i<wfs.length;i++){
-    await s.recordRide({routeId:route.id, startedAt:i, endedAt:i+1, actualTimeSec:1000*(1+0.5*wfs[i]), windFactor:wfs[i], usable:true});
+  const route=await s.createRoute(processed, setup, {kHead:1,kTail:1});
+  const t0=Date.now();
+  const ids=[];
+  for(let i=0;i<4;i++){
+    const {ride}=await s.recordRide({routeId:route.id, startedAt:t0+i*1000, endedAt:t0+i*1000+60, actualTimeSec:1000+i, windFactor:0.3});
+    ids.push(ride.id);
   }
-  const online=await s.getModel(route.id);
-  const recomputed=await s.recomputeModel(route.id);
-  ok('recompute k matches online', near(online.kHead, recomputed.kHead, 1e-9), `${online.kHead} vs ${recomputed.kHead}`);
-  ok('recompute count matches', online.usableRideCount===recomputed.usableRideCount);
+  await s.updateRide(ids[3], { included:false });
+  ok('exclude one ride', (await s.getRide(ids[3])).included===false);
+  await s.updateRide(ids[0], { actualTimeSec:1234 });
+  ok('edit duration', (await s.getRide(ids[0])).actualTimeSec===1234);
+  // exclude ids[2] and all earlier (ids[0], ids[1], ids[2])
+  const n=await s.excludeRideAndEarlier(ids[2]);
+  ok('exclude-and-earlier count', n===3, `${n}`);
+  const rides=await s.listRides(route.id);
+  const inc=(id)=>rides.find(r=>r.id===id).included;
+  ok('earlier+self excluded', inc(ids[0])===false && inc(ids[1])===false && inc(ids[2])===false);
+}
+
+console.log('\nFreeze: ride older than 14 days flips to historic, snapshots baseline:');
+{
+  uid=0; const s=mkStore();
+  const route=await s.createRoute(processed, setup, {kHead:1,kTail:1});
+  const t0=Date.now();
+  const old=t0 - 20*24*60*60*1000; // 20 days ago
+  const {ride}=await s.recordRide({routeId:route.id, startedAt:old, endedAt:old+60, actualTimeSec:1100, windFactor:0.4});
+  // manual baseline 1000 → freeze should snapshot 1000
+  await s.resolveRouteModel(route.id, t0);
+  const after=await s.getRide(ride.id);
+  ok('old ride frozen historic', after.baselineRef==='historic');
+  ok('freeze snapshots live baseline', after.savedBaselineSec===1000, `${after.savedBaselineSec}`);
 }
 
 console.log('\nCascade delete:');
 {
   uid=0; const s=mkStore();
   const route=await s.createRoute(processed, setup, {kHead:1.0,kTail:1.0});
-  await s.recordRide({routeId:route.id, startedAt:1, endedAt:2, actualTimeSec:1000, windFactor:0, usable:true});
+  await s.recordRide({routeId:route.id, startedAt:1, endedAt:2, actualTimeSec:1000, windFactor:0});
   await s.deleteRoute(route.id);
   ok('route gone', (await s.getRoute(route.id))===undefined);
-  ok('model gone', (await s.getModel(route.id))===undefined);
   ok('rides gone', (await s.listRides(route.id)).length===0);
 }
 
@@ -91,11 +121,11 @@ console.log('\nExport / import round-trip:');
 {
   uid=0; const s=mkStore();
   const route=await s.createRoute(processed, setup, {kHead:0.7,kTail:0.7});
-  await s.recordRide({routeId:route.id, startedAt:1, endedAt:2, actualTimeSec:1100, windFactor:0.2, usable:true});
+  await s.recordRide({routeId:route.id, startedAt:1, endedAt:2, actualTimeSec:1100, windFactor:0.2});
   await s.setSetting('globalAlertThresholdMin', 5);
   const bundle=await s.exportAll();
   ok('bundle has format tag', bundle.format==='ride-the-wind/export');
-  ok('bundle has route, ride, model', bundle.routes.length===1 && bundle.rides.length===1 && bundle.models.length===1);
+  ok('bundle has route + ride', bundle.routes.length===1 && bundle.rides.length===1);
   ok('bundle has settings', bundle.settings.globalAlertThresholdMin===5);
 
   // import into a fresh store
