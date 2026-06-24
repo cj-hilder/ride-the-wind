@@ -166,12 +166,19 @@ export function createAppController(deps = {}) {
     };
     return _exampleRoute;
   }
-  // Seeded model for the example (k from its seed times; never trained).
-  function exampleModel() {
+  // Config for the example route (manual everywhere; it is never trained and
+  // persists no rides). k sliders come from its seed times.
+  function exampleConfig() {
     const r = exampleRoute();
     const k = computeSeedKSplit(r.seedStillAirSec, r.seedHeadwind20Sec, r.seedTailwind20Sec);
-    return { routeId: EXAMPLE_ID, kHead: k.kHead ?? 1.0, kTail: k.kTail ?? 1.0,
-      regressionState: learning.createModelState(), usableRideCount: 0, lastUpdated: now() };
+    return {
+      baselineMode: "manual",
+      sliderBaselineSec: r.seedStillAirSec,
+      kMode: "manual",
+      split: false,
+      sliderKHead: k.kHead ?? 1.0,
+      sliderKTail: k.kTail ?? 1.0,
+    };
   }
   const isExampleId = (id) => id === EXAMPLE_ID;
 
@@ -334,12 +341,49 @@ export function createAppController(deps = {}) {
    * Prediction / verdict for the home screen
    * ---------------------------------------------------------------- */
 
-  async function seedFor(route, model) {
-    return {
-      baselineSec: route.baselineTimeSec,
-      kHead: model ? (model.kHead ?? 1.0) : 1.0,
-      kTail: model ? (model.kTail ?? 1.0) : 1.0,
-    };
+  /**
+   * Assemble the inputs the learning resolver needs for a route: its curated
+   * ride log (normalized to the resolver's shape) and its config (manual/learn
+   * toggles, split, slider values). The example route has no persisted rides.
+   */
+  async function modelInputsFor(route) {
+    if (isExampleId(route.id)) {
+      return { rides: [], config: exampleConfig() };
+    }
+    const rides = (await store.listRides(route.id)).map((r) => ({
+      id: r.id,
+      windFactor: r.windFactor,
+      actualSec: r.actualTimeSec,
+      startedAt: r.startedAt,
+      included: r.included != null ? r.included : (r.usable != null ? !!r.usable : true),
+      baselineRef: r.baselineRef ?? "current",
+      savedBaselineSec: r.savedBaselineSec ?? null,
+    }));
+    return { rides, config: store.routeConfig(route) };
+  }
+
+  /**
+   * Persist any current→historic freeze transitions the resolver produced, plus
+   * keep the route's cached baseline in step. `resolved` is a resolveModel
+   * result whose `.rides` carry the (possibly updated) baselineRef/saved values.
+   * No-op for the example route.
+   */
+  async function persistResolved(route, resolved) {
+    if (!resolved || isExampleId(route.id)) return;
+    for (const out of resolved.rides) {
+      if (!out.id) continue;
+      const orig = await store.getRide(out.id);
+      if (orig && (orig.baselineRef !== out.baselineRef ||
+                   orig.savedBaselineSec !== out.savedBaselineSec)) {
+        await store.updateRide(out.id, {
+          baselineRef: out.baselineRef,
+          savedBaselineSec: out.savedBaselineSec,
+        });
+      }
+    }
+    if (resolved.baselineSec > 0 && resolved.baselineSec !== route.baselineTimeSec) {
+      await store.updateRoute(route.id, { baselineTimeSec: resolved.baselineSec });
+    }
   }
 
   /**
@@ -349,8 +393,7 @@ export function createAppController(deps = {}) {
   async function getHomeVerdict(routeId, dayMs = null, exploredHHMM = null, forceDepart = false) {
     const route = isExampleId(routeId) ? exampleRoute() : await store.getRoute(routeId);
     if (!route) return null;
-    const model = isExampleId(routeId) ? exampleModel() : await store.getModel(routeId);
-    const seed = await seedFor(route, model);
+    const { rides, config } = await modelInputsFor(route);
     const stationSeries = await stationSeriesFor(route);
 
     const nowMs = now();
@@ -371,11 +414,12 @@ export function createAppController(deps = {}) {
       stationSeries.every((st) => seriesCovers(st.series, next.arrivalMs));
 
     const predictForArrival = makePredictor({
-      route,
-      modelState: model ? model.regressionState : learning.createModelState(),
-      seed,
-      stationSeries,
+      route, rides, config, stationSeries, opts: { nowMs },
     });
+    // The model is resolved once inside makePredictor; reuse it for confidence,
+    // dots and freeze persistence.
+    const resolved = predictForArrival.resolved;
+    await persistResolved(route, resolved);
 
     const verdict = evaluateAlert(route, predictForArrival, {
       nowMs,
@@ -390,9 +434,7 @@ export function createAppController(deps = {}) {
     let rangeUnavailable = false;
     if (next && forecastReaches) {
       const rangeArgs = {
-        route,
-        modelState: model ? model.regressionState : learning.createModelState(),
-        seed,
+        route, rides, config, opts: { nowMs },
       };
       const ensembleStations = await ensembleStationsFor(route);
       // ensemble must also cover the arrival day
@@ -447,9 +489,20 @@ export function createAppController(deps = {}) {
     }
 
 
-    const conf = learning.confidence(
-      model ? model.regressionState : learning.createModelState()
-    );
+    // Confidence/dots derive from the resolved model's sources (spec §4):
+    // one dot each for baseline, kHead, kTail served from ride data; combined-k
+    // earns at most one.
+    const dots = learning.dotCount(resolved);
+    const conf = {
+      dots,
+      baselineLearned: resolved.baselineSource === "learned",
+      kHeadLearned: resolved.kHeadSource === "learned",
+      kTailLearned: resolved.kTailSource === "learned",
+      split: resolved.split,
+      ridesBaseline: resolved.ridesBaseline,
+      ridesHead: resolved.ridesHead,
+      ridesTail: resolved.ridesTail,
+    };
 
     // Conservative departure: anchor on the SLOW end of the forecast range so
     // the rider arrives on time even on the slower side. Target = latest arrival.
@@ -673,8 +726,8 @@ export function createAppController(deps = {}) {
         fastSec: range ? Math.round(range.lowSec) : null,
         forecastUpdatedMs: fetchedAt,
         forecastNextUpdateMs: fetchedAt != null ? fetchedAt + FORECAST_TTL : null,
-        kIdHead: !!conf.idHead,
-        kIdTail: !!conf.idTail,
+        kIdHead: resolved.kHeadSource === "learned",
+        kIdTail: resolved.kTailSource === "learned",
       };
     }
 
@@ -687,7 +740,7 @@ export function createAppController(deps = {}) {
       windEffect.windSpeedKmh = debug.windSpeedKmh ?? 0;
     }
 
-    return { route, verdict, range, conservative, windEffect, rangeUnavailable, confidence: conf, expect, debug, model };
+    return { route, verdict, range, conservative, windEffect, rangeUnavailable, confidence: conf, expect, debug, resolved };
   }
 
   async function listRoutesWithVerdict(onProgress) {
@@ -729,8 +782,9 @@ export function createAppController(deps = {}) {
 
   /**
    * Record a finished ride. Computes the wind_factor that applied (from the
-   * forecast in effect), runs the outlier check, then persists — which folds
-   * usable rides into the model.
+   * forecast in effect), then persists it into the curated ride log. There is
+   * no model accumulator to fold into and no auto-outlier gate any more — the
+   * ride lands included by default and the user curates it in the Rides Manager.
    */
   async function recordRide(capture) {
     // The example route is ephemeral — a demo ride runs the full flow but
@@ -739,8 +793,7 @@ export function createAppController(deps = {}) {
       return { skipped: true, isExample: true };
     }
     const route = await store.getRoute(capture.routeId);
-    const model = await store.getModel(capture.routeId);
-    const seed = await seedFor(route, model);
+    const { rides, config } = await modelInputsFor(route);
 
     // Reconstruct the wind_factor for this ride from the forecast it carried.
     let windFactor = capture.windFactor;
@@ -748,50 +801,82 @@ export function createAppController(deps = {}) {
     if (windFactor == null && capture.forecastWind && capture.forecastWind.length) {
       const stationSeries = capture.forecastWind; // [{lat,lon,series}]
       const predictForArrival = makePredictor({
-        route,
-        modelState: model ? model.regressionState : learning.createModelState(),
-        seed,
-        stationSeries,
+        route, rides, config, stationSeries, opts: { nowMs: now() },
       });
       const p = predictForArrival(capture.endedAt);
       windFactor = p.windFactor;
       predictedTimeSec = p.predictedSec;
     }
 
-    // Outlier auto-flag (does not block; UI may ask the user to confirm).
-    let autoFlagged = false;
-    if (model && windFactor != null) {
-      const chk = learning.checkOutlier(
-        model.regressionState,
-        windFactor,
-        capture.actualTimeSec
-      );
-      autoFlagged = chk.flagged;
-    }
-
     return store.recordRide({
       ...capture,
       windFactor,
       predictedTimeSec,
-      autoFlagged,
     });
   }
 
   const listRides = (routeId) => store.listRides(routeId);
-  const recomputeModel = (routeId) => store.recomputeModel(routeId);
+
+  /* ---------------------------------------------------------------- *
+   * Rides Manager
+   * ---------------------------------------------------------------- */
 
   /**
-   * Tuning state for the route editor's manual controls. Returns the route's
-   * distance, the current manual (seed-derived) speed/k, and — when the model
-   * has learned at least one direction — the learned speed/k and which
-   * directions are identifiable. The editor uses this to decide Manual vs
-   * Learned display and to drive the off-scale indicators.
+   * The ride list for the Rides Manager, decorated for display: each ride
+   * carries its classification (still/gentle/windy), its per-ride k against the
+   * currently-configured (effective) baseline, and whether its current/historic
+   * switch is locked by age (>= 14 days). Sorted newest-first. Reflects — but
+   * does not surface a control for — each ride's baseline reference.
+   */
+  async function ridesForManager(routeId) {
+    if (isExampleId(routeId)) return [];
+    const route = await store.getRoute(routeId);
+    if (!route) return [];
+    const { rides, config } = await modelInputsFor(route);
+    const resolved = learning.resolveModel(rides, config, now());
+    await persistResolved(route, resolved);
+    const liveBaseline = resolved.baselineSec;
+
+    // Map resolved (freeze-applied) rides back, decorate for display.
+    const decorated = resolved.rides.map((r) => {
+      const cls = learning.classifyRide(r.windFactor);
+      const k = cls === "still" ? null : learning.rideK(r, liveBaseline);
+      return {
+        id: r.id,
+        startedAt: r.startedAt,
+        actualTimeSec: r.actualSec,
+        windFactor: r.windFactor,
+        klass: cls,
+        rideK: k,
+        included: r.included !== false,
+        baselineRef: r.baselineRef,
+        savedBaselineSec: r.savedBaselineSec,
+        locked: learning.isFrozenByAge(r, now()),
+      };
+    });
+    decorated.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+    return decorated;
+  }
+
+  /** Edit a ride (duration), toggle include/exclude, or flip current/historic. */
+  const updateRide = (id, patch) => store.updateRide(id, patch);
+  /** Delete a ride outright (destructive). */
+  const deleteRide = (id) => store.deleteRide(id);
+  /** Exclude this ride and all earlier rides (reversible). Returns count. */
+  const excludeRideAndEarlier = (id) => store.excludeRideAndEarlier(id);
+
+  /**
+   * Tuning state for the route editor. Returns the route's distance, route
+   * stats, the manual (slider) speed/k, the current config (modes + split), and
+   * the learned view resolved from the curated ride log — including, per
+   * quantity, whether it is currently served from rides ("learned") or the
+   * slider, so the editor can show the manual/learn switches and their status
+   * text.
    */
   async function routeTuning(routeId) {
     const route = isExampleId(routeId) ? exampleRoute() : await store.getRoute(routeId);
     if (!route) return null;
-    const model = isExampleId(routeId) ? exampleModel() : await store.getModel(routeId);
-    const seed = await seedFor(route, model);
+    const { rides, config } = await modelInputsFor(route);
     const distanceM = route.totalDistance;
 
     // Route stats for the same panel shown at GPX load (derived from the stored
@@ -805,26 +890,38 @@ export function createAppController(deps = {}) {
       pointCount: route.segments.length + 1,
     };
 
-    // Manual (seed) view: speed from baseline, k from seeds.
-    const manualSpeedKmh = Math.round((distanceM / route.baselineTimeSec) * 3.6);
-    const manual = { speedKmh: manualSpeedKmh, kHead: seed.kHead, kTail: seed.kTail };
+    // Manual (slider) view: speed from the slider baseline, k from the sliders.
+    const manualSpeedKmh = Math.round((distanceM / config.sliderBaselineSec) * 3.6);
+    const manual = { speedKmh: manualSpeedKmh, kHead: config.sliderKHead, kTail: config.sliderKTail };
 
-    // Learned view: fit the accumulated rides. Identifiable per direction.
-    let learned = null;
-    if (model && model.regressionState) {
-      const fit = learning.fitModel(model.regressionState, {
-        seedKHead: seed.kHead, seedKTail: seed.kTail, seedBaselineSec: route.baselineTimeSec,
-      });
-      if (fit && (fit.identifiableHead || fit.identifiableTail)) {
-        learned = {
-          speedKmh: Math.round((distanceM / fit.baselineSec) * 3.6),
-          kHead: fit.kHead, kTail: fit.kTail,
-          idHead: !!fit.identifiableHead, idTail: !!fit.identifiableTail,
-        };
-      }
-    }
-    return { distanceM, stats, manual, learned, example: exampleFor(route.segments),
-      polyline: routePolyline(route.segments, route.endRegion) };
+    // Resolve the live model from the curated log + config (persisting any
+    // freeze transitions), then surface what each quantity resolved to.
+    const resolved = learning.resolveModel(rides, config, now());
+    await persistResolved(route, resolved);
+
+    const learned = {
+      speedKmh: Math.round((distanceM / resolved.baselineSec) * 3.6),
+      baselineSec: resolved.baselineSec,
+      kHead: resolved.kHead, kTail: resolved.kTail,
+      baselineSource: resolved.baselineSource,
+      kHeadSource: resolved.kHeadSource,
+      kTailSource: resolved.kTailSource,
+      split: resolved.split, autoSplit: resolved.autoSplit,
+      ridesBaseline: resolved.ridesBaseline,
+      ridesHead: resolved.ridesHead, ridesTail: resolved.ridesTail,
+    };
+
+    return {
+      distanceM, stats, manual, learned,
+      config: {
+        baselineMode: config.baselineMode,
+        kMode: config.kMode,
+        split: config.split,
+      },
+      dots: learning.dotCount(resolved),
+      example: exampleFor(route.segments),
+      polyline: routePolyline(route.segments, route.endRegion),
+    };
   }
 
   /**
@@ -962,7 +1059,8 @@ export function createAppController(deps = {}) {
     store,
     createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
     getHomeVerdict, listRoutesWithVerdict,
-    recordRide, listRides, recomputeModel, startRide, distanceToStart, routeTuning, updateExampleSeeds,
+    recordRide, listRides, startRide, distanceToStart, routeTuning, updateExampleSeeds,
+    updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,
     start,
     exportAll, importAll, requestPersistence,
     stationSeriesFor,

@@ -1,430 +1,449 @@
 /**
- * Ride the Wind — Learning update
+ * Ride the Wind — Learning (refactored)
  *
- * Refines, per route, the quantities the prediction depends on:
+ * Resolves, per route, the two quantities the prediction depends on:
  *
- *     predicted_time = baseline_time × (1 + k × wind_factor)
+ *     predicted_time = baseline × (1 + k · wind_factor)
  *
  * where k is ASYMMETRIC: kHead applies when wind_factor > 0 (headwind, slower)
- * and kTail when wind_factor < 0 (tailwind, faster). Shelter is often
- * directional, so the penalty per unit headwind effort and the saving per unit
- * tailwind effort differ; two independent slopes capture that, with a kink at
- * wind_factor = 0 where they agree (no effect either way).
+ * and kTail when wind_factor < 0 (tailwind, faster), with a kink at 0.
  *
- *   - baseline_time : still-air ride time (seconds)
- *   - kHead, kTail  : directional wind sensitivities (dimensionless)
+ * The model is determined from a CURATED RIDE LOG plus a route CONFIG, not from
+ * a persisted regression accumulator. Baseline and k are two independently
+ * toggled quantities (manual ↔ learned). Baseline is resolved FIRST; k is then
+ * computed CONDITIONAL on a per-ride baseline. There is no recency decay: a
+ * ride's k is measured against the baseline contemporaneous with that ride (its
+ * own current/historic reference), and the user curates the log by hand.
  *
- * from the history of confirmed-typical rides, each contributing a
- * (wind_factor, actual_time) pair plus an age for recency weighting.
+ * ── Ride record shape (the units this module consumes) ────────────────
+ *   windFactor       signed, dimensionless (windModel: ≈ (along-route km/h / 20)²)
+ *   actualSec        recorded ride duration (seconds)
+ *   included         boolean — user curation include/exclude
+ *   baselineRef      "current" | "historic"
+ *   savedBaselineSec frozen still-air baseline (used when historic)
+ *   startedAt        epoch ms (age, ordering)
  *
- * ── Why regress actual_time, not observed_ratio ──────────────────────
- * `baseline` is what we're learning, so dividing actual by it first is
- * circular. Multiply the model through by baseline and split the signed
- * wind_factor into a headwind term h = max(wf,0) and a tailwind term
- * t = min(wf,0):
- *
- *     actual ≈ baseline·1 + (baseline·kHead)·h + (baseline·kTail)·t
- *            =    A        +       B_h        ·h +       B_t        ·t
- *
- * A weighted linear regression on the design [1, h, t] recovers all three:
- *     baseline = A,  kHead = B_h / A,  kTail = B_t / A
- * No circularity; each slope is informed only by rides with wind in its
- * direction (h = 0 for tailwind rides, t = 0 for headwind rides).
- *
- * ── Online via weighted recursive least squares ──────────────────────
- * We keep the weighted normal-equations accumulators XtX (3×3 symmetric) and
- * Xty (3-vector). Each ride updates them in O(1); recency decay multiplies the
- * accumulators by a factor < 1 before adding the newest ride, so old rides
- * fade exponentially. The state is still recomputable from the ride log by
- * replaying rides oldest-to-newest.
+ * ── wind_factor scale & classification ───────────────────────────────
+ * wind_factor is the signed-square effort normalised to W_REF (20 km/h), so the
+ * relationship to the intuitive along-route component h is quadratic:
+ * wind_factor ≈ (h/20)². The class thresholds below follow from that mapping.
  */
 
-// Confidence-widening k clamp. The band tightens when data is thin (guarding
-// against a flukey early fit) and relaxes toward the full physical range as
-// rides accumulate in that direction. Felt-wind reduction spans ~0.15 (dense
-// urban) to ~2.0 (high-rise channelling); since k ≈ (speed factor)², that's
-// ~0.05–4.0 fully open. At zero rides we hold near the seed (0.2–1.0).
-const K_TIGHT_MIN = 0.2;
-const K_TIGHT_MAX = 1.0;
-const K_FULL_MIN = 0.05;
-const K_FULL_MAX = 4.0;
-const K_WIDEN_RIDES = 10; // directional rides to reach the full band
+/* ------------------------------------------------------------------ *
+ * Constants (spec §2.10)
+ * ------------------------------------------------------------------ */
+
+export const WF_STILL = 0.06;                // |wf| below this: still (~<5 km/h)
+export const WF_WINDY = 0.25;                // |wf| at/above this: windy (~>=10 km/h)
+export const WF_SPREAD_MIN = 0.06;           // min wf spread to learn k (per direction)
+export const WF_BASELINE_SPREAD_MIN = 0.20;  // min wf spread to extrapolate baseline
+export const K_MIN = 0.05;
+export const K_MAX = 4.0;
+export const FREEZE_AGE_DAYS = 14;
+export const FREEZE_AGE_MS = FREEZE_AGE_DAYS * 24 * 60 * 60 * 1000;
 
 /* ------------------------------------------------------------------ *
- * Sufficient-statistics container
+ * Classification
  * ------------------------------------------------------------------ */
 
 /**
- * Create an empty model state. `halfLifeRides` sets how fast old rides fade:
- * after this many newer rides, an observation's weight has halved. Tune for
- * how quickly the route should track fitness/seasonal change.
- *
- * @param {Object} [opts]
- * @param {number} [opts.halfLifeRides=30]
+ * Classify a ride by |wind_factor| into "still" | "gentle" | "windy".
+ * @param {number} windFactor
+ * @returns {"still"|"gentle"|"windy"}
  */
-export function createModelState(opts = {}) {
-  const halfLifeRides = opts.halfLifeRides ?? 30;
+export function classifyRide(windFactor) {
+  const a = Math.abs(windFactor);
+  if (a < WF_STILL) return "still";
+  if (a < WF_WINDY) return "gentle";
+  return "windy";
+}
+
+/** Clamp k to the single fixed physical band. */
+export function clampK(k) {
+  if (!Number.isFinite(k)) return null;
+  return Math.max(K_MIN, Math.min(K_MAX, k));
+}
+
+/* ------------------------------------------------------------------ *
+ * Per-ride effective baseline & the current→historic freeze
+ * ------------------------------------------------------------------ */
+
+/**
+ * Whether a ride's current/historic switch is locked (age >= 14 days).
+ * @param {Object} ride - needs startedAt
+ * @param {number} [nowMs]
+ */
+export function isFrozenByAge(ride, nowMs = Date.now()) {
+  return nowMs - (ride.startedAt ?? 0) >= FREEZE_AGE_MS;
+}
+
+/**
+ * Resolve and persist the current→historic transition for a ride, returning a
+ * (possibly new) ride object. Pure given its inputs; the caller persists the
+ * result. At age >= 14 days a current ride freezes: snapshot the live baseline
+ * into savedBaselineSec and set baselineRef = "historic". Already-historic and
+ * still-young current rides pass through (young current rides keep tracking the
+ * live baseline — no snapshot taken yet).
+ *
+ * @param {Object} ride
+ * @param {number} liveBaselineSec - live configured baseline (manual or learned)
+ * @param {number} [nowMs]
+ * @returns {Object} ride (same reference if unchanged)
+ */
+export function applyFreeze(ride, liveBaselineSec, nowMs = Date.now()) {
+  if (ride.baselineRef === "historic") return ride;
+  if (!isFrozenByAge(ride, nowMs)) return ride;
   return {
-    // Weighted normal equations for design x = [1, h, t]:
-    //   h = max(wind_factor, 0)  (headwind term)
-    //   t = min(wind_factor, 0)  (tailwind term, ≤ 0)
-    // XtX is symmetric; store its 6 unique entries. Xty is the 3-vector.
-    //   indices: 0 = const, 1 = head, 2 = tail
-    xtx: [0, 0, 0,   // [00, 01, 02]
-             0, 0,   //      [11, 12]
-                0],  //           [22]
-    xty: [0, 0, 0],
-    // separate ride counts per direction, for identifiability/confidence
-    n: 0,        // total usable rides
-    nHead: 0,    // rides with a meaningful headwind (h > 0)
-    nTail: 0,    // rides with a meaningful tailwind (t < 0)
-    decay: Math.pow(0.5, 1 / halfLifeRides),
-    halfLifeRides,
+    ...ride,
+    baselineRef: "historic",
+    savedBaselineSec: liveBaselineSec > 0 ? liveBaselineSec : ride.savedBaselineSec ?? null,
+  };
+}
+
+/**
+ * The baseline a ride's k is measured against: the live configured baseline if
+ * the ride is current, else its frozen savedBaselineSec (falling back to live
+ * if a frozen value is somehow missing).
+ */
+export function effectiveBaseline(ride, liveBaselineSec) {
+  if (ride.baselineRef === "historic" && ride.savedBaselineSec > 0) {
+    return ride.savedBaselineSec;
+  }
+  return liveBaselineSec;
+}
+
+/**
+ * Per-ride k, for display and as the windy-ride contribution to the k fit:
+ *   k_ride = (actual / b − 1) / wf
+ * where b is the ride's effective baseline. Null for ~zero wind_factor (still).
+ */
+export function rideK(ride, liveBaselineSec) {
+  const b = effectiveBaseline(ride, liveBaselineSec);
+  if (!(b > 0)) return null;
+  const wf = ride.windFactor;
+  if (!Number.isFinite(wf) || Math.abs(wf) < 1e-9) return null;
+  return (ride.actualSec / b - 1) / wf;
+}
+
+/* ------------------------------------------------------------------ *
+ * Spread helper
+ * ------------------------------------------------------------------ */
+
+/** Spread (max−min) of wind_factor across a set of rides. */
+function wfSpread(rides) {
+  if (rides.length === 0) return 0;
+  let lo = Infinity, hi = -Infinity;
+  for (const r of rides) {
+    if (r.windFactor < lo) lo = r.windFactor;
+    if (r.windFactor > hi) hi = r.windFactor;
+  }
+  return hi - lo;
+}
+
+/* ------------------------------------------------------------------ *
+ * Baseline resolution (spec §2.5)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Resolve still-air baseline (seconds) from the curated ride log.
+ *   1. >=1 still ride            → mean of still-ride times
+ *   2. else windy rides, spread >= WF_BASELINE_SPREAD_MIN
+ *                                → intercept of actual ~ wind_factor (extrapolate to wf=0)
+ *   3. else                      → slider fallback
+ *
+ * @param {Array} rides - included rides only (caller filters), with class info
+ * @param {number} sliderBaselineSec
+ * @returns {{baselineSec:number, source:"learned"|"slider", branch:1|2|3, ridesUsed:number}}
+ */
+export function resolveBaseline(rides, sliderBaselineSec) {
+  const still = rides.filter((r) => classifyRide(r.windFactor) === "still");
+  if (still.length >= 1) {
+    const mean = still.reduce((s, r) => s + r.actualSec, 0) / still.length;
+    if (mean > 0) {
+      return { baselineSec: mean, source: "learned", branch: 1, ridesUsed: still.length };
+    }
+  }
+
+  const windy = rides.filter((r) => classifyRide(r.windFactor) === "windy");
+  if (windy.length >= 2 && wfSpread(windy) >= WF_BASELINE_SPREAD_MIN) {
+    // Ordinary least squares actual = A + B·wf; baseline = A (intercept at wf=0).
+    const n = windy.length;
+    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (const r of windy) {
+      sx += r.windFactor; sy += r.actualSec;
+      sxx += r.windFactor * r.windFactor; sxy += r.windFactor * r.actualSec;
+    }
+    const det = n * sxx - sx * sx;
+    if (Math.abs(det) > 1e-12) {
+      const A = (sy * sxx - sx * sxy) / det;
+      if (A > 0) {
+        return { baselineSec: A, source: "learned", branch: 2, ridesUsed: n };
+      }
+    }
+  }
+
+  return { baselineSec: sliderBaselineSec, source: "slider", branch: 3, ridesUsed: 0 };
+}
+
+/* ------------------------------------------------------------------ *
+ * k resolution (spec §2.6)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Fit k for a set of windy rides via least-squares through the origin of
+ *   (actualᵢ/bᵢ − 1) = k·wfᵢ
+ * each ride using its own effective baseline bᵢ. Returns null if the gate fails
+ * (need >=2 rides AND spread >= WF_SPREAD_MIN) or the fit is degenerate.
+ *
+ * @param {Array} windyRides
+ * @param {number} liveBaselineSec
+ * @returns {{k:number, ridesUsed:number}|null}
+ */
+function fitKThroughOrigin(windyRides, liveBaselineSec) {
+  if (windyRides.length < 2) return null;
+  if (wfSpread(windyRides) < WF_SPREAD_MIN) return null;
+  // origin LS: k = Σ(wf·y) / Σ(wf²), y = actual/b − 1
+  let sxy = 0, sxx = 0;
+  for (const r of windyRides) {
+    const b = effectiveBaseline(r, liveBaselineSec);
+    if (!(b > 0)) continue;
+    const y = r.actualSec / b - 1;
+    const wf = r.windFactor;
+    sxy += wf * y;
+    sxx += wf * wf;
+  }
+  if (!(sxx > 1e-12)) return null;
+  const k = clampK(sxy / sxx);
+  if (k == null) return null;
+  return { k, ridesUsed: windyRides.length };
+}
+
+/**
+ * Resolve k from the curated ride log, given the configured baseline and the
+ * k mode/split configuration. Always returns kHead and kTail (the applied
+ * values, after fallback to slider) plus per-side source and the effective
+ * split state.
+ *
+ * Split rules (spec §3.2):
+ *   - manual mode: split follows config.split exactly.
+ *   - learn mode: auto-splits when BOTH directions independently pass the gate;
+ *     otherwise stays combined (pooled fit over all windy rides). A learn-mode
+ *     manual split is honoured (each side fits its own rides; the unqualified
+ *     side falls back to slider).
+ *
+ * @param {Array} rides - included rides only
+ * @param {number} liveBaselineSec
+ * @param {Object} config
+ * @param {"manual"|"learn"} config.kMode
+ * @param {boolean} config.split          - user's manual split checkbox
+ * @param {number} config.sliderKHead
+ * @param {number} config.sliderKTail
+ * @returns {{kHead, kTail, sourceHead, sourceTail, split, autoSplit,
+ *            ridesHead, ridesTail}}
+ */
+export function resolveK(rides, liveBaselineSec, config) {
+  const { kMode, split, sliderKHead, sliderKTail } = config;
+  const sH = clampK(sliderKHead) ?? sliderKHead;
+  const sT = clampK(sliderKTail) ?? sliderKTail;
+
+  const windy = rides.filter((r) => classifyRide(r.windFactor) === "windy");
+  const head = windy.filter((r) => r.windFactor > 0);
+  const tail = windy.filter((r) => r.windFactor < 0);
+
+  if (kMode !== "learn") {
+    // Manual: slider values, split exactly as the user set it.
+    return {
+      kHead: sH, kTail: sT,
+      sourceHead: "slider", sourceTail: "slider",
+      split: !!split, autoSplit: false,
+      ridesHead: 0, ridesTail: 0,
+    };
+  }
+
+  const headFit = fitKThroughOrigin(head, liveBaselineSec);
+  const tailFit = fitKThroughOrigin(tail, liveBaselineSec);
+  const bothQualify = !!headFit && !!tailFit;
+
+  // Effective split: forced when both qualify (auto-split); otherwise honour
+  // the user's manual split checkbox.
+  const autoSplit = bothQualify;
+  const effSplit = autoSplit || !!split;
+
+  if (effSplit) {
+    return {
+      kHead: headFit ? headFit.k : sH,
+      kTail: tailFit ? tailFit.k : sT,
+      sourceHead: headFit ? "learned" : "slider",
+      sourceTail: tailFit ? "learned" : "slider",
+      split: true, autoSplit,
+      ridesHead: headFit ? headFit.ridesUsed : 0,
+      ridesTail: tailFit ? tailFit.ridesUsed : 0,
+    };
+  }
+
+  // Combined learn: pool all windy rides (both directions) into one fit.
+  const pooled = fitKThroughOrigin(windy, liveBaselineSec);
+  if (pooled) {
+    return {
+      kHead: pooled.k, kTail: pooled.k,
+      sourceHead: "learned", sourceTail: "learned",
+      split: false, autoSplit: false,
+      ridesHead: pooled.ridesUsed, ridesTail: pooled.ridesUsed,
+    };
+  }
+  // Not enough to learn anything → slider, combined.
+  return {
+    kHead: sH, kTail: sT,
+    sourceHead: "slider", sourceTail: "slider",
+    split: false, autoSplit: false,
+    ridesHead: 0, ridesTail: 0,
   };
 }
 
 /* ------------------------------------------------------------------ *
- * Outlier check (spec §3.4)
+ * Top-level resolve: baseline + k from the curated log and config
  * ------------------------------------------------------------------ */
 
 /**
- * Decide whether a ride looks anomalous versus what the current model would
- * have predicted. Used to auto-flag (not silently drop) per spec §3.4 — the
- * UI can then ask the user to confirm before it learns from the ride.
+ * Resolve the full model (baseline, kHead, kTail) from a route's ride log and
+ * config. Applies the current/historic freeze first (returning the updated
+ * rides so the caller can persist any transitions), then resolves baseline,
+ * then k conditional on that baseline.
  *
- * Returns { flagged, predicted, ratio }. `ratio` is actual/predicted.
- *
- * @param {Object} state
- * @param {number} windFactor
- * @param {number} actualSec
- * @param {Object} [opts]
- * @param {number} [opts.tol=0.4] - flag if actual is >40% off prediction
- * @param {number} [opts.minRides=5] - below this, don't flag (model too green)
+ * @param {Array} allRides - the route's rides (any include state)
+ * @param {Object} config
+ * @param {"manual"|"learn"} config.baselineMode
+ * @param {number} config.sliderBaselineSec
+ * @param {"manual"|"learn"} config.kMode
+ * @param {boolean} config.split
+ * @param {number} config.sliderKHead
+ * @param {number} config.sliderKTail
+ * @param {number} [nowMs]
+ * @returns {{
+ *   baselineSec, kHead, kTail,
+ *   baselineSource, kHeadSource, kTailSource,
+ *   split, autoSplit, baselineBranch,
+ *   ridesBaseline, ridesHead, ridesTail,
+ *   rides   // rides with freeze transitions applied (persist these)
+ * }}
  */
-export function checkOutlier(state, windFactor, actualSec, opts = {}) {
-  const { tol = 0.4, minRides = 5, seed } = opts;
-  if (state.n < minRides) {
-    return { flagged: false, predicted: null, ratio: null };
+export function resolveModel(allRides, config, nowMs = Date.now()) {
+  const {
+    baselineMode, sliderBaselineSec,
+    kMode, split, sliderKHead, sliderKTail,
+  } = config;
+
+  // 1. Determine the live baseline. In learn mode we need a baseline to feed
+  // freeze + k; freeze needs the live baseline; baseline (learned) needs no k.
+  // Resolve baseline from currently-included rides using the slider as the
+  // contemporaneous live value for any young current rides.
+  const includedPre = allRides.filter((r) => r.included !== false);
+  let liveBaselineSec = sliderBaselineSec;
+  let baselineSource = "slider", baselineBranch = 3, ridesBaseline = 0;
+  if (baselineMode === "learn") {
+    const b = resolveBaseline(includedPre, sliderBaselineSec);
+    liveBaselineSec = b.baselineSec;
+    baselineSource = b.source; baselineBranch = b.branch; ridesBaseline = b.ridesUsed;
   }
-  const fit = fitModel(state, {
-    seedKHead: seed?.kHead ?? 1.0,
-    seedKTail: seed?.kTail ?? 1.0,
+
+  // 2. Apply the current→historic freeze using the live baseline, persisting
+  // transitions in the returned rides.
+  const rides = allRides.map((r) => applyFreeze(r, liveBaselineSec, nowMs));
+
+  // 3. Resolve k from included rides, conditional on per-ride effective baseline.
+  const included = rides.filter((r) => r.included !== false);
+  const k = resolveK(included, liveBaselineSec, {
+    kMode, split, sliderKHead, sliderKTail,
   });
-  if (!fit || !fit.baselineSec) return { flagged: false, predicted: null, ratio: null };
-  const k = windFactor >= 0 ? fit.kHead : fit.kTail;
-  const predicted = fit.baselineSec * (1 + k * windFactor);
-  if (!(predicted > 0)) return { flagged: false, predicted, ratio: null };
-  const ratio = actualSec / predicted;
-  return { flagged: Math.abs(ratio - 1) > tol, predicted, ratio };
-}
 
-/* ------------------------------------------------------------------ *
- * The update
- * ------------------------------------------------------------------ */
-
-/**
- * Incorporate one confirmed-typical ride into the model state (mutates a
- * copy, returns it). Applies recency decay to existing stats first, then
- * adds the new observation with full weight.
- *
- * @param {Object} state      - from createModelState (treated immutably)
- * @param {number} windFactor - x
- * @param {number} actualSec  - y (seconds)
- * @returns {Object} new state
- */
-export function updateModel(state, windFactor, actualSec) {
-  if (!(actualSec > 0) || !Number.isFinite(windFactor)) return state;
-  const d = state.decay;
-  const h = Math.max(windFactor, 0);     // headwind term
-  const t = Math.min(windFactor, 0);     // tailwind term (≤ 0)
-  const y = actualSec;
-  // design row x = [1, h, t]; add x·xᵀ (weight 1) to decayed XtX, x·y to Xty
-  const xtx = state.xtx;
-  const xty = state.xty;
   return {
-    ...state,
-    xtx: [
-      xtx[0] * d + 1,        // 00: 1·1
-      xtx[1] * d + h,        // 01: 1·h
-      xtx[2] * d + t,        // 02: 1·t
-      xtx[3] * d + h * h,    // 11: h·h
-      xtx[4] * d + h * t,    // 12: h·t
-      xtx[5] * d + t * t,    // 22: t·t
-    ],
-    xty: [
-      xty[0] * d + y,        // 1·y
-      xty[1] * d + h * y,    // h·y
-      xty[2] * d + t * y,    // t·y
-    ],
-    n: state.n + 1,
-    nHead: state.nHead + (h > 0 ? 1 : 0),
-    nTail: state.nTail + (t < 0 ? 1 : 0),
+    baselineSec: liveBaselineSec,
+    kHead: k.kHead, kTail: k.kTail,
+    baselineSource, kHeadSource: k.sourceHead, kTailSource: k.sourceTail,
+    split: k.split, autoSplit: k.autoSplit, baselineBranch,
+    ridesBaseline, ridesHead: k.ridesHead, ridesTail: k.ridesTail,
+    rides,
   };
 }
 
 /* ------------------------------------------------------------------ *
- * The fit
+ * Confidence dots (spec §4)
  * ------------------------------------------------------------------ */
 
 /**
- * Solve the weighted least-squares line y = A + B·x from the sufficient
- * statistics, then map to baseline and k:
- *
- *     baselineSec = A
- *     k           = clamp(B / A, 0.2, 3.0)
- *
- * Returns null until there is enough signal to fit. When rides exist but the
- * design is degenerate (all wind_factor ≈ equal — e.g. only calm rides), the
- * slope is unidentifiable; we then return the weighted-mean time as the
- * baseline and leave k at its current best estimate / seed.
- *
- * @param {Object} state
- * @param {Object} [opts]
- * @param {number} [opts.seedK=1.0] - fallback k when slope unidentifiable
- * @returns {{baselineSec:number, k:number, identifiable:boolean}|null}
+ * Count filled dots (0–3): one each for baseline, kHead, kTail that is served
+ * from ride data (source === "learned"). Combined-k contributes at most one dot
+ * (both sides share one pooled source) — only an actual split with both sides
+ * learned earns two. Takes a resolveModel result.
  */
-/**
- * Solve the weighted least-squares fit for baseline, kHead, kTail from the
- * normal-equations accumulators. Degrades gracefully:
- *   - both directions have spread → full 3-param solve
- *   - only one direction has spread → fit intercept + that slope, hold the
- *     other at its seed (each slope informed only by its own rides)
- *   - neither → weighted-mean baseline, both slopes at seed
- *
- * @param {Object} state
- * @param {Object} [opts]
- * @param {number} [opts.seedKHead=1.0]
- * @param {number} [opts.seedKTail=1.0]
- * @returns {{baselineSec, kHead, kTail, identifiableHead, identifiableTail}|null}
- */
-export function fitModel(state, opts = {}) {
-  const { seedKHead = 1.0, seedKTail = 1.0, seedK } = opts;
-  // seedK kept for back-compat callers; use it for both sides if given.
-  const sH = seedKHead ?? seedK ?? 1.0;
-  const sT = seedKTail ?? seedK ?? 1.0;
-  if (state.n === 0) return null;
-
-  const m = state.xtx;
-  const sw = m[0]; // Σw (the [0][0] entry, since const·const = 1)
-  if (!(sw > 0)) return null;
-
-  // Weighted spread of each directional term, to judge identifiability.
-  // var(h) = E[h²] − E[h]²  using weighted sums.
-  const meanH = m[1] / sw, meanT = m[2] / sw;
-  const varH = m[3] / sw - meanH * meanH;
-  const varT = m[5] / sw - meanT * meanT;
-  const MIN_STD = 0.1;                 // same threshold as before, per side
-  const haveH = varH > MIN_STD * MIN_STD && state.nHead >= 2;
-  const haveT = varT > MIN_STD * MIN_STD && state.nTail >= 2;
-
-  // Helper: weighted mean time (baseline fallback)
-  const meanY = state.xty[0] / sw;
-
-  if (haveH && haveT) {
-    const sol = solve3(m, state.xty);
-    if (sol && sol[0] > 0) {
-      return {
-        baselineSec: sol[0],
-        kHead: clampK(sol[1] / sol[0], state.nHead),
-        kTail: clampK(sol[2] / sol[0], state.nTail),
-        identifiableHead: true,
-        identifiableTail: true,
-      };
-    }
-    // fall through to degraded paths on a pathological solve
+export function dotCount(resolved) {
+  let dots = 0;
+  if (resolved.baselineSource === "learned") dots += 1;
+  if (resolved.split) {
+    if (resolved.kHeadSource === "learned") dots += 1;
+    if (resolved.kTailSource === "learned") dots += 1;
+  } else {
+    // combined: at most one dot regardless of how many directions the pooled
+    // fit nominally covers
+    if (resolved.kHeadSource === "learned" || resolved.kTailSource === "learned") dots += 1;
   }
-
-  // One-direction fits: regress y on [1, term] for the direction that has
-  // spread; hold the other slope at seed. Uses the relevant 2×2 subsystem.
-  if (haveH && !haveT) {
-    const fit = solve2(sw, m[1], m[3], state.xty[0], state.xty[1]); // const + head
-    if (fit && fit.A > 0) {
-      return {
-        baselineSec: fit.A,
-        kHead: clampK(fit.B / fit.A, state.nHead),
-        kTail: clampK(sT, 0),
-        identifiableHead: true,
-        identifiableTail: false,
-      };
-    }
-  }
-  if (haveT && !haveH) {
-    const fit = solve2(sw, m[2], m[5], state.xty[0], state.xty[2]); // const + tail
-    if (fit && fit.A > 0) {
-      return {
-        baselineSec: fit.A,
-        kHead: clampK(sH, 0),
-        kTail: clampK(fit.B / fit.A, state.nTail),
-        identifiableHead: false,
-        identifiableTail: true,
-      };
-    }
-  }
-
-  // Neither identifiable (e.g. only near-calm rides): mean time + seeds.
-  return {
-    baselineSec: meanY > 0 ? meanY : null,
-    kHead: clampK(sH, 0),
-    kTail: clampK(sT, 0),
-    identifiableHead: false,
-    identifiableTail: false,
-  };
-}
-
-/**
- * Solve a 2-variable weighted normal system for y = A + B·u:
- *   [ sw    su  ] [A]   [sy ]
- *   [ su    suu ] [B] = [suy]
- * given sw=Σw, su=Σw·u, suu=Σw·u², sy=Σw·y, suy=Σw·u·y.
- */
-function solve2(sw, su, suu, sy, suy) {
-  const det = sw * suu - su * su;
-  if (!(Math.abs(det) > 1e-9)) return null;
-  const A = (suu * sy - su * suy) / det;
-  const B = (sw * suy - su * sy) / det;
-  return { A, B };
-}
-
-/**
- * Solve the symmetric 3×3 system XtX·β = Xty for β, where XtX is given by its
- * 6 unique entries [00,01,02,11,12,22]. Returns [β0,β1,β2] or null if singular.
- * Uses cofactor expansion (small fixed size, no pivoting needed for a
- * well-conditioned weighted Gram matrix; singular → null).
- */
-function solve3(m, b) {
-  const a00 = m[0], a01 = m[1], a02 = m[2], a11 = m[3], a12 = m[4], a22 = m[5];
-  // cofactors of the symmetric matrix
-  const c00 = a11 * a22 - a12 * a12;
-  const c01 = a12 * a02 - a01 * a22;
-  const c02 = a01 * a12 - a11 * a02;
-  const det = a00 * c00 + a01 * c01 + a02 * c02;
-  if (!(Math.abs(det) > 1e-9)) return null;
-  const c11 = a00 * a22 - a02 * a02;
-  const c12 = a02 * a01 - a00 * a12;
-  const c22 = a00 * a11 - a01 * a01;
-  // inverse · b  (inverse = adjugate/det; adjugate is symmetric here)
-  const inv = det;
-  const x0 = (c00 * b[0] + c01 * b[1] + c02 * b[2]) / inv;
-  const x1 = (c01 * b[0] + c11 * b[1] + c12 * b[2]) / inv;
-  const x2 = (c02 * b[0] + c12 * b[1] + c22 * b[2]) / inv;
-  return [x0, x1, x2];
-}
-
-/**
- * Clamp k to a band that widens with directional ride count n. At n=0 the band
- * is tight (near seed); it interpolates linearly to the full physical range by
- * K_WIDEN_RIDES rides. n is the count of rides in the relevant direction
- * (nHead for kHead, nTail for kTail).
- */
-function clampK(k, n = 0) {
-  const DEFAULT_FALLBACK = 0.33;
-  if (!Number.isFinite(k)) return DEFAULT_FALLBACK;
-  const f = Math.max(0, Math.min(1, n / K_WIDEN_RIDES)); // 0 → tight, 1 → full
-  const lo = K_TIGHT_MIN + (K_FULL_MIN - K_TIGHT_MIN) * f;
-  const hi = K_TIGHT_MAX + (K_FULL_MAX - K_TIGHT_MAX) * f;
-  return Math.max(lo, Math.min(hi, k));
+  return dots;
 }
 
 /* ------------------------------------------------------------------ *
- * Convenience: predict + confidence
+ * Prediction (spec §2.1, with physical speed clamp retained)
  * ------------------------------------------------------------------ */
 
 /**
- * Predicted ride time for a given wind_factor using the current model.
- * Falls back to the supplied seed baseline/k when the model can't fit yet.
+ * Predicted ride time for a wind_factor, given an already-resolved model
+ * (baselineSec, kHead, kTail). The raw multiplier 1 + k·wf is clamped to
+ * physical SPEED limits, converted back to time:
+ *   - tailwind ceiling: speed <= speedCapMult × still → multiplier >= 1/speedCapMult
+ *   - headwind floor:   speed >= walkPace → multiplier <= stillSpeed/walkPace
  *
- * The raw model predicted = baseline·(1 + k·wind_factor) is fine near calm but
- * unphysical at strong wind: a big tailwind drives the multiplier toward zero
- * or negative (impossible), a big headwind unbounded. The real limits are on
- * SPEED, so we clamp the implied average speed and convert back to time:
- *   - headwind floor: the rider can always at least walk → WALK_PACE (5 km/h)
- *   - tailwind ceiling: bike control → SPEED_CAP × still-air speed (3×)
- * Expressing the headwind limit as walking pace makes it route-aware: a route
- * ridden at 30 km/h caps at a 6× time blow-out, a 15 km/h route at 3×.
- *
- * @param {Object} state
+ * @param {{baselineSec, kHead, kTail}} model
  * @param {number} windFactor
- * @param {Object} seed - { baselineSec, kHead, kTail }
  * @param {Object} [opts]
- * @param {number} [opts.distanceM] - route distance (m); enables the route-aware
- *        walking-pace headwind ceiling. Without it, a fixed fallback is used.
+ * @param {number} [opts.distanceM]
  * @param {number} [opts.walkPaceKmh=5]
- * @param {number} [opts.speedCapMult=3] - tailwind ceiling as ×still-air speed
- * @returns {{predictedSec, baselineSec, k, kHead, kTail, provisional, multiplier, clamped}}
+ * @param {number} [opts.speedCapMult=3]
+ * @param {number} [opts.multMaxFallback=6]
+ * @returns {{predictedSec, baselineSec, k, kHead, kTail, multiplier, clamped}}
  */
-export function predict(state, windFactor, seed, opts = {}) {
+export function predictFromModel(model, windFactor, opts = {}) {
   const { distanceM = null, walkPaceKmh = 5, speedCapMult = 3, multMaxFallback = 6 } = opts;
-  const seedKHead = seed.kHead ?? seed.k ?? 0.33;
-  const seedKTail = seed.kTail ?? seed.k ?? 0.33;
-  const fit = fitModel(state, { seedKHead, seedKTail });
-  const baselineSec = fit && fit.baselineSec ? fit.baselineSec : seed.baselineSec;
-  const kHead = fit ? fit.kHead : seedKHead;
-  const kTail = fit ? fit.kTail : seedKTail;
-  // directional sensitivity: headwind (wf>0) uses kHead, tailwind uses kTail
+  const baselineSec = model.baselineSec;
+  const kHead = model.kHead, kTail = model.kTail;
   const k = windFactor >= 0 ? kHead : kTail;
-
   const raw = 1 + k * windFactor;
 
-  // Speed-clamp expressed as bounds on the time multiplier:
-  //   tailwind ceiling: speed ≤ speedCapMult × still → multiplier ≥ 1/speedCapMult
-  //   headwind floor:   speed ≥ walkPace → multiplier ≤ stillSpeed/walkPace
   const multMin = 1 / speedCapMult;
   let multMax = multMaxFallback;
   if (distanceM > 0 && baselineSec > 0) {
     const stillSpeedKmh = (distanceM / 1000) / (baselineSec / 3600);
-    multMax = Math.max(1, stillSpeedKmh / walkPaceKmh); // never below 1 (no wind can't speed a headwind cap)
+    multMax = Math.max(1, stillSpeedKmh / walkPaceKmh);
   }
   const multiplier = Math.max(multMin, Math.min(multMax, raw));
   return {
     predictedSec: baselineSec * multiplier,
-    baselineSec,
-    k,
-    kHead,
-    kTail,
-    multiplier,
-    clamped: multiplier !== raw,
-    provisional: !fit || (!fit.identifiableHead && !fit.identifiableTail),
+    baselineSec, k, kHead, kTail,
+    multiplier, clamped: multiplier !== raw,
   };
 }
 
 /**
- * Confidence label from usable ride count (spec §3.5). Thresholds are a
- * starting point; the UI maps these to its own copy/visuals.
+ * Convenience: resolve the model from the ride log + config and predict in one
+ * call. Returns the prediction plus the resolved model (and rides w/ freeze
+ * applied, for the caller to persist).
  */
-export function confidence(state, opts = {}) {
-  const { provisionalBelow = 5, goodAbove = 15 } = opts;
-  const n = state.n;
-  // Per-direction k identifiability: whether enough rides WITH WIND in each
-  // direction have accumulated to actually learn the wind sensitivity (k), as
-  // opposed to just counting rides. This is what the user cares about — the
-  // baseline learns from one calm ride, but k needs windy rides per direction.
-  const fit = fitModel(state) || {};
-  const idHead = !!fit.identifiableHead;
-  const idTail = !!fit.identifiableTail;
-  // kLevel reflects WIND learning, not ride count: neither / one / both.
-  const kLevel = idHead && idTail ? "both" : (idHead || idTail ? "one" : "neither");
-  if (n < provisionalBelow) return { level: "provisional", rides: n, idHead, idTail, kLevel };
-  if (n < goodAbove) return { level: "learning", rides: n, idHead, idTail, kLevel };
-  return { level: "good", rides: n, idHead, idTail, kLevel };
-}
-
-/* ------------------------------------------------------------------ *
- * Rebuild from log (data spec §3.3 recompute op)
- * ------------------------------------------------------------------ */
-
-/**
- * Recompute model state from scratch by replaying usable rides
- * oldest-to-newest. Used after an algorithm change, or to verify the live
- * online state. Rides must be sorted ascending by time so decay is applied
- * in the right order.
- *
- * @param {Array<{windFactor:number, actualSec:number, usable:boolean}>} rides
- * @param {Object} [opts] - passed to createModelState
- */
-export function rebuildFromRides(rides, opts = {}) {
-  let state = createModelState(opts);
-  for (const r of rides) {
-    if (r.usable) state = updateModel(state, r.windFactor, r.actualSec);
-  }
-  return state;
+export function predict(allRides, config, windFactor, opts = {}, nowMs = Date.now()) {
+  const resolved = resolveModel(allRides, config, nowMs);
+  const pr = predictFromModel(resolved, windFactor, opts);
+  return {
+    ...pr,
+    provisional: resolved.baselineSource === "slider"
+      && resolved.kHeadSource === "slider" && resolved.kTailSource === "slider",
+    resolved,
+    rides: resolved.rides,
+  };
 }

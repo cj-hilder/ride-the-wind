@@ -32,7 +32,7 @@ import {
   windFactorTimed,
   makeWindFn,
 } from "./windModel.js";
-import { predict as modelPredict } from "./learning.js";
+import { resolveModel, predictFromModel } from "./learning.js";
 
 /* ------------------------------------------------------------------ *
  * Station selection
@@ -76,36 +76,45 @@ export function chooseStations(route, opts = {}) {
  * ------------------------------------------------------------------ */
 
 /**
- * Build the predictForArrival callback for one route.
+ * Build the predictForArrival callback for one route. Resolves the learning
+ * model ONCE here (from the curated ride log + the route's config), then the
+ * returned callback does pure arithmetic per arrival — so the ensemble loop can
+ * call it ~50× cheaply.
  *
  * @param {Object} args
  * @param {Object} args.route        - processed route (gpxRoute output)
- * @param {Object} args.modelState   - learning model state for this route
- * @param {Object} args.seed         - { baselineSec, k } from setup
+ * @param {Array}  args.rides        - the route's ride log (any include state)
+ * @param {Object} args.config       - { baselineMode, sliderBaselineSec, kMode,
+ *                                       split, sliderKHead, sliderKTail }
  * @param {Array}  args.stationSeries - [{lat, lon, series}] forecast per station
- *                                      (series = windModel.parseForecast output)
  * @param {Object} [args.opts]
  * @param {number} [args.opts.passes=2]      - convergence passes
  * @param {boolean} [args.opts.useGradient=true]
- * @returns {(arrivalMs:number)=>Object} predictForArrival
+ * @param {number} [args.opts.nowMs]         - for freeze evaluation (testable)
+ * @returns {(arrivalMs:number)=>Object} predictForArrival.
+ *          Also exposes `.resolved` (the resolveModel result, incl. `rides`
+ *          with any freeze transitions to persist) on the returned function.
  */
-export function makePredictor({ route, modelState, seed, stationSeries, opts = {} }) {
-  const { passes = 2, useGradient = true } = opts;
+export function makePredictor({ route, rides, config, stationSeries, opts = {} }) {
+  const { passes = 2, useGradient = true, nowMs } = opts;
   const windFn = makeWindFn(stationSeries);
 
-  return function predictForArrival(arrivalMs) {
-    // Best current estimate of still-air baseline & k, for weighting and
-    // for converting wind_factor into a time.
-    const baseFit = modelPredict(modelState, 0, seed, { distanceM: route.totalDistance }); // wf=0 → baseline only
-    const baselineSec = baseFit.baselineSec;
-    const baseSpeedKmh = speedFromBaseline(route.totalDistance, baselineSec);
+  // Resolve the model once. resolved.rides carries any current→historic freeze
+  // transitions for the caller to persist.
+  const resolved = resolveModel(rides ?? [], config, nowMs ?? Date.now());
+  const baselineSec = resolved.baselineSec;
+  const baseSpeedKmh = speedFromBaseline(route.totalDistance, baselineSec);
+  const times = segmentTimes(route.segments, baseSpeedKmh, { useGradient });
+  const provisional =
+    resolved.baselineSource === "slider" &&
+    resolved.kHeadSource === "slider" &&
+    resolved.kTailSource === "slider";
 
-    const times = segmentTimes(route.segments, baseSpeedKmh, { useGradient });
-
+  function predictForArrival(arrivalMs) {
     // Fixed-point: anchor on arrival, iterate departure ← arrival − predicted.
     let predictedSec = baselineSec; // first guess: still-air
     let windFactor = 0;
-    let pr = baseFit;
+    let pr = predictFromModel(resolved, 0, { distanceM: route.totalDistance });
 
     for (let p = 0; p < passes; p++) {
       const departMs = arrivalMs - predictedSec * 1000;
@@ -116,7 +125,7 @@ export function makePredictor({ route, modelState, seed, stationSeries, opts = {
         departMs,
         passes: 1, // inner single pass; outer loop here drives convergence
       });
-      pr = modelPredict(modelState, windFactor, seed, { distanceM: route.totalDistance });
+      pr = predictFromModel(resolved, windFactor, { distanceM: route.totalDistance });
       predictedSec = pr.predictedSec;
     }
 
@@ -126,10 +135,12 @@ export function makePredictor({ route, modelState, seed, stationSeries, opts = {
       k: pr.k,
       kHead: pr.kHead,
       kTail: pr.kTail,
-      provisional: pr.provisional,
+      provisional,
       windFactor,
     };
-  };
+  }
+  predictForArrival.resolved = resolved;
+  return predictForArrival;
 }
 
 /**

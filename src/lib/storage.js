@@ -53,6 +53,26 @@ function splitSeedFromRoute(route) {
   return { kHead, kTail };
 }
 
+/**
+ * Map stored ride records to the shape learning.resolveModel consumes, and
+ * supply defaults for legacy rides predating the curation/baseline-reference
+ * fields (clean-break migration): `actualSec` from `actualTimeSec`, `included`
+ * from the old `usable` flag (default true), `baselineRef` default "current",
+ * `savedBaselineSec` default null. Preserves `id` so the caller can match
+ * freeze transitions back to stored records.
+ */
+function normalizeRides(rides) {
+  return rides.map((r) => ({
+    id: r.id,
+    windFactor: r.windFactor,
+    actualSec: r.actualTimeSec,
+    startedAt: r.startedAt,
+    included: r.included != null ? r.included : (r.usable != null ? !!r.usable : true),
+    baselineRef: r.baselineRef ?? "current",
+    savedBaselineSec: r.savedBaselineSec ?? null,
+  }));
+}
+
 /* ================================================================== *
  * Backend interface
  *   get(store, key) -> value|undefined
@@ -205,8 +225,9 @@ export class Store {
    * @param {Object} deps
    * @param {Backend} deps.backend
    * @param {()=>string} [deps.uuid]   - id generator (injectable for tests)
-   * @param {Object} deps.learning     - { createModelState, updateModel, fitModel, rebuildFromRides }
-   *                                      injected to avoid an import cycle
+   * @param {Object} deps.learning     - the learning module (resolveModel,
+   *                                      classifyRide, ...) injected to avoid an
+   *                                      import cycle
    */
   constructor({ backend, uuid, learning }) {
     this.b = backend;
@@ -247,6 +268,14 @@ export class Store {
       seedStillAirSec: setup.seedStillAirSec,
       seedHeadwind20Sec: setup.seedHeadwind20Sec ?? null,
       seedTailwind20Sec: setup.seedTailwind20Sec ?? null,
+      // Learning config (manual/learn toggles + split + k slider values).
+      // New routes start manual everywhere (no rides yet): they predict from
+      // the user's setup the same as before.
+      baselineMode: setup.baselineMode ?? "manual",
+      kMode: setup.kMode ?? "manual",
+      split: setup.split ?? false,
+      sliderKHead: seededK.kHead ?? 1.0,
+      sliderKTail: seededK.kTail ?? 1.0,
       targetArrival: setup.targetArrival,
       timeMode: setup.timeMode === "depart" ? "depart" : "arrive",
       arrivalOverrides: setup.arrivalOverrides ?? {},
@@ -258,18 +287,22 @@ export class Store {
       rawGpx: setup.rawGpx ?? null,
     };
     await this.b.put(STORES.ROUTES, route);
-
-    // seededK is now { kHead, kTail }
-    const model = {
-      routeId: id,
-      kHead: seededK.kHead ?? 1.0,
-      kTail: seededK.kTail ?? 1.0,
-      regressionState: this.learning.createModelState(),
-      usableRideCount: 0,
-      lastUpdated: now,
-    };
-    await this.b.put(STORES.MODEL, model);
     return route;
+  }
+
+  /**
+   * Build the learning config object for a route from its stored fields.
+   * sliderBaselineSec is the still-air seconds the speed slider implies.
+   */
+  routeConfig(route) {
+    return {
+      baselineMode: route.baselineMode ?? "manual",
+      sliderBaselineSec: route.seedStillAirSec ?? route.baselineTimeSec,
+      kMode: route.kMode ?? "manual",
+      split: route.split ?? false,
+      sliderKHead: route.sliderKHead ?? 1.0,
+      sliderKTail: route.sliderKTail ?? 1.0,
+    };
   }
 
   getRoute(id) {
@@ -310,75 +343,91 @@ export class Store {
 
   /**
    * Reset a route's learning to freshly-entered base values: update the seed
-   * still-air / head / tail times (and baseline), discard all logged rides, and
-   * rebuild the model from the new directional seeds. Used by the editor's
-   * "reset data" action. The GPX/segments and schedule are untouched.
+   * still-air / head / tail times (and baseline + k sliders) and discard all
+   * logged rides. With the refactor there is no separate model record to
+   * rebuild — baseline and k are derived live from the (now empty) ride log and
+   * the route's manual sliders. The GPX/segments and schedule are untouched.
    */
   async resetRoute(id, baseValues) {
     const route = await this.getRoute(id);
     if (!route) return null;
+    const seed = splitSeedFromRoute({
+      seedStillAirSec: baseValues.seedStillAirSec ?? route.seedStillAirSec,
+      seedHeadwind20Sec: baseValues.seedHeadwind20Sec ?? null,
+      seedTailwind20Sec: baseValues.seedTailwind20Sec ?? null,
+    });
     const updated = {
       ...route,
       seedStillAirSec: baseValues.seedStillAirSec ?? route.seedStillAirSec,
       seedHeadwind20Sec: baseValues.seedHeadwind20Sec ?? null,
       seedTailwind20Sec: baseValues.seedTailwind20Sec ?? null,
       baselineTimeSec: baseValues.seedStillAirSec ?? route.baselineTimeSec,
+      sliderKHead: seed.kHead,
+      sliderKTail: seed.kTail,
       updatedAt: Date.now(),
     };
     await this.b.put(STORES.ROUTES, updated);
     // throw away every logged ride for this route
     await this.b.deleteWhere(STORES.RIDES, (r) => r.routeId === id);
-    // rebuild a fresh model seeded from the new base values
-    const seed = splitSeedFromRoute(updated);
-    await this.b.put(STORES.MODEL, {
-      routeId: id,
-      kHead: seed.kHead,
-      kTail: seed.kTail,
-      regressionState: this.learning.createModelState(),
-      usableRideCount: 0,
-      lastUpdated: Date.now(),
-    });
     return updated;
   }
 
-  /* ---- Model state ---- */
+  /* ---- Model resolution (derived from the ride log + route config) ---- */
 
-  async getModel(routeId) {
-    const model = await this.b.get(STORES.MODEL, routeId);
-    if (!model) return model;
-    // Migration: models stored before the kHead/kTail split have only `k`
-    // (or nothing). Per the reset-and-reseed decision, rebuild both directional
-    // sensitivities from the route's stored setup estimates and persist.
-    if (model.kHead == null || model.kTail == null) {
-      const route = await this.getRoute(routeId);
-      const seed = splitSeedFromRoute(route);
-      const upgraded = {
-        ...model,
-        kHead: seed.kHead,
-        kTail: seed.kTail,
-        // a reset also discards the old single-k regression assumption
-        regressionState: this.learning.createModelState(),
-        usableRideCount: 0,
-      };
-      delete upgraded.k;
-      await this.b.put(STORES.MODEL, upgraded);
-      return upgraded;
+  /**
+   * Resolve a route's learned model (baseline, kHead, kTail) live from its
+   * curated ride log and config. Persists two side effects:
+   *   - any current→historic freeze transitions the resolver applied;
+   *   - the route's cached baselineTimeSec, kept in step with the resolution.
+   * Returns the resolveModel result (incl. sources for the dots).
+   *
+   * @param {string} routeId
+   * @param {number} [nowMs] - injectable for tests
+   */
+  async resolveRouteModel(routeId, nowMs = Date.now()) {
+    const route = await this.getRoute(routeId);
+    if (!route) return null;
+    const rides = await this.listRides(routeId);
+    const config = this.routeConfig(route);
+    const resolved = this.learning.resolveModel(normalizeRides(rides), config, nowMs);
+
+    // Persist freeze transitions: write back any ride whose baselineRef /
+    // savedBaselineSec changed.
+    const byId = new Map(rides.map((r) => [r.id, r]));
+    for (const out of resolved.rides) {
+      const orig = byId.get(out.id);
+      if (orig && (orig.baselineRef !== out.baselineRef ||
+                   orig.savedBaselineSec !== out.savedBaselineSec)) {
+        await this.b.put(STORES.RIDES, { ...orig, ...out });
+      }
     }
-    return model;
+
+    // Keep the route's cached baseline aligned with the resolution.
+    if (resolved.baselineSec > 0 && resolved.baselineSec !== route.baselineTimeSec) {
+      await this.b.put(STORES.ROUTES, {
+        ...route, baselineTimeSec: resolved.baselineSec, updatedAt: Date.now(),
+      });
+    }
+    return resolved;
   }
 
   /* ---- Rides ---- */
 
   /**
-   * Persist a captured ride and, if usable, fold it into the model state
-   * (regression update, refit k + baseline, bump count). Returns
-   * { ride, model } — model unchanged when the ride is not usable.
+   * Persist a captured ride. With the refactor the ride log IS the model: there
+   * is no accumulator to fold into. New rides default to included, current
+   * baseline reference (they freeze to historic automatically at 14 days), and
+   * no frozen baseline yet. Returns { ride }.
    *
    * @param {Object} capture - routeId, startedAt, endedAt, actualTimeSec,
    *                           trace, forecastWind, windFactor, predictedTimeSec,
-   *                           usable, excludeReason, autoFlagged
+   *                           autoFlagged. (The legacy `usable`/`excludeReason`
+   *                           are mapped to the new `included` flag.)
    */
   async recordRide(capture) {
+    const includedDefault = capture.included != null
+      ? !!capture.included
+      : (capture.usable != null ? !!capture.usable : true);
     const ride = {
       id: this.uuid(),
       routeId: capture.routeId,
@@ -389,74 +438,63 @@ export class Store {
       forecastWind: capture.forecastWind ?? [],
       windFactor: capture.windFactor,
       predictedTimeSec: capture.predictedTimeSec ?? null,
-      usable: !!capture.usable,
-      excludeReason: capture.excludeReason ?? null,
       autoFlagged: !!capture.autoFlagged,
+      // New curation / baseline-reference fields.
+      included: includedDefault,
+      baselineRef: capture.baselineRef ?? "current",
+      savedBaselineSec: capture.savedBaselineSec ?? null,
     };
     await this.b.put(STORES.RIDES, ride);
-
-    let model = await this.getModel(capture.routeId);
-    if (ride.usable && model) {
-      const newState = this.learning.updateModel(
-        model.regressionState,
-        ride.windFactor,
-        ride.actualTimeSec
-      );
-      const fit = this.learning.fitModel(newState, {
-        seedKHead: model.kHead ?? 1.0,
-        seedKTail: model.kTail ?? 1.0,
-      });
-      model = {
-        ...model,
-        regressionState: newState,
-        kHead: fit ? fit.kHead : model.kHead,
-        kTail: fit ? fit.kTail : model.kTail,
-        usableRideCount: model.usableRideCount + 1,
-        lastUpdated: Date.now(),
-      };
-      await this.b.put(STORES.MODEL, model);
-
-      // Keep the route's cached baseline in step with the refit.
-      if (fit && fit.baselineSec > 0) {
-        await this.updateRoute(capture.routeId, {
-          baselineTimeSec: fit.baselineSec,
-        });
-      }
-    }
-    return { ride, model };
+    return { ride };
   }
 
   listRides(routeId) {
     return this.b.getAllByIndex(STORES.RIDES, "routeId", routeId);
   }
 
+  getRide(id) {
+    return this.b.get(STORES.RIDES, id);
+  }
+
   /**
-   * Recompute op (data spec §4): rebuild a route's model state from scratch by
-   * replaying its usable rides oldest-to-newest. Use after an algorithm change.
+   * Patch a single ride (editor: duration edit, include/exclude toggle,
+   * current/historic switch). Only whitelisted fields are writable.
    */
-  async recomputeModel(routeId) {
-    const rides = (await this.listRides(routeId)).sort(
-      (a, b) => a.startedAt - b.startedAt
-    );
-    const state = this.learning.rebuildFromRides(rides);
-    const existing = await this.getModel(routeId);
-    const fit = this.learning.fitModel(state, {
-      seedKHead: existing?.kHead ?? 1.0,
-      seedKTail: existing?.kTail ?? 1.0,
-    });
-    const model = {
-      routeId,
-      regressionState: state,
-      kHead: fit ? fit.kHead : existing?.kHead ?? 1.0,
-      kTail: fit ? fit.kTail : existing?.kTail ?? 1.0,
-      usableRideCount: rides.filter((r) => r.usable).length,
-      lastUpdated: Date.now(),
-    };
-    await this.b.put(STORES.MODEL, model);
-    if (fit && fit.baselineSec > 0) {
-      await this.updateRoute(routeId, { baselineTimeSec: fit.baselineSec });
+  async updateRide(id, patch) {
+    const ride = await this.b.get(STORES.RIDES, id);
+    if (!ride) throw new Error(`No ride ${id}`);
+    const allowed = {};
+    if (patch.actualTimeSec != null) allowed.actualTimeSec = patch.actualTimeSec;
+    if (patch.included != null) allowed.included = !!patch.included;
+    if (patch.baselineRef != null) allowed.baselineRef = patch.baselineRef;
+    if (patch.savedBaselineSec !== undefined) allowed.savedBaselineSec = patch.savedBaselineSec;
+    const updated = { ...ride, ...allowed };
+    await this.b.put(STORES.RIDES, updated);
+    return updated;
+  }
+
+  /** Delete a single ride (destructive; distinct from exclude). */
+  async deleteRide(id) {
+    await this.b.delete(STORES.RIDES, id);
+  }
+
+  /**
+   * Bulk curation: exclude the given ride and every earlier ride (by ride
+   * timestamp) on the same route. Reversible — it only sets included=false.
+   * Returns the number of rides affected.
+   */
+  async excludeRideAndEarlier(id) {
+    const ride = await this.b.get(STORES.RIDES, id);
+    if (!ride) return 0;
+    const rides = await this.listRides(ride.routeId);
+    let n = 0;
+    for (const r of rides) {
+      if ((r.startedAt ?? 0) <= (ride.startedAt ?? 0) && r.included !== false) {
+        await this.b.put(STORES.RIDES, { ...r, included: false });
+        n++;
+      }
     }
-    return model;
+    return n;
   }
 
   /* ---- Settings ---- */
