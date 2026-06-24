@@ -156,6 +156,11 @@ export function createAppController(deps = {}) {
       seedStillAirSec: baselineSec,
       seedHeadwind20Sec: Math.round(baselineSec * (1 + EXAMPLE_DEFAULT_K)),
       seedTailwind20Sec: Math.round(baselineSec * (1 - EXAMPLE_DEFAULT_K)),
+      // Mirror the default new-route experience; toggleable in-memory so the
+      // demo illustrates the difference between manual and learn.
+      baselineMode: "learn",
+      kMode: "learn",
+      split: false,
       targetArrival: "08:30",
       timeMode: "arrive",
       arrivalOverrides: {},
@@ -166,16 +171,20 @@ export function createAppController(deps = {}) {
     };
     return _exampleRoute;
   }
-  // Config for the example route (manual everywhere; it is never trained and
-  // persists no rides). k sliders come from its seed times.
+  // Config for the example route. It mirrors the default NEW-route experience
+  // (learn/learn) so the onboarding demo teaches what the user will actually
+  // see: the "until enough rides recorded" status and the Manual/Learn toggles
+  // are themselves explanatory. The example has no persisted rides, so learn
+  // falls back to the slider values — identical prediction, instructive UI.
+  // k sliders come from its seed times.
   function exampleConfig() {
     const r = exampleRoute();
     const k = computeSeedKSplit(r.seedStillAirSec, r.seedHeadwind20Sec, r.seedTailwind20Sec);
     return {
-      baselineMode: "manual",
+      baselineMode: r.baselineMode ?? "learn",
       sliderBaselineSec: r.seedStillAirSec,
-      kMode: "manual",
-      split: false,
+      kMode: r.kMode ?? "learn",
+      split: r.split ?? false,
       sliderKHead: k.kHead ?? 1.0,
       sliderKTail: k.kTail ?? 1.0,
     };
@@ -186,7 +195,7 @@ export function createAppController(deps = {}) {
   // experiment with speed/k/arrival/days/mode and see the Plan tab respond.
   // Never persisted — resets on restart and when the example vanishes. Mutates
   // the cached example object in place.
-  function updateExampleSeeds({ speedKmh, kHead, kTail, targetArrival, activeDays, timeMode }) {
+  function updateExampleSeeds({ speedKmh, kHead, kTail, targetArrival, activeDays, timeMode, baselineMode, kMode, split }) {
     const r = exampleRoute();
     if (speedKmh != null) {
       const baselineSec = Math.round(r.totalDistance / (speedKmh / 3.6));
@@ -200,6 +209,9 @@ export function createAppController(deps = {}) {
     if (targetArrival != null) r.targetArrival = targetArrival;
     if (activeDays != null) r.activeDays = activeDays;
     if (timeMode != null) r.timeMode = timeMode === "depart" ? "depart" : "arrive";
+    if (baselineMode != null) r.baselineMode = baselineMode;
+    if (kMode != null) r.kMode = kMode;
+    if (split != null) r.split = split;
     r.updatedAt = now();
   }
 

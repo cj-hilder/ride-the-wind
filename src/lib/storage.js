@@ -269,10 +269,13 @@ export class Store {
       seedHeadwind20Sec: setup.seedHeadwind20Sec ?? null,
       seedTailwind20Sec: setup.seedTailwind20Sec ?? null,
       // Learning config (manual/learn toggles + split + k slider values).
-      // New routes start manual everywhere (no rides yet): they predict from
-      // the user's setup the same as before.
-      baselineMode: setup.baselineMode ?? "manual",
-      kMode: setup.kMode ?? "manual",
+      // New routes start in LEARN for baseline and k: with no rides the resolver
+      // falls back to the user's slider values (their setup speed/k), so the
+      // prediction is identical to manual on day one — but the route then starts
+      // learning automatically as rides accumulate, with no toggle to flip. The
+      // sliders still hold the user's entered values as the fallback/seed.
+      baselineMode: setup.baselineMode ?? "learn",
+      kMode: setup.kMode ?? "learn",
       split: setup.split ?? false,
       sliderKHead: seededK.kHead ?? 1.0,
       sliderKTail: seededK.kTail ?? 1.0,
@@ -296,9 +299,9 @@ export class Store {
    */
   routeConfig(route) {
     return {
-      baselineMode: route.baselineMode ?? "manual",
+      baselineMode: route.baselineMode ?? "learn",
       sliderBaselineSec: route.seedStillAirSec ?? route.baselineTimeSec,
-      kMode: route.kMode ?? "manual",
+      kMode: route.kMode ?? "learn",
       split: route.split ?? false,
       sliderKHead: route.sliderKHead ?? 1.0,
       sliderKTail: route.sliderKTail ?? 1.0,
