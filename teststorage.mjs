@@ -26,10 +26,10 @@ console.log('Route creation + config init:');
   ok('route stored with id', route.id==='id1');
   ok('baseline seeded', route.baselineTimeSec===1000);
   ok('start region built', route.startRegion.radius===60);
-  ok('config: manual modes by default', route.baselineMode==='manual' && route.kMode==='manual' && route.split===false);
+  ok('config: learn modes by default', route.baselineMode==='learn' && route.kMode==='learn' && route.split===false);
   ok('config: k sliders seeded', route.sliderKHead===0.5 && route.sliderKTail===0.5);
   const cfg=s.routeConfig(route);
-  ok('routeConfig assembles', cfg.sliderBaselineSec===1000 && cfg.kMode==='manual');
+  ok('routeConfig assembles', cfg.sliderBaselineSec===1000 && cfg.kMode==='learn');
 }
 
 console.log('\nRides persist with curation fields; model resolves from log (learn mode):');

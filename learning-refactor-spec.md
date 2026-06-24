@@ -414,6 +414,19 @@ Config shape consumed by the resolver:
       sliderKTail:       number,
     }
 
+**New-route defaults.** New routes start in **learn** for both `baselineMode`
+and `kMode`, `split` false, with the k sliders seeded from the user's setup
+estimates (their entered head/tail times via `seedKSplit`; `1.0` only if none
+given). With no rides the resolver falls back to those slider values, so the
+prediction is identical to manual on day one — but the route then begins
+learning automatically as rides accumulate, with no toggle for the user to flip.
+Legacy routes lacking the mode fields resolve as learn too (consistent with new
+ones; harmless under the clean-slate ride migration). The ephemeral example/
+onboarding route is also **learn/learn**, to mirror exactly what a user sees by
+default; its Manual/Learn toggles and the "until enough rides recorded" status
+are themselves explanatory, illustrating the difference between the modes. The
+example has no rides, so learn falls back to the sliders (identical prediction);
+its mode toggles persist in memory only and reset on reload.
 ### 7.3 Migration
 
 **Clean break — losing learned state is acceptable.** On encountering old data,

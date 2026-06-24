@@ -55,7 +55,7 @@ let app, route;
   // split seed: kHead from 1300/1000-1=0.3, kTail from 1-760/1000=0.24
   ok('kHead slider seeded ~0.3', near(route.sliderKHead,0.3,0.02), `${route.sliderKHead.toFixed(3)}`);
   ok('kTail slider seeded ~0.24', near(route.sliderKTail,0.24,0.02), `${route.sliderKTail.toFixed(3)}`);
-  ok('config manual by default', route.baselineMode==='manual' && route.kMode==='manual');
+  ok('config learn by default', route.baselineMode==='learn' && route.kMode==='learn');
 }
 
 console.log('\nLive home verdict (headwind forecast):');
