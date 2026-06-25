@@ -418,19 +418,28 @@ export class Store {
 
   /**
    * Persist a captured ride. With the refactor the ride log IS the model: there
-   * is no accumulator to fold into. New rides default to included, current
-   * baseline reference (they freeze to historic automatically at 14 days), and
-   * no frozen baseline yet. Returns { ride }.
+   * is no accumulator to fold into. A new ride's used/not-used state is set from
+   * its classification: still and windy rides default to USED, gentle rides
+   * default to UNUSED (gentle rides feed neither baseline nor k). An explicit
+   * `included` on the capture overrides this; the legacy `usable` flag is also
+   * honoured as a fallback. New rides start at current baseline reference (they
+   * freeze to historic automatically at 14 days) with no frozen baseline yet.
+   * Returns { ride }.
    *
    * @param {Object} capture - routeId, startedAt, endedAt, actualTimeSec,
    *                           trace, forecastWind, windFactor, predictedTimeSec,
-   *                           autoFlagged. (The legacy `usable`/`excludeReason`
-   *                           are mapped to the new `included` flag.)
+   *                           autoFlagged.
    */
   async recordRide(capture) {
-    const includedDefault = capture.included != null
-      ? !!capture.included
-      : (capture.usable != null ? !!capture.usable : true);
+    // Default used/not-used from classification unless explicitly set.
+    let includedDefault;
+    if (capture.included != null) includedDefault = !!capture.included;
+    else if (capture.usable != null) includedDefault = !!capture.usable;
+    else if (!Number.isFinite(capture.windFactor)) includedDefault = true;
+    else {
+      const klass = this.learning.classifyRide(capture.windFactor);
+      includedDefault = klass !== "gentle"; // still & windy used; gentle not
+    }
     const ride = {
       id: this.uuid(),
       routeId: capture.routeId,
