@@ -49,7 +49,7 @@ console.log('\nRides persist with curation fields; model resolves from log (lear
   }
   const rides=await s.listRides(route.id);
   ok('all rides stored', rides.length===wfs.length);
-  ok('rides default included', rides.every(r=>r.included===true));
+  ok('still & windy rides default used', rides.every(r=>r.included===true));
   ok('rides default current ref', rides.every(r=>r.baselineRef==='current'));
   const resolved=await s.resolveRouteModel(route.id, t0);
   ok('baseline learned ~1000 (still ride)', near(resolved.baselineSec,1000,1), `${resolved.baselineSec}`);
@@ -58,6 +58,23 @@ console.log('\nRides persist with curation fields; model resolves from log (lear
   ok('kTail learned ~0.5', near(resolved.kTail,0.5,0.03), `${resolved.kTail.toFixed(3)}`);
   const r2=await s.getRoute(route.id);
   ok('route cached baseline updated ~1000', near(r2.baselineTimeSec,1000,2), `${r2.baselineTimeSec}`);
+}
+
+console.log('\nNew ride used/unused set from classification at record time:');
+{
+  uid=0; const s=mkStore();
+  const route=await s.createRoute(processed, setup, {kHead:1,kTail:1});
+  const t0=Date.now();
+  // still (wf~0), gentle (|wf| in 0.06..0.25), windy (|wf|>=0.25)
+  const {ride:stillR}=await s.recordRide({routeId:route.id, startedAt:t0, endedAt:t0+60, actualTimeSec:1000, windFactor:0.0});
+  const {ride:gentleR}=await s.recordRide({routeId:route.id, startedAt:t0+1, endedAt:t0+61, actualTimeSec:1050, windFactor:0.12});
+  const {ride:windyR}=await s.recordRide({routeId:route.id, startedAt:t0+2, endedAt:t0+62, actualTimeSec:1300, windFactor:0.5});
+  ok('still ride defaults used', stillR.included===true);
+  ok('gentle ride defaults UNUSED', gentleR.included===false);
+  ok('windy ride defaults used', windyR.included===true);
+  // explicit override still honoured
+  const {ride:forced}=await s.recordRide({routeId:route.id, startedAt:t0+3, endedAt:t0+63, actualTimeSec:1050, windFactor:0.12, included:true});
+  ok('explicit included overrides class default', forced.included===true);
 }
 
 console.log('\nManual mode ignores rides (uses sliders):');

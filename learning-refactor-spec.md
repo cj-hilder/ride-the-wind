@@ -578,18 +578,33 @@ all suites green).
 - Each tuning control (still-air speed, ground effect, and the two split k
   sliders) carries a two-segment **Manual | Learn** pill. A control is read-only
   only when its source is actually `"learned"`; in Learn-but-starved it stays
-  editable (it is the fallback the model uses) with the status line "using your
-  setting until enough rides recorded".
+  editable (it is the fallback the model uses). The status line ("using your
+  setting" / "using your setting until enough rides recorded" / "calculated from
+  N rides") sits **immediately under the value, above the 20 km/h example** — for
+  both the speed control and each ground-effect slider. When split, each slider
+  shows its own direction's source.
 - Split: manual checkbox, or auto-fires in Learn once both directions qualify,
   at which point the checkbox is disabled and labelled "(learned separately)".
-- **Rides Manager** (full-screen): columns date/time, length, k, class, include
-  checkbox, edit. Gentle rides show their k greyed; still shows "still". Long-
-  press the include checkbox → "exclude this ride and all earlier" (confirm
-  dialog). Current/historic is reflected in the shown k but not surfaced inline.
-- **Ride Editor** (full-screen): edit duration; include/exclude; current/historic
-  switch (disabled + locked historic at 14 days, with explanatory copy); bulk
-  exclude-and-earlier; delete (confirm).
+- **View rides** is an inline fold/unfold control (not a full-screen overlay)
+  that expands the ride list in flow within the editor. The per-ride **Ride
+  Editor** (✎) remains a full-screen overlay.
+- Ride list columns: date/time, length, k, class, include checkbox, edit.
+  Gentle rides show their k greyed; still shows "still". Footer note: "Gentle
+  rides default to unused." Long-press the include checkbox → "exclude this ride
+  and all earlier" (confirm dialog).
+- **New-ride used/unused is set at record time from classification:** still and
+  windy default to used, gentle defaults to unused (an explicit `included` on
+  the capture overrides this). The flag is baked into the stored record, not
+  just displayed.
+- **Editor buttons:** **Cancel** and **Apply** sit *above* View rides. Apply
+  persists but does **not** close the editor — it is closed by tapping the route
+  chip again, opening another route, or switching tab. Cancel **reverts** all
+  unsaved edits to the last-applied state. Both start disabled; any change
+  enables both; tapping either (Apply persists + re-snapshots; Cancel reverts)
+  disables both until the next change.
+- The current/historic switch in the Ride Editor is disabled + locked historic
+  at 14 days, with explanatory copy.
 - Editing a slider no longer wipes ride history; `resetRoute` is not called from
-  the editor any more. Slider edits persist via `updateRoute` only.
+  the editor any more. Edits persist via `updateRoute` only.
 
 The refactor is functionally complete end to end.
