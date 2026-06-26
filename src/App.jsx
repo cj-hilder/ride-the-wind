@@ -1009,8 +1009,10 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
     else onChange({ ...value, kHead: kk, kTail: kk });
   };
 
-  // Displayed k values: learned where served, otherwise the editable slider value.
-  const headK = baseLearned || headLearned ? learned.kHead : value.kHead;
+  // Displayed k values: the learned value only when THAT k direction is served
+  // from rides; otherwise the editable slider value. (Baseline being learned
+  // must not pin k — that desynced the slider on revert.)
+  const headK = headLearned ? learned.kHead : value.kHead;
   const tailK = tailLearned ? learned.kTail : value.kTail;
   const dispSpeed = baseLearned ? learned.speedKmh : speedKmh;
   const dispBaselineMin = baseLearned ? Math.round(learned.baselineSec / 60) : baselineMin;
