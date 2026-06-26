@@ -52,10 +52,10 @@ let app, route;
   ok('route created + persisted', route && route.id);
   ok('processed segments present', route.segments.length>0);
   ok('baseline seeded', route.baselineTimeSec===1000);
-  const model=await app.store.getModel(route.id);
   // split seed: kHead from 1300/1000-1=0.3, kTail from 1-760/1000=0.24
-  ok('kHead seeded ~0.3', near(model.kHead,0.3,0.02), `${model.kHead.toFixed(3)}`);
-  ok('kTail seeded ~0.24', near(model.kTail,0.24,0.02), `${model.kTail.toFixed(3)}`);
+  ok('kHead slider seeded ~0.3', near(route.sliderKHead,0.3,0.02), `${route.sliderKHead.toFixed(3)}`);
+  ok('kTail slider seeded ~0.24', near(route.sliderKTail,0.24,0.02), `${route.sliderKTail.toFixed(3)}`);
+  ok('config learn by default', route.baselineMode==='learn' && route.kMode==='learn');
 }
 
 console.log('\nLive home verdict (headwind forecast):');
@@ -66,7 +66,7 @@ console.log('\nLive home verdict (headwind forecast):');
   ok('verdict produced', hv.verdict!=null);
   ok('headwind -> leave earlier', hv.verdict.verdict==='headwind', hv.verdict.verdict);
   ok('range present', hv.range && hv.range.highSec>=hv.range.lowSec);
-  ok('confidence provisional (no rides)', hv.confidence.level==='provisional');
+  ok('confidence: nothing learned yet (0 dots)', hv.confidence.dots===0 && hv.confidence.baselineLearned===false);
   ok('verdict has departureMs for countdown', typeof hv.verdict.departureMs==='number');
   ok('no message field (scheduler removed)', !('message' in hv.verdict));
 }
@@ -79,43 +79,73 @@ console.log('\nNo scheduler: runAlerts removed, no notifications dispatched:');
   ok('no notifications dispatched', notifications.length===0);
 }
 
-console.log('\nCapture rides -> model learns (real recordRide path):');
+console.log('\nCapture rides -> resolver learns (real recordRide path, learn mode):');
 {
-  // feed several usable rides with known wind_factor + actual times consistent
-  // with baseline 1000, k=0.27. Provide forecastWind stations so app computes wf.
+  // Switch the route to learn mode for baseline + k.
+  await app.updateRoute(route.id, { baselineMode:'learn', kMode:'learn' });
   const station=(fromDeg,speed)=>[{lat:0,lon:0.0225,series:
     parseForecast({hourly:{time:[Math.floor(new Date(2026,5,1,8,0).getTime()/1000)],
       wind_speed_10m:[speed], wind_direction_10m:[fromDeg]}})}];
-  // Use varied winds so the regression has spread
+  // Varied winds (head, tail, calm) so the resolver has spread to work with.
   const conditions=[[90,25],[270,25],[90,15],[270,15],[0,20],[90,30],[270,10],[45,20]];
   for(let i=0;i<conditions.length;i++){
     const [fd,sp]=conditions[i];
     const start=new Date(2026,5,1+i,8,0).getTime();
-    // approximate "actual" as baseline*(1+0.27*wf-ish): just record real ride,
-    // let the app compute wf, and supply an actual a touch off baseline
     const cap={
       routeId:route.id, startedAt:start, endedAt:start+1000*1000,
-      actualTimeSec:1000, // we just need the learning path to run
-      forecastWind:station(fd,sp), usable:true,
+      actualTimeSec:1000, // app computes windFactor from the forecast
+      forecastWind:station(fd,sp),
     };
     await app.recordRide(cap);
   }
-  const model=await app.store.getModel(route.id);
-  ok('usable rides counted', model.usableRideCount===conditions.length, `${model.usableRideCount}`);
   const rides=await app.listRides(route.id);
+  ok('all rides stored', rides.length===conditions.length, `${rides.length}`);
   ok('rides stored with computed windFactor', rides.every(r=>r.windFactor!=null));
-  ok('kHead in bounds', model.kHead>=0.05 && model.kHead<=4.0, `${model.kHead}`);
-  ok('kTail in bounds', model.kTail>=0.05 && model.kTail<=4.0, `${model.kTail}`);
+  ok('rides default included', rides.every(r=>r.included===true));
+  const t=await app.routeTuning(route.id);
+  ok('learned kHead in bounds', t.learned.kHead>=0.05 && t.learned.kHead<=4.0, `${t.learned.kHead}`);
+  ok('learned kTail in bounds', t.learned.kTail>=0.05 && t.learned.kTail<=4.0, `${t.learned.kTail}`);
+  ok('learned baseline positive', t.learned.baselineSec>0);
 }
 
-console.log('\nUnusable ride excluded from learning:');
+console.log('\nCapture path sets used/not-used from classification (no forced usable):');
 {
-  const before=(await app.store.getModel(route.id)).usableRideCount;
-  await app.recordRide({routeId:route.id, startedAt:1, endedAt:2, actualTimeSec:5000,
-    forecastWind:[{lat:0,lon:0.0225,series:parseForecast({hourly:{time:[0],wind_speed_10m:[20],wind_direction_10m:[90]}})}],
-    usable:false, excludeReason:'Puncture'});
-  const after=(await app.store.getModel(route.id)).usableRideCount;
-  ok('unusable not counted', after===before);
+  // A near-calm forecast → gentle/still wind_factor → the accepted ride must be
+  // recorded but NOT auto-used if gentle. Use a fresh route to control wind.
+  const r2=await app.createRoute(gpx, { name:'ClassRoute', seedStillAirSec:1000,
+    targetArrival:'08:45', activeDays:['MO','TU','WE','TH','FR'] }, {kHead:1,kTail:1});
+  // light wind ~ along route to land in the gentle/still bands
+  const lightStation=[{lat:0,lon:0.0225,series:
+    parseForecast({hourly:{time:[Math.floor(new Date(2026,5,1,8,0).getTime()/1000)],
+      wind_speed_10m:[8], wind_direction_10m:[90]}})}];
+  const start=new Date(2026,5,2,8,0).getTime();
+  const {ride}=await app.recordRide({ routeId:r2.id, startedAt:start, endedAt:start+1000*1000,
+    actualTimeSec:1000, forecastWind:lightStation });
+  const cls = Math.abs(ride.windFactor) < 0.06 ? 'still' : Math.abs(ride.windFactor) < 0.25 ? 'gentle' : 'windy';
+  ok('recorded ride carries windFactor', ride.windFactor!=null);
+  if (cls==='gentle') ok('gentle ride recorded as NOT used', ride.included===false, `wf=${ride.windFactor}`);
+  else ok(`non-gentle (${cls}) ride recorded as used`, ride.included===true, `wf=${ride.windFactor}`);
+  // And a strong headwind ride → windy → used
+  const strongStation=[{lat:0,lon:0.0225,series:
+    parseForecast({hourly:{time:[Math.floor(new Date(2026,5,1,8,0).getTime()/1000)],
+      wind_speed_10m:[30], wind_direction_10m:[90]}})}];
+  const {ride:windyRide}=await app.recordRide({ routeId:r2.id, startedAt:start+1, endedAt:start+1+1000*1000,
+    actualTimeSec:1200, forecastWind:strongStation });
+  ok('windy ride recorded as used', windyRide.included===true, `wf=${windyRide.windFactor}`);
+  await app.deleteRoute(r2.id); // clean up so later export-count assertions hold
+}
+
+console.log('\nExcluded ride is ignored by the resolver:');
+{
+  const t=await app.routeTuning(route.id);
+  const beforeBaseline=t.learned.baselineSec;
+  // Record a wild ride, then exclude it — resolved baseline must not move.
+  const {ride}=await app.recordRide({routeId:route.id, startedAt:Date.now(), endedAt:Date.now()+1,
+    actualTimeSec:5000,
+    forecastWind:[{lat:0,lon:0.0225,series:parseForecast({hourly:{time:[0],wind_speed_10m:[2],wind_direction_10m:[90]}})}]});
+  await app.updateRide(ride.id, { included:false });
+  const t2=await app.routeTuning(route.id);
+  ok('excluded ride does not move baseline', near(t2.learned.baselineSec, beforeBaseline, 1), `${beforeBaseline} -> ${t2.learned.baselineSec}`);
 }
 
 console.log('\nExport / import through controller:');

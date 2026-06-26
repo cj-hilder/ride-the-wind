@@ -1,5 +1,5 @@
 // Ephemeral example route: shown only at zero-state, never stored, never
-// trains, vanishes once a real route exists.
+// learns, vanishes once a real route exists.
 import { createAppController } from './src/lib/app.js';
 import { MemoryBackend } from './src/lib/storage.js';
 import { parseForecast } from './src/lib/windModel.js';
@@ -37,7 +37,22 @@ ok('example gone once a real route exists', list2.length===1 && !list2[0].route.
 }
 
 
-// Schedule fields are editable in-memory too (arrival/days/mode), name aside.
+// Example mirrors the default new-route experience: learn/learn, toggleable
+// in-memory to illustrate manual vs learn. With no rides, learn falls back to
+// the slider values (sources stay "slider", 0 dots) — identical prediction.
+{
+  const a=mk();
+  let t=await a.routeTuning('__example__');
+  ok('example defaults to learn/learn', t.config.baselineMode==='learn' && t.config.kMode==='learn');
+  ok('example learn-with-no-rides falls back to slider (0 dots)', t.dots===0 && t.learned.baselineSource==='slider');
+  a.updateExampleSeeds({baselineMode:'manual', kMode:'manual'});
+  t=await a.routeTuning('__example__');
+  ok('example mode toggle to manual sticks in-memory', t.config.baselineMode==='manual' && t.config.kMode==='manual');
+  ok('mode toggle persists nothing', (await a.listRoutes()).length===0);
+  ok('fresh controller back to learn/learn', (await mk().routeTuning('__example__')).config.baselineMode==='learn');
+}
+
+
 {
   const a=mk();
   a.updateExampleSeeds({targetArrival:'07:15', activeDays:['MO','WE','FR'], timeMode:'depart'});

@@ -775,7 +775,7 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
 
       <div style={{ margin: "0 22px 18px", padding: "12px 14px", borderRadius: 14, background: "rgba(255,255,255,0.06)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 14 }}>Margin of error</span>
+          <span style={{ fontSize: 14 }}>Margin of error allowance</span>
           <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{conservatism}%</span>
         </div>
         <input type="range" min={0} max={100} value={conservatism}
@@ -784,7 +784,7 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
           onTouchEnd={(e) => saveConservatism(e.target.value)}
           style={{ width: "100%", marginTop: 8, accentColor: "#e0a45e" }} />
         <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 4, lineHeight: 1.4 }}>
-          Ride the Wind uses multiple forecast models to calculate a margin of error for the forecast. This setting controls how much of that margin of error is applied to your ride times. Higher will have you leave earlier to be more likely on time.
+          Ride the Wind uses multiple forecast models to calculate a margin of error for the forecast. Your margin of error allowance controls how much of that is applied to your ride times. Higher will have you leave earlier to be more likely on time.
         </div>
       </div>
 
@@ -825,7 +825,7 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
                     <span>·</span>
                     <span>{route.activeDays.length} days/wk</span>
                     <span>·</span>
-                  <span>{confidence?.rides ?? 0} rides</span>
+                  <ConfidenceDots confidence={confidence} />
                 </div>
                 </div>
               </div>
@@ -833,9 +833,8 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
                 <RouteEditor
                   route={route}
                   controller={controller}
-                  onSaved={async () => { setEditing(null); await onChanged(); }}
+                  onSaved={async () => { await onChanged({ quiet: true }); }}
                   onDeleted={async () => { setEditing(null); await onChanged(); }}
-                  onCancel={() => setEditing(null)}
                 />
               )}
             </div>
@@ -954,81 +953,146 @@ function RouteMap({ polyline }) {
  * Maps to the existing seeds (no model change): baselineSec = D / speed;
  * head = baseline·(1+kHead), tail = baseline·(1−kTail).
  * ========================================================================== */
-const TERRAIN_MIN = 0.15, TERRAIN_MAX = 0.8;
+const TERRAIN_MIN = 0.10, TERRAIN_MAX = 0.8;
 const kClampUI = (k) => Math.max(TERRAIN_MIN, Math.min(TERRAIN_MAX, k));
 
-function TerrainControls({ distanceM, value, onChange, learned, onLearnedEdit, example }) {
-  const isLearned = !!learned;
+/* Two-segment Manual | Learn pill. Compact, matches the day/time-mode buttons. */
+function ModePill({ mode, onChange, disabled }) {
+  const seg = (m, label) => (
+    <button key={m} disabled={disabled} onClick={() => !disabled && onChange(m)} style={{
+      padding: "3px 10px", borderRadius: 7, cursor: disabled ? "default" : "pointer",
+      fontFamily: "inherit", fontSize: 11, fontWeight: 600, border: "none",
+      background: mode === m ? "rgba(224,164,94,0.9)" : "transparent",
+      color: mode === m ? "#1a1f3a" : "rgba(255,255,255,0.5)",
+      opacity: disabled ? 0.5 : 1,
+    }}>{label}</button>
+  );
+  return (
+    <span style={{ display: "inline-flex", padding: 2, borderRadius: 9, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}>
+      {seg("manual", "Manual")}{seg("learn", "Learn")}
+    </span>
+  );
+}
+
+/* Status line under a control: what the quantity is currently using. */
+function SourceNote({ mode, source, rides }) {
+  let text;
+  if (mode !== "learn") text = "using your setting";
+  else if (source === "learned") text = `calculated from ${rides} ride${rides === 1 ? "" : "s"}`;
+  else text = "using your setting until enough rides recorded";
+  const learned = source === "learned" && mode === "learn";
+  return <div style={{ fontSize: 11.5, color: learned ? "#6fd49a" : "rgba(255,255,255,0.5)", marginTop: 4 }}>{text}</div>;
+}
+
+/* ============================================================================
+ * TerrainControls — speed + ground-effect tuning, each with a Manual/Learn
+ * pill. In Learn with data, the control is read-only and shows the learned
+ * value; in Learn without enough data it stays editable (it IS the fallback the
+ * model uses). Split can be set manually, or fires automatically in Learn once
+ * both directions qualify — at which point the split control is disabled.
+ * ========================================================================== */
+function TerrainControls({ distanceM, value, onChange, modes, onModeChange, learned, example, autoSplit }) {
   const speedKmh = value.speedKmh;
   const baselineSec = distanceM / (speedKmh / 3.6);
   const baselineMin = Math.round(baselineSec / 60);
 
-  const commit = (next) => { if (isLearned) onLearnedEdit(next); else onChange(next); };
-  const setSpeed = (kmh) => commit({ ...value, speedKmh: Math.max(1, Math.min(50, Math.round(kmh))) });
+  // Is each control read-only? Only when Learn is actively serving a learned
+  // value for that quantity.
+  const baseLearned = modes.baselineMode === "learn" && learned && learned.baselineSource === "learned";
+  const headLearned = modes.kMode === "learn" && learned && learned.kHeadSource === "learned";
+  const tailLearned = modes.kMode === "learn" && learned && learned.kTailSource === "learned";
+
+  const setSpeed = (kmh) => { if (baseLearned) return; onChange({ ...value, speedKmh: Math.max(1, Math.min(50, Math.round(kmh))) }); };
   const setK = (which, k) => {
     const kk = kClampUI(k);
-    if (value.split) commit({ ...value, [which]: kk });
-    else commit({ ...value, kHead: kk, kTail: kk });
+    if (value.split) onChange({ ...value, [which]: kk });
+    else onChange({ ...value, kHead: kk, kTail: kk });
   };
+
+  // Displayed k values: the learned value only when THAT k direction is served
+  // from rides; otherwise the editable slider value. (Baseline being learned
+  // must not pin k — that desynced the slider on revert.)
+  const headK = headLearned ? learned.kHead : value.kHead;
+  const tailK = tailLearned ? learned.kTail : value.kTail;
+  const dispSpeed = baseLearned ? learned.speedKmh : speedKmh;
+  const dispBaselineMin = baseLearned ? Math.round(learned.baselineSec / 60) : baselineMin;
 
   return (
     <div>
-      <label style={lbl}>Still-air speed</label>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-        <button onClick={() => setSpeed(speedKmh - 1)} style={spinBtn} aria-label="slower">−</button>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+        <label style={{ ...lbl, marginBottom: 0 }}>Still-air speed</label>
+        <ModePill mode={modes.baselineMode} onChange={(m) => onModeChange("baselineMode", m)} />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, opacity: baseLearned ? 0.85 : 1 }}>
+        <button onClick={() => setSpeed(dispSpeed - 1)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="slower">−</button>
         <div style={{ flex: 1, textAlign: "center" }}>
-          <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{speedKmh}</span>
+          <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{dispSpeed}</span>
           <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}> km/h</span>
         </div>
-        <button onClick={() => setSpeed(speedKmh + 1)} style={spinBtn} aria-label="faster">+</button>
+        <button onClick={() => setSpeed(dispSpeed + 1)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="faster">+</button>
       </div>
-      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginBottom: 16 }}>
-        Still-air ride time: <b style={{ color: "rgba(255,255,255,0.85)" }}>{baselineMin} min</b>
+      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)" }}>
+        Still-air ride time: <b style={{ color: "rgba(255,255,255,0.85)" }}>{dispBaselineMin} min</b>
+      </div>
+      <SourceNote mode={modes.baselineMode} source={learned ? learned.baselineSource : "slider"} rides={learned ? learned.ridesBaseline : 0} />
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 16, marginBottom: 4 }}>
+        <label style={{ ...lbl, marginBottom: 0 }}>{value.split ? "Ground effect" : "Ground effect"}</label>
+        <ModePill mode={modes.kMode} onChange={(m) => onModeChange("kMode", m)} />
       </div>
 
       {!value.split ? (
-        <TerrainSlider title="Ground effect" k={value.kHead} baselineSec={baselineSec}
-          learnedK={isLearned ? learned.kHead : null} showBoth example={example}
+        <TerrainSlider title="Ground effect" k={headK} baselineSec={baselineSec}
+          readOnly={headLearned} showBoth example={example}
+          mode={modes.kMode}
+          source={learned && (learned.kHeadSource === "learned" || learned.kTailSource === "learned") ? "learned" : "slider"}
+          rides={learned ? Math.max(learned.ridesHead, learned.ridesTail) : 0}
           onCommit={(k) => setK("kHead", k)} />
       ) : (
         <>
-          <TerrainSlider title="Ground effect on headwind" k={value.kHead} baselineSec={baselineSec}
-            learnedK={isLearned ? learned.kHead : null} sign={+1} example={example}
+          <TerrainSlider title="Ground effect on headwind" k={headK} baselineSec={baselineSec}
+            readOnly={headLearned} sign={+1} example={example}
+            mode={modes.kMode}
+            source={learned && learned.kHeadSource === "learned" ? "learned" : "slider"}
+            rides={learned ? learned.ridesHead : 0}
             onCommit={(k) => setK("kHead", k)} />
-          <TerrainSlider title="Ground effect on tailwind" k={value.kTail} baselineSec={baselineSec}
-            learnedK={isLearned ? learned.kTail : null} sign={-1} example={example}
+          <TerrainSlider title="Ground effect on tailwind" k={tailK} baselineSec={baselineSec}
+            readOnly={tailLearned} sign={-1} example={example}
+            mode={modes.kMode}
+            source={learned && learned.kTailSource === "learned" ? "learned" : "slider"}
+            rides={learned ? learned.ridesTail : 0}
             onCommit={(k) => setK("kTail", k)} />
         </>
       )}
 
-      <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14, cursor: "pointer" }}>
-        <span style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)" }}>Split headwind &amp; tailwind</span>
-        <input type="checkbox" checked={!!value.split}
-          onChange={(e) => { if (e.target.checked) commit({ ...value, split: true }); else commit({ ...value, split: false, _collapse: true }); }}
-          style={{ width: 40, height: 22, accentColor: "#e0a45e", cursor: "pointer" }} />
+      <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14, cursor: autoSplit ? "default" : "pointer", opacity: autoSplit ? 0.6 : 1 }}>
+        <span style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)" }}>
+          Split headwind &amp; tailwind{autoSplit ? " (learned separately)" : ""}
+        </span>
+        <input type="checkbox" checked={!!value.split} disabled={autoSplit}
+          onChange={(e) => { if (autoSplit) return; if (e.target.checked) onChange({ ...value, split: true }); else onChange({ ...value, split: false, _collapse: true }); }}
+          style={{ width: 40, height: 22, accentColor: "#e0a45e", cursor: autoSplit ? "default" : "pointer" }} />
       </label>
     </div>
   );
 }
 
-function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, example, onCommit }) {
+function TerrainSlider({ title, k, baselineSec, readOnly, sign, showBoth, example, mode, source, rides, onCommit }) {
   const [local, setLocal] = useState(kClampUI(k));
   useEffect(() => { setLocal(kClampUI(k)); }, [k]);
-  const offLow = learnedK != null && learnedK < TERRAIN_MIN;
-  const offHigh = learnedK != null && learnedK > TERRAIN_MAX;
-  const effK = learnedK != null ? learnedK : local;
+  const effK = kClampUI(k);
+  const offLow = readOnly && k < TERRAIN_MIN;
+  const offHigh = readOnly && k > TERRAIN_MAX;
+  const shownK = readOnly ? effK : local;
   // Example times come from the real route geometry: a steady 20 km/h wind from
-  // the route's mean bearing (headward) or its opposite (tailward). The factors
-  // are k-independent, so time = baseline·(1 + k·factor).
+  // the route's mean bearing (headward) or its opposite (tailward).
   const hf = example ? example.headFactor : 1;
   const tf = example ? example.tailFactor : -1;
-  const headT = Math.round((baselineSec * (1 + effK * hf)) / 60);
-  const tailT = Math.round((baselineSec * (1 + effK * tf)) / 60);
+  const headT = Math.round((baselineSec * (1 + shownK * hf)) / 60);
+  const tailT = Math.round((baselineSec * (1 + shownK * tf)) / 60);
   const oneT = sign === -1 ? tailT : headT;
   const headLabel = example ? example.headBearingLabel : "";
   const tailLabel = example ? example.tailBearingLabel : "";
-  // Unsplit covers both examples → name both directions (head/tail are
-  // opposite). Split: each slider uses its own wind direction.
   const dirLabel = showBoth
     ? `${headLabel}/${tailLabel}`
     : (sign === -1 ? tailLabel : headLabel);
@@ -1040,11 +1104,11 @@ function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, exampl
         <span style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)", flex: 1 }}>{title}</span>
         {offHigh && <span style={{ color: "#e0a45e", fontWeight: 700 }} title="Learned value is above the scale">►</span>}
       </div>
-      <input type="range" min={TERRAIN_MIN} max={TERRAIN_MAX} step={0.01} value={local}
-        onChange={(e) => setLocal(Number(e.target.value))}
-        onMouseUp={(e) => onCommit(Number(e.target.value))}
-        onTouchEnd={(e) => onCommit(Number(e.target.value))}
-        style={{ width: "100%", accentColor: "#e0a45e" }} />
+      <input type="range" min={TERRAIN_MIN} max={TERRAIN_MAX} step={0.01} value={shownK} disabled={readOnly}
+        onChange={(e) => { if (!readOnly) setLocal(Number(e.target.value)); }}
+        onMouseUp={(e) => { if (!readOnly) onCommit(Number(e.target.value)); }}
+        onTouchEnd={(e) => { if (!readOnly) onCommit(Number(e.target.value)); }}
+        style={{ width: "100%", accentColor: "#e0a45e", opacity: readOnly ? 0.7 : 1 }} />
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>
         <span style={{ textAlign: "center" }}>Sheltered<br />steep</span>
         <span>Urban</span>
@@ -1052,9 +1116,10 @@ function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, exampl
         <span style={{ textAlign: "center" }}>Exposed<br />flat</span>
       </div>
       <div style={{ fontSize: 11.5, color: "#e0a45e", marginTop: 6 }}>
-        ground effect factor k={effK.toFixed(2)}
+        ground effect factor k={shownK.toFixed(2)}
       </div>
-      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 3, lineHeight: 1.4 }}>
+      <SourceNote mode={mode} source={source} rides={rides} />
+      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 6, lineHeight: 1.4 }}>
         <span style={{ color: "rgba(255,255,255,0.45)" }}>example ride, steady 20 km/h wind from {dirLabel}</span><br />
         {showBoth
           ? <>headwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{headT} min</b> / tailwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{tailT} min</b></>
@@ -1066,28 +1131,267 @@ function TerrainSlider({ title, k, baselineSec, learnedK, sign, showBoth, exampl
 
 const spinBtn = { width: 44, height: 44, borderRadius: 12, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.08)", color: "#fff", fontSize: 22, cursor: "pointer", fontFamily: "inherit", lineHeight: 1 };
 
-/* Per-direction wind-learning status for the route editor. Reports, for each
- * direction, whether k has been learned from windy rides or is still using the
- * user's manual setting. The baseline isn't mentioned — it learns from a single
- * calm ride and isn't what the user is tracking; only the wind correction is. */
-function WindLearningStatus({ learned }) {
-  const idHead = !!(learned && learned.idHead);
-  const idTail = !!(learned && learned.idTail);
-  const line = (dir, on) => on
-    ? `${dir} learned from your rides.`
-    : `${dir} using your setting until more ${dir.toLowerCase()} rides in windy conditions.`;
+/* Per-direction wind-learning status now lives inline under each control as a
+ * SourceNote; the separate WindLearningStatus block was removed in the refactor. */
+
+/* ============================================================================
+ * RidesManager — full-screen overlay listing a route's rides for curation.
+ * Columns: date, time, length, k, class, include checkbox, edit. Gentle rides
+ * default excluded; still/windy default included. Long-press the include
+ * checkbox to "exclude this ride and all earlier". Tapping edit opens the
+ * RideEditor. The per-ride k reflects the currently-configured baseline.
+ * ========================================================================== */
+const OVERLAY = {
+  position: "fixed", inset: 0, zIndex: 50, overflowY: "auto",
+  background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff",
+};
+const fmtRideDate = (ms) => {
+  const d = new Date(ms);
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+};
+const fmtRideTime = (ms) => {
+  const d = new Date(ms);
+  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+};
+const fmtLen = (sec) => {
+  const m = Math.round(sec / 60);
+  return `${m} min`;
+};
+const CLASS_COLOR = { windy: "#e0a45e", gentle: "rgba(255,255,255,0.45)", still: "rgba(140,190,255,0.85)" };
+
+function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
+  const [rides, setRides] = useState(null);
+  const [editing, setEditing] = useState(null); // a ride object
+  const [bulkAsk, setBulkAsk] = useState(null);  // { rideId, count }
+  const pressTimer = useRef(null);
+
+  const load = useCallback(() => {
+    return controller.ridesForManager(route.id).then((rs) => setRides(rs));
+  }, [controller, route.id]);
+  // Reload on mount and whenever reloadKey changes (e.g. the editor applied a
+  // baseline change, which shifts per-ride k for current-baseline rides).
+  useEffect(() => { load(); }, [load, reloadKey]);
+  // After a mutation here, reload the list AND tell the editor to refresh its
+  // tuning (curation changes what the model learns).
+  const reloadAfterMutation = async () => { await load(); onRidesChanged && onRidesChanged(); };
+
+  const toggleInclude = async (ride) => {
+    await controller.updateRide(ride.id, { included: !ride.included });
+    await reloadAfterMutation();
+  };
+
+  // Long-press on a checkbox → confirm "exclude this and all earlier".
+  const startPress = (ride) => {
+    clearTimeout(pressTimer.current);
+    pressTimer.current = setTimeout(() => {
+      const earlier = rides.filter((r) => (r.startedAt ?? 0) <= (ride.startedAt ?? 0)).length;
+      setBulkAsk({ rideId: ride.id, count: earlier });
+    }, 550);
+  };
+  const cancelPress = () => clearTimeout(pressTimer.current);
+  const doBulk = async () => {
+    await controller.excludeRideAndEarlier(bulkAsk.rideId);
+    setBulkAsk(null);
+    await reloadAfterMutation();
+  };
+
   return (
-    <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.1)", fontSize: 11.5, lineHeight: 1.5 }}>
-      <div style={{ fontSize: 10.5, letterSpacing: "0.06em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", marginBottom: 4 }}>
-        Wind tuning
-      </div>
-      <div style={{ color: idHead ? "#6fd49a" : "rgba(255,255,255,0.55)" }}>{line("Headwind", idHead)}</div>
-      <div style={{ color: idTail ? "#6fd49a" : "rgba(255,255,255,0.55)" }}>{line("Tailwind", idTail)}</div>
+    <div style={{ marginTop: 12, paddingTop: 4 }}>
+      {rides == null ? (
+          <div style={{ color: "rgba(255,255,255,0.5)", padding: 16 }}>Loading…</div>
+        ) : rides.length === 0 ? (
+          <div style={{ padding: "20px 14px", textAlign: "center", color: "rgba(255,255,255,0.55)", lineHeight: 1.5, border: "1px dashed rgba(255,255,255,0.16)", borderRadius: 12 }}>
+            No rides logged yet. Record a ride on the Ride tab and it will appear here to tune this route.
+          </div>
+        ) : (
+          <>
+            {/* Header row */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 60px 52px 30px 34px", gap: 8, alignItems: "center", fontSize: 10.5, letterSpacing: "0.04em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", padding: "0 4px 6px" }}>
+              <span>Date / time</span>
+              <span style={{ textAlign: "right" }}>Length</span>
+              <span style={{ textAlign: "right" }}>k</span>
+              <span style={{ textAlign: "center" }}>Use</span>
+              <span></span>
+            </div>
+            {rides.map((r) => (
+              <div key={r.id} style={{
+                display: "grid", gridTemplateColumns: "1fr 60px 52px 30px 34px", gap: 8, alignItems: "center",
+                padding: "10px 4px", borderTop: "1px solid rgba(255,255,255,0.08)",
+                opacity: r.included ? 1 : 0.5,
+              }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600 }}>{fmtRideDate(r.startedAt)} <span style={{ color: "rgba(255,255,255,0.5)", fontWeight: 400 }}>{fmtRideTime(r.startedAt)}</span></div>
+                  <div style={{ fontSize: 11, color: CLASS_COLOR[r.klass] }}>{r.klass}</div>
+                </div>
+                <div style={{ textAlign: "right", fontSize: 13, fontFamily: "'Fraunces',serif" }}>{fmtLen(r.actualTimeSec)}</div>
+                <div style={{ textAlign: "right", fontSize: 12.5, color: r.klass === "gentle" ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.85)" }}>
+                  {r.klass === "still" ? "still" : (r.rideK == null ? "—" : r.rideK.toFixed(2))}
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <input type="checkbox" checked={r.included}
+                    onChange={() => toggleInclude(r)}
+                    onMouseDown={() => startPress(r)} onMouseUp={cancelPress} onMouseLeave={cancelPress}
+                    onTouchStart={() => startPress(r)} onTouchEnd={cancelPress}
+                    style={{ width: 20, height: 20, accentColor: "#e0a45e", cursor: "pointer" }} />
+                </div>
+                <button onClick={() => setEditing(r)} aria-label="edit ride" style={{
+                  width: 30, height: 30, borderRadius: 8, border: "1px solid rgba(255,255,255,0.16)",
+                  background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.8)", cursor: "pointer", fontSize: 13,
+                }}>✎</button>
+              </div>
+            ))}
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 12, lineHeight: 1.5 }}>
+              Gentle rides default to unused. Long-press a checkbox to exclude that ride and all earlier ones. A unique k value is calculated for each ride using the current baseline. Overall k is calculated from all included individual rides.
+            </div>
+          </>
+        )}
+
+      {editing && (
+        <RideEditor ride={editing} controller={controller}
+          onClose={async () => { setEditing(null); await reloadAfterMutation(); }} />
+      )}
+
+      {bulkAsk && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "grid", placeItems: "center", background: "rgba(8,10,22,0.7)", padding: 24 }}>
+          <div style={{ maxWidth: 320, padding: "18px 18px", borderRadius: 14, background: "#1d1b38", border: "1px solid rgba(255,255,255,0.18)" }}>
+            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.85)", marginBottom: 14, lineHeight: 1.45 }}>
+              Exclude this ride and {bulkAsk.count - 1} earlier {bulkAsk.count - 1 === 1 ? "ride" : "rides"}? You can re-include them individually later.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setBulkAsk(null)} style={backupBtn}>Cancel</button>
+              <button onClick={doBulk} style={{ ...backupBtn, background: "rgba(224,164,94,0.9)", color: "#1a1f3a", border: "none" }}>Exclude {bulkAsk.count}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
+/* ============================================================================
+ * RideEditor — full-screen editor for one ride. Edit duration, toggle
+ * include/exclude, flip the current/historic baseline switch (locked historic
+ * at 14 days), bulk "exclude this and earlier", or delete the ride.
+ * ========================================================================== */
+function RideEditor({ ride, controller, onClose }) {
+  const [durMin, setDurMin] = useState(Math.round(ride.actualTimeSec / 60));
+  const [included, setIncluded] = useState(ride.included);
+  const [ref, setRef] = useState(ride.baselineRef);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [bulkAsk, setBulkAsk] = useState(false);
+  const locked = ride.locked; // age >= 14 days → current/historic frozen
+
+  const save = async () => {
+    await controller.updateRide(ride.id, {
+      actualTimeSec: Math.max(1, Math.round(durMin * 60)),
+      included,
+      ...(locked ? {} : { baselineRef: ref }),
+    });
+    onClose();
+  };
+  const del = async () => { await controller.deleteRide(ride.id); onClose(); };
+  const doBulk = async () => { await controller.excludeRideAndEarlier(ride.id); setBulkAsk(false); onClose(); };
+
+  return (
+    <div style={OVERLAY}>
+      <div style={{ maxWidth: 460, margin: "0 auto", padding: "calc(18px + env(safe-area-inset-top)) 18px 28px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <span style={{ fontFamily: "'Fraunces',serif", fontSize: 20, fontWeight: 600 }}>Edit ride</span>
+          <button onClick={onClose} style={{ ...backupBtn, flex: "0 0 auto", padding: "8px 16px" }}>Cancel</button>
+        </div>
+
+        <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginBottom: 18 }}>
+          {fmtRideDate(ride.startedAt)} · {fmtRideTime(ride.startedAt)} · <span style={{ color: CLASS_COLOR[ride.klass] }}>{ride.klass}</span>
+          {ride.klass !== "still" && ride.rideK != null && <> · k={ride.rideK.toFixed(2)}</>}
+        </div>
+
+        {/* Duration */}
+        <label style={lbl}>Recorded ride time</label>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+          <button onClick={() => setDurMin((m) => Math.max(1, m - 1))} style={spinBtn} aria-label="shorter">−</button>
+          <div style={{ flex: 1, textAlign: "center" }}>
+            <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{durMin}</span>
+            <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}> min</span>
+          </div>
+          <button onClick={() => setDurMin((m) => m + 1)} style={spinBtn} aria-label="longer">+</button>
+        </div>
+
+        {/* Include / exclude */}
+        <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", cursor: "pointer", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+          <span style={{ fontSize: 14, color: "rgba(255,255,255,0.85)" }}>Use this ride for tuning</span>
+          <input type="checkbox" checked={included} onChange={(e) => setIncluded(e.target.checked)}
+            style={{ width: 40, height: 22, accentColor: "#e0a45e", cursor: "pointer" }} />
+        </label>
+
+        {/* Current / historic baseline switch */}
+        <div style={{ padding: "12px 0", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+            <span style={{ fontSize: 14, color: "rgba(255,255,255,0.85)" }}>Baseline</span>
+            <span style={{ display: "inline-flex", padding: 2, borderRadius: 9, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)", opacity: locked ? 0.5 : 1 }}>
+              {[["current", "Current"], ["historic", "Historic"]].map(([m, l]) => (
+                <button key={m} disabled={locked} onClick={() => !locked && setRef(m)} style={{
+                  padding: "3px 10px", borderRadius: 7, border: "none", cursor: locked ? "default" : "pointer",
+                  fontFamily: "inherit", fontSize: 11, fontWeight: 600,
+                  background: ref === m ? "rgba(224,164,94,0.9)" : "transparent",
+                  color: ref === m ? "#1a1f3a" : "rgba(255,255,255,0.5)",
+                }}>{l}</button>
+              ))}
+            </span>
+          </div>
+          <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.5)", lineHeight: 1.45 }}>
+            {locked
+              ? "Locked to historic — this ride is over two weeks old, so it keeps the baseline from when it was ridden."
+              : ref === "current"
+                ? "Measured against your live baseline; updates as you refine it. Auto-locks to historic after two weeks."
+                : "Measured against the baseline saved with this ride."}
+          </div>
+        </div>
+
+        {/* Bulk exclude */}
+        <button onClick={() => setBulkAsk(true)} style={{
+          width: "100%", marginTop: 8, padding: "11px 0", borderRadius: 10, cursor: "pointer",
+          fontFamily: "inherit", fontSize: 13, fontWeight: 600,
+          border: "1px solid rgba(255,255,255,0.16)", background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.75)",
+        }}>Exclude this ride and all earlier</button>
+
+        {/* Save */}
+        <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+          <button onClick={onClose} style={backupBtn}>Cancel</button>
+          <button onClick={save} style={{ flex: 1, padding: 13, borderRadius: 12, border: "none", cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a" }}>Save</button>
+        </div>
+
+        {/* Delete */}
+        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+          {!confirmDel ? (
+            <button onClick={() => setConfirmDel(true)} style={{ ...backupBtn, color: "#f0a08c", borderColor: "rgba(224,120,94,0.4)" }}>Delete ride</button>
+          ) : (
+            <>
+              <span style={{ flex: 1, alignSelf: "center", fontSize: 13, color: "#f0b8a8" }}>Delete this ride permanently?</span>
+              <button onClick={() => setConfirmDel(false)} style={backupBtn}>Cancel</button>
+              <button onClick={del} style={{ ...backupBtn, background: "rgba(224,120,94,0.9)", color: "#1a1f3a", border: "none" }}>Delete</button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {bulkAsk && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "grid", placeItems: "center", background: "rgba(8,10,22,0.7)", padding: 24 }}>
+          <div style={{ maxWidth: 320, padding: "18px 18px", borderRadius: 14, background: "#1d1b38", border: "1px solid rgba(255,255,255,0.18)" }}>
+            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.85)", marginBottom: 14, lineHeight: 1.45 }}>
+              Exclude this ride and all earlier rides on this route? You can re-include them individually later.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setBulkAsk(false)} style={backupBtn}>Cancel</button>
+              <button onClick={doBulk} style={{ ...backupBtn, background: "rgba(224,164,94,0.9)", color: "#1a1f3a", border: "none" }}>Exclude</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RouteEditor({ route, controller, onSaved, onDeleted }) {
   const [name, setName] = useState(route.name);
   const [arrival, setArrival] = useState(route.targetArrival);
   const [days, setDays] = useState(route.activeDays);
@@ -1095,102 +1399,142 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
   const [confirmDel, setConfirmDel] = useState(false);
   const toggleDay = (d) => setDays(days.includes(d) ? days.filter((x) => x !== d) : [...days, d]);
 
-  // Tuning: load manual + learned state from the controller.
-  const [tuning, setTuning] = useState(null); // { distanceM, manual, learned }
-  const [val, setVal] = useState(null);       // { speedKmh, kHead, kTail, split }
-  const [pending, setPending] = useState(null); // a Learned-state edit awaiting confirm
+  // Tuning: load the manual sliders, learned view (with per-quantity sources),
+  // and the current modes from the controller.
+  const [tuning, setTuning] = useState(null);
+  const [val, setVal] = useState(null);     // { speedKmh, kHead, kTail, split } — the slider (manual) values
+  const [modes, setModes] = useState(null); // { baselineMode, kMode }
   const [collapseAsk, setCollapseAsk] = useState(null); // {next} split-off, which to keep
+  const [ridesOpen, setRidesOpen] = useState(false);    // inline View rides fold
+  const [applyTick, setApplyTick] = useState(0);        // bumped on Apply → reloads open rides list
+  // Snapshot of the last-applied editable state, for the dirty check + revert.
+  const [applied, setApplied] = useState(null);
+
+  // The current editable state, as a comparable object.
+  const editState = () => ({
+    name, arrival, days: [...days].sort(), timeMode,
+    val: val ? { ...val } : null, modes: modes ? { ...modes } : null,
+  });
+  const dirty = applied != null && JSON.stringify(editState()) !== JSON.stringify(applied);
+
+  const snapshot = () => setApplied(JSON.parse(JSON.stringify(editState())));
+
+  const loadTuning = useCallback(() => {
+    return controller.routeTuning(route.id).then((t) => {
+      if (!t) return;
+      setTuning(t);
+      // Slider (manual) values come from t.manual; split reflects the current config.
+      setVal({ speedKmh: t.manual.speedKmh, kHead: t.manual.kHead, kTail: t.manual.kTail, split: t.config.split });
+      setModes({ baselineMode: t.config.baselineMode, kMode: t.config.kMode });
+    });
+  }, [controller, route.id]);
+
+  // Keep a live ref to the route so the once-per-open init effect can read its
+  // current schedule fields without taking them as deps (which would re-run the
+  // init on every background/quiet refresh and stomp in-progress edits).
+  const routeRef = useRef(route);
+  routeRef.current = route;
+
   useEffect(() => {
     let alive = true;
     controller.routeTuning(route.id).then((t) => {
       if (!alive || !t) return;
+      const r = routeRef.current;
       setTuning(t);
-      const src = t.learned || t.manual;
-      const split = Math.abs((t.learned ? t.learned.kHead : t.manual.kHead) - (t.learned ? t.learned.kTail : t.manual.kTail)) > 0.02;
-      setVal({ speedKmh: src.speedKmh, kHead: src.kHead, kTail: src.kTail, split });
+      const v = { speedKmh: t.manual.speedKmh, kHead: t.manual.kHead, kTail: t.manual.kTail, split: t.config.split };
+      const m = { baselineMode: t.config.baselineMode, kMode: t.config.kMode };
+      setVal(v); setModes(m);
+      // Establish the initial applied snapshot from loaded state.
+      setApplied({
+        name: r.name, arrival: r.targetArrival,
+        days: [...r.activeDays].sort(),
+        timeMode: r.timeMode === "depart" ? "depart" : "arrive",
+        val: { ...v }, modes: { ...m },
+      });
     });
     return () => { alive = false; };
   }, [controller, route.id]);
 
-  const isLearned = !!(tuning && tuning.learned);
-
-  // Convert widget values → seed fields.
-  const valToSeeds = (v) => {
+  // Convert slider values → k-slider + baseline fields for persistence.
+  const valToConfig = (v) => {
     const baselineSec = tuning.distanceM / (v.speedKmh / 3.6);
     return {
       seedStillAirSec: Math.round(baselineSec),
-      seedHeadwind20Sec: Math.round(baselineSec * (1 + v.kHead)),
-      seedTailwind20Sec: Math.round(baselineSec * (1 - v.kTail)),
+      baselineTimeSec: Math.round(baselineSec),
+      sliderKHead: v.kHead,
+      sliderKTail: v.kTail,
+      split: !!v.split,
     };
   };
 
-  const save = async () => {
-    // Example route: in-memory only — let the user experiment with speed/k and
-    // see ride times change, but never persist (it stays ephemeral). Skip all
-    // storage writes (name/schedule aren't meaningful to change on the demo).
+  // Apply: persist the current editable state. Does NOT close the editor — it is
+  // closed by tapping the route chip again, opening another route, or switching
+  // tab. After applying, the snapshot is refreshed so Apply/Cancel disable until
+  // the next change.
+  const apply = async () => {
+    if (!dirty) return;
     if (route.isExample) {
       controller.updateExampleSeeds({
         speedKmh: val ? val.speedKmh : undefined,
         kHead: val ? val.kHead : undefined,
         kTail: val ? val.kTail : undefined,
+        targetArrival: arrival, activeDays: days, timeMode,
+        baselineMode: modes.baselineMode, kMode: modes.kMode, split: val ? val.split : undefined,
+      });
+    } else {
+      // Persist slider values, modes, split, and schedule. Editing a slider NEVER
+      // wipes rides — manual/learn is a per-quantity switch and ride history is
+      // curated separately in View rides.
+      await controller.updateRoute(route.id, {
+        ...valToConfig(val),
+        baselineMode: modes.baselineMode,
+        kMode: modes.kMode,
+        name: name.trim() || route.name,
         targetArrival: arrival,
         activeDays: days,
         timeMode,
       });
-      onSaved();
-      return;
     }
-    // In Manual state, persist the speed/ground-effect values as seeds — but
-    // ONLY if they actually changed, because reseeding throws away any logged
-    // rides. An unrelated edit (rename, schedule) must not wipe ride history.
-    // In Learned state the seeds are model-driven and only change through the
-    // explicit discard-learning confirm, so Save never reseeds here.
-    if (!isLearned && val && tuning) {
-      const m = tuning.manual;
-      const changed =
-        val.speedKmh !== m.speedKmh ||
-        Math.abs(val.kHead - m.kHead) > 0.001 ||
-        Math.abs(val.kTail - m.kTail) > 0.001;
-      if (changed) await controller.resetRoute(route.id, valToSeeds(val));
-    }
-    await controller.updateRoute(route.id, {
-      name: name.trim() || route.name,
-      targetArrival: arrival,
-      activeDays: days,
-      timeMode,
-    });
+    snapshot();
+    // Refresh the editor's own learned view / dots from the just-applied state,
+    // and quietly recompute the verdict beneath — without closing or collapsing
+    // the editor or the View-rides fold. Bump applyTick so an open rides list
+    // re-fetches (per-ride k for current-baseline rides shifts with the baseline).
+    setApplyTick((t) => t + 1);
+    await loadTuning();
     onSaved();
   };
+
+  // Cancel: revert all unsaved edits to the last-applied snapshot, then disable.
+  const revert = () => {
+    if (!applied || !dirty) return;
+    setName(applied.name);
+    setArrival(applied.arrival);
+    setDays([...applied.days]);
+    setTimeMode(applied.timeMode);
+    setVal({ ...applied.val });
+    setModes({ ...applied.modes });
+  };
+
   const del = async () => { await controller.deleteRoute(route.id); onDeleted(); };
 
-  // Manual edit: apply locally (and persist as seeds on Save changes).
-  const onManualChange = (next) => {
+  const onTuningChange = (next) => {
     if (next._collapse) { delete next._collapse; setCollapseAsk({ next }); return; }
     setVal(next);
   };
-  // Learned edit: hold it pending and ask to discard learning.
-  const onLearnedEdit = (next) => {
-    if (next._collapse) { delete next._collapse; setCollapseAsk({ next, learned: true }); return; }
-    setPending(next);
-  };
-  const confirmDiscard = async () => {
-    const v = pending;
-    setVal(v); setPending(null);
-    await controller.resetRoute(route.id, valToSeeds(v));
-    await controller.updateRoute(route.id, {
-      name: name.trim() || route.name, targetArrival: arrival, activeDays: days, timeMode,
-    });
-    onSaved();
-  };
+  const onModeChange = (which, m) => setModes((prev) => ({ ...prev, [which]: m }));
   const resolveCollapse = (keep) => {
     const base = collapseAsk.next;
     const k = keep === "head" ? val.kHead : val.kTail;
-    const next = { ...base, split: false, kHead: k, kTail: k };
     setCollapseAsk(null);
-    if (collapseAsk.learned) setPending(next); else setVal(next);
+    setVal({ ...base, split: false, kHead: k, kTail: k });
   };
 
-  if (!val) return <div style={{ padding: 20, color: "rgba(255,255,255,0.5)" }}>Loading…</div>;
+  if (!val || !modes) return <div style={{ padding: 20, color: "rgba(255,255,255,0.5)" }}>Loading…</div>;
+
+  // Auto-split: in Learn-k mode once both directions qualify, split is forced.
+  const autoSplit = modes.kMode === "learn" && !!(tuning.learned && tuning.learned.autoSplit);
+  const effSplit = autoSplit || val.split;
 
   return (
     <div style={{ padding: "4px 16px 16px", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
@@ -1225,7 +1569,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
         ))}
       </div>
 
-      {/* Tuning: speed + terrain, manual or learned */}
+      {/* Tuning: speed + terrain, each with its own Manual/Learn switch */}
       <div style={{ marginTop: 18, padding: "14px 14px", borderRadius: 12, background: "rgba(0,0,0,0.18)" }}>
         <RouteMap polyline={tuning.polyline} />
         {tuning.stats && (
@@ -1235,36 +1579,40 @@ function RouteEditor({ route, controller, onSaved, onDeleted, onCancel }) {
             <Stat label="Points" value={tuning.stats.pointCount} />
           </div>
         )}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.85)" }}>Ride times</span>
-          <span style={{ fontSize: 11.5, color: isLearned ? "#6fd49a" : "rgba(255,255,255,0.45)" }}>
-            {isLearned ? "learned from your rides" : "manual"}
-          </span>
-        </div>
-        <TerrainControls distanceM={tuning.distanceM} value={val}
-          onChange={(next) => { onManualChange(next); }}
-          learned={isLearned ? tuning.learned : null}
-          onLearnedEdit={onLearnedEdit} example={tuning.example} />
-        <WindLearningStatus learned={tuning.learned} />
-      </div>
+        <TerrainControls distanceM={tuning.distanceM}
+          value={{ ...val, split: effSplit }}
+          onChange={onTuningChange}
+          modes={modes} onModeChange={onModeChange}
+          learned={tuning.learned} example={tuning.example}
+          autoSplit={autoSplit} />
 
-      <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
-        <button onClick={onCancel} style={backupBtn}>Cancel</button>
-        <button onClick={save} style={{ flex: 1, padding: 13, borderRadius: 12, border: "none", cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a" }}>Save changes</button>
-      </div>
-
-      {/* Confirm: discard learning to use manual edit */}
-      {pending && (
-        <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 12, background: "rgba(224,164,94,0.12)", border: "1px solid rgba(224,164,94,0.4)" }}>
-          <div style={{ fontSize: 13, color: "#f0d8a8", marginBottom: 10, lineHeight: 1.45 }}>
-            This route is tuned from your logged rides. Switch to these manual settings and discard the learned data?
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => setPending(null)} style={backupBtn}>Keep learning</button>
-            <button onClick={confirmDiscard} style={{ ...backupBtn, background: "rgba(224,164,94,0.9)", color: "#1a1f3a", border: "none" }}>Use manual</button>
-          </div>
+        {/* Apply / Cancel sit above View rides. Apply persists but does NOT
+            close the editor (close by tapping the chip, opening another route,
+            or switching tab). Both disable until the next change. */}
+        <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+          <button onClick={revert} disabled={!dirty}
+            style={{ ...backupBtn, opacity: dirty ? 1 : 0.4, cursor: dirty ? "pointer" : "default" }}>Cancel</button>
+          <button onClick={apply} disabled={!dirty}
+            style={{ flex: 1, padding: 13, borderRadius: 12, border: "none", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", opacity: dirty ? 1 : 0.4, cursor: dirty ? "pointer" : "default" }}>Apply</button>
         </div>
-      )}
+
+        {!route.isExample && (
+          <>
+            <button onClick={() => setRidesOpen((o) => !o)} style={{
+              width: "100%", marginTop: 14, padding: "11px 0", borderRadius: 10, cursor: "pointer",
+              fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+              border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.85)",
+            }}>
+              <span>View rides</span>
+              <span style={{ fontSize: 11, transform: ridesOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▼</span>
+            </button>
+            {ridesOpen && (
+              <RidesManager route={route} controller={controller}
+                reloadKey={applyTick} onRidesChanged={loadTuning} />
+            )}
+          </>
+        )}
+      </div>
 
       {/* Split-off: which value to keep */}
       {collapseAsk && (
@@ -1377,6 +1725,8 @@ function Setup({ controller, onDone, onCancel }) {
           <Block n="3" title="Ride times">
             <TerrainControls distanceM={preview.totalDistance}
               value={{ speedKmh: form.speedKmh, kHead: form.kHead, kTail: form.kTail, split: form.split }}
+              modes={{ baselineMode: "manual", kMode: "manual" }}
+              onModeChange={() => {}} learned={null} autoSplit={false}
               onChange={(next) => {
                 if (next._collapse) {
                   // collapsing the split during setup: keep the headwind value
@@ -1494,11 +1844,12 @@ function Capture({ controller, route, onDone }) {
 
   const submit = async () => {
     setConfirm("yes");
+    // Don't force `usable`: the ride's used/not-used state is set from its wind
+    // classification at record time (gentle → not used; still/windy → used).
     await controller.recordRide({
       routeId: route.id, startedAt: result.startedAt, endedAt: result.endedAt,
       actualTimeSec: adjustedSec, forecastWind: result.forecastWind,
       adjustMin: adjustMin || 0, pausedSec: result.pausedSec || 0,
-      usable: true,
     });
   };
   const discard = () => { setConfirm("discarded"); /* nothing stored */ };
@@ -1599,7 +1950,7 @@ function Capture({ controller, route, onDone }) {
               <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", textAlign: "center", margin: "24px 0 16px", lineHeight: 1.45 }}>
                 {route.isExample
                   ? "This is an example route — your ride time will not be saved. Create your first real route to save actual ride times."
-                  : "Accept to train the model, or discard if it isn't representative."}
+                  : "Accept to make it available for learning, or discard if it isn't representative."}
               </div>
               <div style={{ display: "flex", gap: 10 }}>
                 <button onClick={discard} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "none", color: "#f0a08c", border: "1px solid rgba(224,120,94,0.4)" }}>Discard</button>
@@ -1669,14 +2020,12 @@ function RowLine({ label, value, color }) {
   return <div style={{ display: "flex", justifyContent: "space-between", margin: "3px 0", fontSize: 13.5 }}><span style={{ color: "rgba(255,255,255,0.75)" }}>{label}</span><span style={{ fontWeight: 600, color: color || "#fff" }}>{value}</span></div>;
 }
 function ConfidenceDots({ confidence }) {
-  const n = confidence?.rides || 0;
-  // Dots reflect WIND-correction learning per direction (what the user cares
-  // about), not raw ride count: neither / one / both directions learned.
-  const kLevel = confidence?.kLevel || "neither";
-  const dots = kLevel === "both" ? 3 : kLevel === "one" ? 2 : 1;
+  // Dots reflect how much of the prediction is served from ride data: one dot
+  // each for baseline, kHead, kTail that is currently learned (combined-k earns
+  // at most one). 0 = entirely hand-set, 3 = fully learned both directions.
+  const dots = confidence?.dots ?? 0;
   return <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, color: "rgba(255,255,255,0.7)" }}>
     <span style={{ display: "inline-flex", gap: 3 }}>{[0, 1, 2].map((i) => <span key={i} style={{ width: 6, height: 6, borderRadius: 6, background: i < dots ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.25)" }} />)}</span>
-    {n} rides
   </span>;
 }
 function Block({ n, title, children }) {
@@ -1694,7 +2043,7 @@ function Warn({ children }) {
   return <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 10, fontSize: 12.5, background: "rgba(224,120,94,0.12)", border: "1px solid rgba(224,120,94,0.3)", color: "#f0b8a8" }}>{children}</div>;
 }
 /* ============================================================================
- * HelpPanel — first-launch welcome + re-readable help (install, GPX, training)
+ * HelpPanel — first-launch welcome + re-readable help (install, GPX, tuning)
  * ========================================================================== */
 function LoadErrorScreen({ message, onRetry }) {
   // Don't assert a cause we can't be sure of. A 429 (rate limit) is the server
