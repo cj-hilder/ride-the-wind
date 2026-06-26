@@ -833,7 +833,7 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
                 <RouteEditor
                   route={route}
                   controller={controller}
-                  onSaved={async () => { await onChanged(); }}
+                  onSaved={async () => { await onChanged({ quiet: true }); }}
                   onDeleted={async () => { setEditing(null); await onChanged(); }}
                 />
               )}
@@ -1421,24 +1421,31 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
     });
   }, [controller, route.id]);
 
+  // Keep a live ref to the route so the once-per-open init effect can read its
+  // current schedule fields without taking them as deps (which would re-run the
+  // init on every background/quiet refresh and stomp in-progress edits).
+  const routeRef = useRef(route);
+  routeRef.current = route;
+
   useEffect(() => {
     let alive = true;
     controller.routeTuning(route.id).then((t) => {
       if (!alive || !t) return;
+      const r = routeRef.current;
       setTuning(t);
       const v = { speedKmh: t.manual.speedKmh, kHead: t.manual.kHead, kTail: t.manual.kTail, split: t.config.split };
       const m = { baselineMode: t.config.baselineMode, kMode: t.config.kMode };
       setVal(v); setModes(m);
       // Establish the initial applied snapshot from loaded state.
       setApplied({
-        name: route.name, arrival: route.targetArrival,
-        days: [...route.activeDays].sort(),
-        timeMode: route.timeMode === "depart" ? "depart" : "arrive",
+        name: r.name, arrival: r.targetArrival,
+        days: [...r.activeDays].sort(),
+        timeMode: r.timeMode === "depart" ? "depart" : "arrive",
         val: { ...v }, modes: { ...m },
       });
     });
     return () => { alive = false; };
-  }, [controller, route.id, route.name, route.targetArrival, route.activeDays, route.timeMode]);
+  }, [controller, route.id]);
 
   // Convert slider values → k-slider + baseline fields for persistence.
   const valToConfig = (v) => {
@@ -1481,7 +1488,11 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
       });
     }
     snapshot();
-    onSaved();   // refresh the Plan/verdict beneath; does not close the editor
+    // Refresh the editor's own learned view / dots from the just-applied state,
+    // and quietly recompute the verdict beneath — without closing or collapsing
+    // the editor or the View-rides fold.
+    await loadTuning();
+    onSaved();
   };
 
   // Cancel: revert all unsaved edits to the last-applied snapshot, then disable.
