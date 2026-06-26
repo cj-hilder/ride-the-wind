@@ -1844,11 +1844,12 @@ function Capture({ controller, route, onDone }) {
 
   const submit = async () => {
     setConfirm("yes");
+    // Don't force `usable`: the ride's used/not-used state is set from its wind
+    // classification at record time (gentle → not used; still/windy → used).
     await controller.recordRide({
       routeId: route.id, startedAt: result.startedAt, endedAt: result.endedAt,
       actualTimeSec: adjustedSec, forecastWind: result.forecastWind,
       adjustMin: adjustMin || 0, pausedSec: result.pausedSec || 0,
-      usable: true,
     });
   };
   const discard = () => { setConfirm("discarded"); /* nothing stored */ };
@@ -1949,7 +1950,7 @@ function Capture({ controller, route, onDone }) {
               <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", textAlign: "center", margin: "24px 0 16px", lineHeight: 1.45 }}>
                 {route.isExample
                   ? "This is an example route — your ride time will not be saved. Create your first real route to save actual ride times."
-                  : "Accept to use for learning, or discard if it isn't representative."}
+                  : "Accept to make it available for learning, or discard if it isn't representative."}
               </div>
               <div style={{ display: "flex", gap: 10 }}>
                 <button onClick={discard} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "none", color: "#f0a08c", border: "1px solid rgba(224,120,94,0.4)" }}>Discard</button>
