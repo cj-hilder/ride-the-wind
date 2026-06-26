@@ -1157,20 +1157,25 @@ const fmtLen = (sec) => {
 };
 const CLASS_COLOR = { windy: "#e0a45e", gentle: "rgba(255,255,255,0.45)", still: "rgba(140,190,255,0.85)" };
 
-function RidesManager({ route, controller, onChanged }) {
+function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
   const [rides, setRides] = useState(null);
   const [editing, setEditing] = useState(null); // a ride object
   const [bulkAsk, setBulkAsk] = useState(null);  // { rideId, count }
   const pressTimer = useRef(null);
 
   const load = useCallback(() => {
-    return controller.ridesForManager(route.id).then((rs) => { setRides(rs); onChanged && onChanged(); });
-  }, [controller, route.id, onChanged]);
-  useEffect(() => { load(); }, [load]);
+    return controller.ridesForManager(route.id).then((rs) => setRides(rs));
+  }, [controller, route.id]);
+  // Reload on mount and whenever reloadKey changes (e.g. the editor applied a
+  // baseline change, which shifts per-ride k for current-baseline rides).
+  useEffect(() => { load(); }, [load, reloadKey]);
+  // After a mutation here, reload the list AND tell the editor to refresh its
+  // tuning (curation changes what the model learns).
+  const reloadAfterMutation = async () => { await load(); onRidesChanged && onRidesChanged(); };
 
   const toggleInclude = async (ride) => {
     await controller.updateRide(ride.id, { included: !ride.included });
-    await load();
+    await reloadAfterMutation();
   };
 
   // Long-press on a checkbox → confirm "exclude this and all earlier".
@@ -1185,7 +1190,7 @@ function RidesManager({ route, controller, onChanged }) {
   const doBulk = async () => {
     await controller.excludeRideAndEarlier(bulkAsk.rideId);
     setBulkAsk(null);
-    await load();
+    await reloadAfterMutation();
   };
 
   return (
@@ -1241,7 +1246,7 @@ function RidesManager({ route, controller, onChanged }) {
 
       {editing && (
         <RideEditor ride={editing} controller={controller}
-          onClose={async () => { setEditing(null); await load(); }} />
+          onClose={async () => { setEditing(null); await reloadAfterMutation(); }} />
       )}
 
       {bulkAsk && (
@@ -1399,6 +1404,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
   const [modes, setModes] = useState(null); // { baselineMode, kMode }
   const [collapseAsk, setCollapseAsk] = useState(null); // {next} split-off, which to keep
   const [ridesOpen, setRidesOpen] = useState(false);    // inline View rides fold
+  const [applyTick, setApplyTick] = useState(0);        // bumped on Apply → reloads open rides list
   // Snapshot of the last-applied editable state, for the dirty check + revert.
   const [applied, setApplied] = useState(null);
 
@@ -1490,7 +1496,9 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
     snapshot();
     // Refresh the editor's own learned view / dots from the just-applied state,
     // and quietly recompute the verdict beneath — without closing or collapsing
-    // the editor or the View-rides fold.
+    // the editor or the View-rides fold. Bump applyTick so an open rides list
+    // re-fetches (per-ride k for current-baseline rides shifts with the baseline).
+    setApplyTick((t) => t + 1);
     await loadTuning();
     onSaved();
   };
@@ -1597,7 +1605,8 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
               <span style={{ fontSize: 11, transform: ridesOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>▼</span>
             </button>
             {ridesOpen && (
-              <RidesManager route={route} controller={controller} onChanged={loadTuning} />
+              <RidesManager route={route} controller={controller}
+                reloadKey={applyTick} onRidesChanged={loadTuning} />
             )}
           </>
         )}
