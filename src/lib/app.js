@@ -800,7 +800,7 @@ export function createAppController(deps = {}) {
    */
   async function recordRide(capture) {
     // The example route is ephemeral — a demo ride runs the full flow but
-    // persists nothing and never trains a model.
+    // persists nothing and never tunes a model.
     if (isExampleId(capture.routeId)) {
       return { skipped: true, isExample: true };
     }
