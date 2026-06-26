@@ -1,5 +1,5 @@
 // Ephemeral example route: shown only at zero-state, never stored, never
-// trains, vanishes once a real route exists.
+// learns, vanishes once a real route exists.
 import { createAppController } from './src/lib/app.js';
 import { MemoryBackend } from './src/lib/storage.js';
 import { parseForecast } from './src/lib/windModel.js';

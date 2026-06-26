@@ -283,11 +283,11 @@ inline; that control lives in the Ride Editor to save horizontal space.
 
 **Curation** replaces automatic decay: include/exclude per ride, plus the
 "exclude this ride and all earlier" affordance (a quick way to drop a stale
-training era). See §3.5.
+tuning era). See §3.5.
 
 ### 3.5 "Exclude this ride and all earlier"
 
-A bulk-curation action for dropping a stale training era in one step.
+A bulk-curation action for dropping a stale tuning era in one step.
 
 **Behaviour.** Sets `included = false` on the selected ride **and** every ride
 on this route with an **earlier timestamp** (ordering by ride timestamp, not

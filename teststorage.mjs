@@ -38,7 +38,7 @@ console.log('\nRides persist with curation fields; model resolves from log (lear
   const route=await s.createRoute(processed, setup, {kHead:1.0,kTail:1.0});
   // switch to learn mode for baseline + k
   await s.updateRoute(route.id, { baselineMode:'learn', kMode:'learn' });
-  // a still ride pins baseline at 1000; windy rides both directions train k=0.5
+  // a still ride pins baseline at 1000; windy rides both directions learn k=0.5
   const day=24*60*60*1000; const t0=Date.now();
   const wfs=[0, -0.5, 0.5, -0.7, 0.7, -0.3, 0.3, -0.9];
   for(let i=0;i<wfs.length;i++){
