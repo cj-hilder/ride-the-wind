@@ -907,20 +907,29 @@ export function createAppController(deps = {}) {
     const manual = { speedKmh: manualSpeedKmh, kHead: config.sliderKHead, kTail: config.sliderKTail };
 
     // Resolve the live model from the curated log + config (persisting any
-    // freeze transitions), then surface what each quantity resolved to.
+    // freeze transitions). This drives the dots (what is ACTUALLY serving the
+    // prediction under the route's current modes).
     const resolved = learning.resolveModel(rides, config, now());
     await persistResolved(route, resolved);
 
+    // Separately resolve a "what learning WOULD produce" view with both modes
+    // forced to learn, so the editor can preview the learned value the instant a
+    // Manual→Learn pill flips — before Apply. The per-quantity sources here tell
+    // the editor whether a learned value actually exists (vs. starved → slider).
+    const learnView = learning.resolveModel(
+      rides, { ...config, baselineMode: "learn", kMode: "learn" }, now()
+    );
+
     const learned = {
-      speedKmh: Math.round((distanceM / resolved.baselineSec) * 3.6),
-      baselineSec: resolved.baselineSec,
-      kHead: resolved.kHead, kTail: resolved.kTail,
-      baselineSource: resolved.baselineSource,
-      kHeadSource: resolved.kHeadSource,
-      kTailSource: resolved.kTailSource,
-      split: resolved.split, autoSplit: resolved.autoSplit,
-      ridesBaseline: resolved.ridesBaseline,
-      ridesHead: resolved.ridesHead, ridesTail: resolved.ridesTail,
+      speedKmh: Math.round((distanceM / learnView.baselineSec) * 3.6),
+      baselineSec: learnView.baselineSec,
+      kHead: learnView.kHead, kTail: learnView.kTail,
+      baselineSource: learnView.baselineSource,
+      kHeadSource: learnView.kHeadSource,
+      kTailSource: learnView.kTailSource,
+      split: learnView.split, autoSplit: learnView.autoSplit,
+      ridesBaseline: learnView.ridesBaseline,
+      ridesHead: learnView.ridesHead, ridesTail: learnView.ridesTail,
     };
 
     return {
