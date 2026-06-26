@@ -775,7 +775,7 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
 
       <div style={{ margin: "0 22px 18px", padding: "12px 14px", borderRadius: 14, background: "rgba(255,255,255,0.06)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 14 }}>Margin of error</span>
+          <span style={{ fontSize: 14 }}>Margin of error allowance</span>
           <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{conservatism}%</span>
         </div>
         <input type="range" min={0} max={100} value={conservatism}
@@ -784,7 +784,7 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
           onTouchEnd={(e) => saveConservatism(e.target.value)}
           style={{ width: "100%", marginTop: 8, accentColor: "#e0a45e" }} />
         <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 4, lineHeight: 1.4 }}>
-          Ride the Wind uses multiple forecast models to calculate a margin of error for the forecast. This setting controls how much of that margin of error is applied to your ride times. Higher will have you leave earlier to be more likely on time.
+          Ride the Wind uses multiple forecast models to calculate a margin of error for the forecast. Your margin of error allowance controls how much of that is applied to your ride times. Higher will have you leave earlier to be more likely on time.
         </div>
       </div>
 
@@ -953,7 +953,7 @@ function RouteMap({ polyline }) {
  * Maps to the existing seeds (no model change): baselineSec = D / speed;
  * head = baseline·(1+kHead), tail = baseline·(1−kTail).
  * ========================================================================== */
-const TERRAIN_MIN = 0.15, TERRAIN_MAX = 0.8;
+const TERRAIN_MIN = 0.10, TERRAIN_MAX = 0.8;
 const kClampUI = (k) => Math.max(TERRAIN_MIN, Math.min(TERRAIN_MAX, k));
 
 /* Two-segment Manual | Learn pill. Compact, matches the day/time-mode buttons. */
@@ -1153,7 +1153,7 @@ const fmtRideTime = (ms) => {
 };
 const fmtLen = (sec) => {
   const m = Math.round(sec / 60);
-  return `${m}m`;
+  return `${m} min`;
 };
 const CLASS_COLOR = { windy: "#e0a45e", gentle: "rgba(255,255,255,0.45)", still: "rgba(140,190,255,0.85)" };
 
@@ -1199,12 +1199,12 @@ function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
           <div style={{ color: "rgba(255,255,255,0.5)", padding: 16 }}>Loading…</div>
         ) : rides.length === 0 ? (
           <div style={{ padding: "20px 14px", textAlign: "center", color: "rgba(255,255,255,0.55)", lineHeight: 1.5, border: "1px dashed rgba(255,255,255,0.16)", borderRadius: 12 }}>
-            No rides logged yet. Record a ride on the Ride tab and it will appear here to train this route.
+            No rides logged yet. Record a ride on the Ride tab and it will appear here to tune this route.
           </div>
         ) : (
           <>
             {/* Header row */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 44px 52px 30px 34px", gap: 8, alignItems: "center", fontSize: 10.5, letterSpacing: "0.04em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", padding: "0 4px 6px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 60px 52px 30px 34px", gap: 8, alignItems: "center", fontSize: 10.5, letterSpacing: "0.04em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", padding: "0 4px 6px" }}>
               <span>Date / time</span>
               <span style={{ textAlign: "right" }}>Length</span>
               <span style={{ textAlign: "right" }}>k</span>
@@ -1213,7 +1213,7 @@ function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
             </div>
             {rides.map((r) => (
               <div key={r.id} style={{
-                display: "grid", gridTemplateColumns: "1fr 44px 52px 30px 34px", gap: 8, alignItems: "center",
+                display: "grid", gridTemplateColumns: "1fr 60px 52px 30px 34px", gap: 8, alignItems: "center",
                 padding: "10px 4px", borderTop: "1px solid rgba(255,255,255,0.08)",
                 opacity: r.included ? 1 : 0.5,
               }}>
@@ -1239,7 +1239,7 @@ function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
               </div>
             ))}
             <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 12, lineHeight: 1.5 }}>
-              Gentle rides default to unused. Long-press a checkbox to exclude that ride and all earlier ones. k values are shown against the current baseline.
+              Gentle rides default to unused. Long-press a checkbox to exclude that ride and all earlier ones. A unique k value is calculated for each ride using the current baseline. Overall k is calculated from all included individual rides.
             </div>
           </>
         )}
@@ -1947,7 +1947,7 @@ function Capture({ controller, route, onDone }) {
               <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", textAlign: "center", margin: "24px 0 16px", lineHeight: 1.45 }}>
                 {route.isExample
                   ? "This is an example route — your ride time will not be saved. Create your first real route to save actual ride times."
-                  : "Accept to train the model, or discard if it isn't representative."}
+                  : "Accept to use for learning, or discard if it isn't representative."}
               </div>
               <div style={{ display: "flex", gap: 10 }}>
                 <button onClick={discard} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "none", color: "#f0a08c", border: "1px solid rgba(224,120,94,0.4)" }}>Discard</button>
@@ -2040,7 +2040,7 @@ function Warn({ children }) {
   return <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 10, fontSize: 12.5, background: "rgba(224,120,94,0.12)", border: "1px solid rgba(224,120,94,0.3)", color: "#f0b8a8" }}>{children}</div>;
 }
 /* ============================================================================
- * HelpPanel — first-launch welcome + re-readable help (install, GPX, training)
+ * HelpPanel — first-launch welcome + re-readable help (install, GPX, tuning)
  * ========================================================================== */
 function LoadErrorScreen({ message, onRetry }) {
   // Don't assert a cause we can't be sure of. A 429 (rate limit) is the server

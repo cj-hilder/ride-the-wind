@@ -53,7 +53,7 @@ export default function HelpPanel({ onClose }) {
         <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 14 }}>
          <ul style={ol}><li>Predicts your bike commute time from the forecast wind for your exact route at the time you ride.
 </li><li>Uses multiple forecasts to give you a range of predicted ride times.
-</li><li>You control how much the spread of forecasts affects your ride times by adjusting the <i>margin of error</i>.
+</li><li>You control how much the spread of forecasts affects your ride times by adjusting the <i>margin of error allowance</i>.
 </li><li>Recommends when to leave in order to arrive on time, based on those ride times.</li></ul>
         </div>
 
@@ -73,7 +73,7 @@ export default function HelpPanel({ onClose }) {
             <b>2. Ride</b> let's you record actual ride times which are then used to tune the model and make more accurate predictions. 
           </p>
           <p style={p}>
-            <b>3. Routes</b> is where you add new routes, hand tune your routes, and set the margin of error.
+            <b>3. Routes</b> is where you add new routes, hand tune your routes, and set the margin of error allowance.
           </p>
         </div>
 
@@ -83,10 +83,10 @@ export default function HelpPanel({ onClose }) {
             Each route starts from two things you set: your <b>still‑air speed</b> and a <b>ground effect</b> (how much the wind slows or speeds you up on this particular route). That's enough to use it from day one.
           </p>
           <p style={p}>
-            As you record rides it learns your real numbers and takes over the tuning. You might need about <b>ten rides in each direction</b>. If the learned times aren't working for you, just move a slider to go back to setting them by hand.
+            As you record rides it learns your real numbers and takes over the tuning. You might need <b>several rides in each direction</b>. If the learned times aren't working for you, just switch to manual and set them by hand.
           </p>
           <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
-           The app blends about 50 wind forecasts for your route. This enables it to predict a best case and worst case ride time by applying a margin of error taken from the spread of the forecasts. This means it can recommend departure times with a higher level of certainty of getting you there on time than a single forecast. You configure the margin of error according to how important it is for you to arrive on time.
+           The app blends about 50 wind forecasts for your route. This enables it to predict a best case and worst case ride time by applying a margin of error taken from the spread of the forecasts. This means it can recommend departure times with a higher level of certainty of getting you there on time than a single forecast. You configure the margin of error allowance according to how important it is for you to arrive on time.
           </p>
         </div>
 
