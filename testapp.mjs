@@ -108,6 +108,33 @@ console.log('\nCapture rides -> resolver learns (real recordRide path, learn mod
   ok('learned baseline positive', t.learned.baselineSec>0);
 }
 
+console.log('\nCapture path sets used/not-used from classification (no forced usable):');
+{
+  // A near-calm forecast → gentle/still wind_factor → the accepted ride must be
+  // recorded but NOT auto-used if gentle. Use a fresh route to control wind.
+  const r2=await app.createRoute(gpx, { name:'ClassRoute', seedStillAirSec:1000,
+    targetArrival:'08:45', activeDays:['MO','TU','WE','TH','FR'] }, {kHead:1,kTail:1});
+  // light wind ~ along route to land in the gentle/still bands
+  const lightStation=[{lat:0,lon:0.0225,series:
+    parseForecast({hourly:{time:[Math.floor(new Date(2026,5,1,8,0).getTime()/1000)],
+      wind_speed_10m:[8], wind_direction_10m:[90]}})}];
+  const start=new Date(2026,5,2,8,0).getTime();
+  const {ride}=await app.recordRide({ routeId:r2.id, startedAt:start, endedAt:start+1000*1000,
+    actualTimeSec:1000, forecastWind:lightStation });
+  const cls = Math.abs(ride.windFactor) < 0.06 ? 'still' : Math.abs(ride.windFactor) < 0.25 ? 'gentle' : 'windy';
+  ok('recorded ride carries windFactor', ride.windFactor!=null);
+  if (cls==='gentle') ok('gentle ride recorded as NOT used', ride.included===false, `wf=${ride.windFactor}`);
+  else ok(`non-gentle (${cls}) ride recorded as used`, ride.included===true, `wf=${ride.windFactor}`);
+  // And a strong headwind ride → windy → used
+  const strongStation=[{lat:0,lon:0.0225,series:
+    parseForecast({hourly:{time:[Math.floor(new Date(2026,5,1,8,0).getTime()/1000)],
+      wind_speed_10m:[30], wind_direction_10m:[90]}})}];
+  const {ride:windyRide}=await app.recordRide({ routeId:r2.id, startedAt:start+1, endedAt:start+1+1000*1000,
+    actualTimeSec:1200, forecastWind:strongStation });
+  ok('windy ride recorded as used', windyRide.included===true, `wf=${windyRide.windFactor}`);
+  await app.deleteRoute(r2.id); // clean up so later export-count assertions hold
+}
+
 console.log('\nExcluded ride is ignored by the resolver:');
 {
   const t=await app.routeTuning(route.id);
