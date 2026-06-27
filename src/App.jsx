@@ -447,6 +447,7 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
       </div>
 
       <PlanBody verdict={verdict} dayVerdict={dayVerdict} fetching={fetching}
+        routeLon={activeRoute.startRegion ? activeRoute.startRegion.lon : undefined}
         accent={accent} showDebug={showDebug} setShowDebug={setShowDebug}
         timeMode={activeRoute.timeMode === "depart" ? "depart" : "arrive"}
         exploredHHMM={exploredHHMM} canGoNow={isToday}
@@ -509,7 +510,7 @@ function ExplorePicker({ timeMode, current, hasOverride, canGoNow, onApply, onGo
 }
 
 /* Plan detail body for the selected route+day (the former Home centre block). */
-function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDebug,
+function PlanBody({ verdict, dayVerdict, fetching, routeLon, accent, showDebug, setShowDebug,
   timeMode, exploredHHMM, canGoNow, showExplore, setShowExplore, onExplore, onGoNow, onRestore }) {
   // Per-minute tick so the live countdown beside the time stays current without
   // depending on forecast refreshes. Declared before any early return (hooks).
@@ -586,7 +587,7 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
                   : <>to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}</>)}
           </div>
           {(() => {
-            const tz = phoneTimezoneHint(verdict.route && verdict.route.startRegion ? verdict.route.startRegion.lon : undefined);
+            const tz = phoneTimezoneHint(routeLon);
             return tz ? (
               <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 6 }}>
                 Times in your phone's timezone: {tz}
