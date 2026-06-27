@@ -69,6 +69,15 @@ console.log('\nLive home verdict (headwind forecast):');
   ok('confidence: nothing learned yet (0 dots)', hv.confidence.dots===0 && hv.confidence.baselineLearned===false);
   ok('verdict has departureMs for countdown', typeof hv.verdict.departureMs==='number');
   ok('no message field (scheduler removed)', !('message' in hv.verdict));
+  // Item 6: times are self-consistent with integer mental arithmetic. The gap
+  // between shown departure and shown latest-arrival must be a whole number of
+  // minutes (no hidden sub-minute seconds), and equal the displayed slow ride
+  // time on the arrive-mode conservative result.
+  if (hv.conservative && hv.conservative.mode==='arrive') {
+    const gapSec = (hv.conservative.latestArrivalMs - hv.conservative.departureMs)/1000;
+    ok('departure→arrival gap is whole minutes', Math.abs(gapSec % 60) < 1e-6, `${gapSec}s`);
+    ok('gap equals displayed slow ride time', Math.round(gapSec/60) === hv.windEffect.slowMin, `${gapSec/60} vs ${hv.windEffect.slowMin}`);
+  }
 }
 
 console.log('\nNo scheduler: runAlerts removed, no notifications dispatched:');

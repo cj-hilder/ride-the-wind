@@ -606,5 +606,19 @@ all suites green).
   at 14 days, with explanatory copy.
 - Editing a slider no longer wipes ride history; `resetRoute` is not called from
   the editor any more. Edits persist via `updateRoute` only.
+- **Uncertainty allowance** (formerly "margin of error"): global setting
+  (`conservatismPct`), slider in **5% steps**, **install default 75%**, and
+  included in export/import (`SETTING_KEYS`).
+- **Still-air speed** is set to the nearest **0.5 km/h** (spinner steps 0.5;
+  display shows one decimal when fractional; `routeTuning` preserves 0.5
+  precision).
+- **Time self-consistency:** ride durations are rounded to whole minutes
+  *before* deriving departure/arrival instants, so displayed times satisfy
+  integer mental arithmetic (shown arrival − shown ride minutes = shown
+  departure) in every mode, including the rangeUnavailable fallbacks and the
+  normal/baseline departure.
+- **Timezone hint** infers the phone's expected longitude from
+  `(offsetMinutes − 30)/60 × 15°` (half-hour west shift) and shows the IANA
+  timezone caption only when a route is more than `TZ_HINT_DEG` (30°) away.
 
 The refactor is functionally complete end to end.

@@ -140,10 +140,12 @@ console.log('\nExport / import round-trip:');
   const route=await s.createRoute(processed, setup, {kHead:0.7,kTail:0.7});
   await s.recordRide({routeId:route.id, startedAt:1, endedAt:2, actualTimeSec:1100, windFactor:0.2});
   await s.setSetting('globalAlertThresholdMin', 5);
+  await s.setSetting('conservatismPct', 87); // uncertainty allowance
   const bundle=await s.exportAll();
   ok('bundle has format tag', bundle.format==='ride-the-wind/export');
   ok('bundle has route + ride', bundle.routes.length===1 && bundle.rides.length===1);
   ok('bundle has settings', bundle.settings.globalAlertThresholdMin===5);
+  ok('bundle has uncertainty allowance', bundle.settings.conservatismPct===87);
 
   // import into a fresh store
   uid=100; const s2=mkStore();
@@ -152,6 +154,7 @@ console.log('\nExport / import round-trip:');
   ok('imported route matches', r && r.name==='Home → Office');
   ok('imported ride', (await s2.listRides(route.id)).length===1);
   ok('imported setting', (await s2.getSetting('globalAlertThresholdMin'))===5);
+  ok('imported uncertainty allowance', (await s2.getSetting('conservatismPct'))===87);
 
   // merge mode keeps existing
   await s2.updateRoute(route.id, {name:'Renamed'});
