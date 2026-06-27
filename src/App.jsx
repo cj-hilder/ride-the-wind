@@ -61,7 +61,7 @@ const skyFor = (hour) =>
 const ACCENT = { headwind: "#5b8fc7", tailwind: "#e0a45e", normal: "#9aa7b0" };
 const fmtMin = (sec) => `${Math.round(sec / 60)} min`;
 
-// "Margin of error" slider speaks 0–100% (how much of the forecast spread to
+// "Uncertainty allowance" slider speaks 0–100% (how much of the forecast spread to
 // apply); the model wants a percentile in 50–99. 0% → 50 (median, no margin),
 // 100% → 99 (most cautious). Linear map, with a clean round-trip.
 const sliderToPct = (s) => Math.round(50 + (Math.max(0, Math.min(100, s)) / 100) * 49);
@@ -123,6 +123,34 @@ function dayLabel(arrivalMs) {
   if (days <= 0) return "today";
   if (days === 1) return "tomorrow";
   return WEEKDAY_NAMES[arr.getDay()];
+}
+
+/**
+ * If a route lies in a very different timezone region than the phone is set to,
+ * return the phone's IANA timezone name to show as a caption (times are always
+ * in the phone's timezone). No geolocation: we infer the phone's expected
+ * longitude from its UTC offset (offsetHours × 15°) and compare to the route's
+ * longitude. Returns null when within TZ_HINT_DEG (the common case → no caption).
+ * 30° ≈ two timezones, so the hint only speaks up for a route clearly in another
+ * part of the world, not a merely adjacent zone (timezones are wide and political,
+ * so a smaller threshold gives false positives e.g. across a single wide country).
+ */
+const TZ_HINT_DEG = 30;
+function phoneTimezoneHint(routeLon) {
+  if (typeof routeLon !== "number" || Number.isNaN(routeLon)) return null;
+  // getTimezoneOffset is minutes behind UTC (positive = west), so negate.
+  const offsetHours = -new Date().getTimezoneOffset() / 60;
+  let expectedLon = offsetHours * 15;
+  // Normalise both to [-180,180] and compare on the shortest angular distance.
+  const norm = (x) => { let v = ((x + 180) % 360 + 360) % 360 - 180; return v; };
+  let diff = Math.abs(norm(routeLon) - norm(expectedLon));
+  if (diff > 180) diff = 360 - diff;
+  if (diff <= TZ_HINT_DEG) return null;
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch {
+    return null;
+  }
 }
 
 export default function App() {
@@ -557,6 +585,14 @@ function PlanBody({ verdict, dayVerdict, fetching, accent, showDebug, setShowDeb
                   ? <>to arrive between {conservative.earliestArrivalHHMM} and {conservative.latestArrivalHHMM} {dayLabel(conservative.latestArrivalMs)}</>
                   : <>to arrive {verdict.arrivalHHMM} {dayLabel(verdict.arrivalMs)}</>)}
           </div>
+          {(() => {
+            const tz = phoneTimezoneHint(verdict.route && verdict.route.startRegion ? verdict.route.startRegion.lon : undefined);
+            return tz ? (
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 6 }}>
+                Times in your phone's timezone: {tz}
+              </div>
+            ) : null;
+          })()}
           {windEffect && (
             <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 6 }}>
               {windEffectPhrase(windEffect, verdict.verdict === "normal")}
@@ -775,7 +811,7 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
 
       <div style={{ margin: "0 22px 18px", padding: "12px 14px", borderRadius: 14, background: "rgba(255,255,255,0.06)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 14 }}>Margin of error allowance</span>
+          <span style={{ fontSize: 14 }}>Uncertainty allowance</span>
           <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{conservatism}%</span>
         </div>
         <input type="range" min={0} max={100} value={conservatism}
@@ -784,7 +820,7 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
           onTouchEnd={(e) => saveConservatism(e.target.value)}
           style={{ width: "100%", marginTop: 8, accentColor: "#e0a45e" }} />
         <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 4, lineHeight: 1.4 }}>
-          Ride the Wind uses multiple forecast models to calculate a margin of error for the forecast. Your margin of error allowance controls how much of that is applied to your ride times. Higher will have you leave earlier to be more likely on time.
+          Ride the Wind uses multiple forecast models to calculate a spread of forecast wind speeds. Your uncertainty allowance controls how much of that spread is applied to your ride times. Higher will have you leave earlier to be more likely on time.
         </div>
       </div>
 
