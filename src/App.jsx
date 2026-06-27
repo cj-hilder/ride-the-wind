@@ -129,20 +129,30 @@ function dayLabel(arrivalMs) {
  * If a route lies in a very different timezone region than the phone is set to,
  * return the phone's IANA timezone name to show as a caption (times are always
  * in the phone's timezone). No geolocation: we infer the phone's expected
- * longitude from its UTC offset (offsetHours × 15°) and compare to the route's
- * longitude. Returns null when within TZ_HINT_DEG (the common case → no caption).
- * 30° ≈ two timezones, so the hint only speaks up for a route clearly in another
- * part of the world, not a merely adjacent zone (timezones are wide and political,
- * so a smaller threshold gives false positives e.g. across a single wide country).
+ * longitude from its standard (non-DST) UTC offset and compare to the route's
+ * longitude. Using the standard offset (not the current, possibly DST-shifted
+ * one) keeps the reference longitude stable year-round, so the hint doesn't
+ * appear/disappear across a DST change for the same route. Returns null when
+ * within TZ_HINT_DEG (the common case → no caption). 22.5° ≈ 1.5 timezones, so
+ * the hint only speaks up for a route clearly in another part of the world, not
+ * a merely adjacent zone (timezones are wide and political, so a smaller
+ * threshold gives false positives e.g. across a single wide country).
  */
-const TZ_HINT_DEG = 30;
+const TZ_HINT_DEG = 22.5;
 function phoneTimezoneHint(routeLon) {
   if (typeof routeLon !== "number" || Number.isNaN(routeLon)) return null;
-  // getTimezoneOffset is minutes behind UTC (positive = west), so negate.
-  // Subtract 30 min first: timezones nominally cover the offset meridian ±7.5°
-  // but in practice sit east of it, so shifting the reference half an hour west
-  // better centres the "is this route elsewhere" test.
-  const offsetHours = (-new Date().getTimezoneOffset() - 30) / 60;
+  // Standard (non-DST) offset: getTimezoneOffset is DST-corrected for the given
+  // date, so sample January and July and take the more-positive (= standard
+  // time, DST removed; DST springs forward and reduces the offset). Then shift
+  // 30 min west: timezones nominally cover the offset meridian ±7.5° but in
+  // practice sit east of it, so this better centres the "is this route elsewhere"
+  // test. getTimezoneOffset is minutes behind UTC (positive = west), so negate.
+  const y = new Date().getFullYear();
+  const stdOffsetMin = Math.max(
+    new Date(y, 0, 1).getTimezoneOffset(),
+    new Date(y, 6, 1).getTimezoneOffset()
+  );
+  const offsetHours = (-stdOffsetMin - 30) / 60;
   let expectedLon = offsetHours * 15;
   // Normalise both to [-180,180] and compare on the shortest angular distance.
   const norm = (x) => { let v = ((x + 180) % 360 + 360) % 360 - 180; return v; };
