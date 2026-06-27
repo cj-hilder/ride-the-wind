@@ -618,7 +618,7 @@ all suites green).
   departure) in every mode, including the rangeUnavailable fallbacks and the
   normal/baseline departure.
 - **Timezone hint** infers the phone's expected longitude from
-  `(offsetMinutes − 30)/60 × 15°` (half-hour west shift) and shows the IANA
-  timezone caption only when a route is more than `TZ_HINT_DEG` (30°) away.
+  the standard (non-DST) UTC offset, shifted 30 min west, ×15° and shows the IANA
+  timezone caption only when a route is more than `TZ_HINT_DEG` (22.5°) away.
 
 The refactor is functionally complete end to end.
