@@ -139,7 +139,10 @@ const TZ_HINT_DEG = 30;
 function phoneTimezoneHint(routeLon) {
   if (typeof routeLon !== "number" || Number.isNaN(routeLon)) return null;
   // getTimezoneOffset is minutes behind UTC (positive = west), so negate.
-  const offsetHours = -new Date().getTimezoneOffset() / 60;
+  // Subtract 30 min first: timezones nominally cover the offset meridian ±7.5°
+  // but in practice sit east of it, so shifting the reference half an hour west
+  // better centres the "is this route elsewhere" test.
+  const offsetHours = (-new Date().getTimezoneOffset() - 30) / 60;
   let expectedLon = offsetHours * 15;
   // Normalise both to [-180,180] and compare on the shortest angular distance.
   const norm = (x) => { let v = ((x + 180) % 360 + 360) % 360 - 180; return v; };
@@ -706,7 +709,7 @@ const DAY_CODES = [["MO", "M"], ["TU", "T"], ["WE", "W"], ["TH", "T"], ["FR", "F
 
 function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
   const [editing, setEditing] = useState(null); // route id being edited
-  const [conservatism, setConservatism] = useState(pctToSlider(95));
+  const [conservatism, setConservatism] = useState(75); // % uncertainty allowance (5% steps)
   const fileRef = useRef();
 
   // Drag-to-reorder: keep a local id order so the list rearranges live while
@@ -763,8 +766,8 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
 
   useEffect(() => {
     let alive = true;
-    controller.store.getSetting("conservatismPct", 95).then((v) => {
-      if (alive && v != null) setConservatism(pctToSlider(Number(v)));
+    controller.store.getSetting("conservatismPct", 87).then((v) => {
+      if (alive && v != null) setConservatism(Math.round(pctToSlider(Number(v)) / 5) * 5);
     });
     return () => { alive = false; };
   }, [controller]);
@@ -815,7 +818,7 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
           <span style={{ fontSize: 14 }}>Uncertainty allowance</span>
           <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{conservatism}%</span>
         </div>
-        <input type="range" min={0} max={100} value={conservatism}
+        <input type="range" min={0} max={100} step={5} value={conservatism}
           onChange={(e) => setConservatism(Number(e.target.value))}
           onMouseUp={(e) => saveConservatism(e.target.value)}
           onTouchEnd={(e) => saveConservatism(e.target.value)}
@@ -1039,7 +1042,7 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
   const headLearned = modes.kMode === "learn" && learned && learned.kHeadSource === "learned";
   const tailLearned = modes.kMode === "learn" && learned && learned.kTailSource === "learned";
 
-  const setSpeed = (kmh) => { if (baseLearned) return; onChange({ ...value, speedKmh: Math.max(1, Math.min(50, Math.round(kmh))) }); };
+  const setSpeed = (kmh) => { if (baseLearned) return; onChange({ ...value, speedKmh: Math.max(1, Math.min(50, Math.round(kmh * 2) / 2)) }); };
   const setK = (which, k) => {
     const kk = kClampUI(k);
     if (value.split) onChange({ ...value, [which]: kk });
@@ -1061,12 +1064,12 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
         <ModePill mode={modes.baselineMode} onChange={(m) => onModeChange("baselineMode", m)} />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, opacity: baseLearned ? 0.85 : 1 }}>
-        <button onClick={() => setSpeed(dispSpeed - 1)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="slower">−</button>
+        <button onClick={() => setSpeed(dispSpeed - 0.5)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="slower">−</button>
         <div style={{ flex: 1, textAlign: "center" }}>
-          <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{dispSpeed}</span>
+          <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{Number.isInteger(dispSpeed) ? dispSpeed : dispSpeed.toFixed(1)}</span>
           <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}> km/h</span>
         </div>
-        <button onClick={() => setSpeed(dispSpeed + 1)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="faster">+</button>
+        <button onClick={() => setSpeed(dispSpeed + 0.5)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="faster">+</button>
       </div>
       <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)" }}>
         Still-air ride time: <b style={{ color: "rgba(255,255,255,0.85)" }}>{dispBaselineMin} min</b>
