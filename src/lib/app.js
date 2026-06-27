@@ -460,7 +460,9 @@ export function createAppController(deps = {}) {
         // fast end mirrors at its complement. NOT a calibrated on-time
         // probability — a deliberate safety margin against an under-dispersive
         // ensemble. Default 95 (≈ rarely late) rather than 90 (≈1-in-10 late).
-        const hiPct = clampPct(await store.getSetting("conservatismPct", 95));
+        // Default conservatism corresponds to a 75% uncertainty-allowance slider
+        // (sliderToPct(75) ≈ 87). Stored as a percentile in 50–99.
+        const hiPct = clampPct(await store.getSetting("conservatismPct", 87));
         const loPct = 100 - hiPct;
 
         // The deterministic forecast is just another forecast — often better at
@@ -525,17 +527,23 @@ export function createAppController(deps = {}) {
     // the given time, regardless of the route's configured mode.
     const timeMode = forceDepart ? "depart" : (route.timeMode === "depart" ? "depart" : "arrive");
     // `next.arrivalMs` is the entered-time instant: an arrival in arrive mode,
-    // a departure in depart mode.
+    // a departure in depart mode. Baseline departure uses the whole-minute
+    // baseline ride time, to stay consistent with the displayed still-air time.
     const baselineDepartureMs =
-      next && timeMode === "arrive" ? next.arrivalMs - route.baselineTimeSec * 1000 : null;
+      next && timeMode === "arrive"
+        ? next.arrivalMs - Math.round(route.baselineTimeSec / 60) * 60 * 1000
+        : null;
 
     if (next && range && timeMode === "depart") {
       // Fixed departure: the rider leaves at the entered time; we show the
       // arrival RANGE. arrival = departure + rideTime. The caution percentile
       // already widened range.highSec, so the latest-arrival reflects it.
       const departureMs = next.arrivalMs; // entered time = departure
-      const fastSec = range.lowSec;
-      const slowSec = range.highSec;
+      // Compute arrivals from WHOLE-MINUTE ride times so the displayed numbers
+      // are self-consistent with integer mental arithmetic (departure + shown
+      // minutes = shown arrival). Round the ride durations first, then derive.
+      const fastSec = Math.round(range.lowSec / 60) * 60;
+      const slowSec = Math.round(range.highSec / 60) * 60;
       const earliestArrivalMs = departureMs + fastSec * 1000;
       const latestArrivalMs = departureMs + slowSec * 1000;
       conservative = {
@@ -582,11 +590,14 @@ export function createAppController(deps = {}) {
       // A slow end at or below baseline is a genuine (if small) tailwind benefit
       // and must pass through untouched; a multi-minute headwind is never
       // snapped, preserving the on-time guarantee.
+      // Ride times are rounded to WHOLE MINUTES before deriving departure/arrival
+      // instants, so the displayed numbers are self-consistent with integer
+      // mental arithmetic (shown arrival − shown ride minutes = shown departure).
       const slowAboveBaseline = range.highSec > route.baselineTimeSec;
       const slowSec = slowAboveBaseline && hiEffectMin === 0
         ? route.baselineTimeSec
-        : range.highSec;
-      const fastSec = range.lowSec;
+        : Math.round(range.highSec / 60) * 60;
+      const fastSec = Math.round(range.lowSec / 60) * 60;
       const departureMs = next.arrivalMs - slowSec * 1000;
       const earliestArrivalMs = departureMs + fastSec * 1000;
       conservative = {
@@ -637,7 +648,7 @@ export function createAppController(deps = {}) {
     } else if (next && rangeUnavailable && timeMode === "depart") {
       // Fixed departure, no forecast range: single central arrival estimate.
       const departureMs = next.arrivalMs;
-      const arrivalMs = departureMs + verdict.predictedSec * 1000;
+      const arrivalMs = departureMs + Math.round(verdict.predictedSec / 60) * 60 * 1000;
       conservative = {
         mode: "depart",
         departureMs,
@@ -657,7 +668,7 @@ export function createAppController(deps = {}) {
       verdict.deltaMin = Math.round(duDeltaSec / 60);
     } else if (next && rangeUnavailable) {
       // Ensemble unavailable: central prediction, no conservative padding.
-      const centralSec = verdict.predictedSec;
+      const centralSec = Math.round(verdict.predictedSec / 60) * 60;
       const departureMs = next.arrivalMs - centralSec * 1000;
       conservative = {
         mode: "arrive",
@@ -903,7 +914,7 @@ export function createAppController(deps = {}) {
     };
 
     // Manual (slider) view: speed from the slider baseline, k from the sliders.
-    const manualSpeedKmh = Math.round((distanceM / config.sliderBaselineSec) * 3.6);
+    const manualSpeedKmh = Math.round((distanceM / config.sliderBaselineSec) * 3.6 * 2) / 2;
     const manual = { speedKmh: manualSpeedKmh, kHead: config.sliderKHead, kTail: config.sliderKTail };
 
     // Resolve the live model from the curated log + config (persisting any
@@ -921,7 +932,7 @@ export function createAppController(deps = {}) {
     );
 
     const learned = {
-      speedKmh: Math.round((distanceM / learnView.baselineSec) * 3.6),
+      speedKmh: Math.round((distanceM / learnView.baselineSec) * 3.6 * 2) / 2,
       baselineSec: learnView.baselineSec,
       kHead: learnView.kHead, kTail: learnView.kTail,
       baselineSource: learnView.baselineSource,
