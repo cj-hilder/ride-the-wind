@@ -20,7 +20,7 @@ Three tabs:
   left this minute.
 - **Ride** — records an actual ride by GPS, with pause for stops. At the end you
   can nudge the time or discard it; accepted rides tune the model.
-- **Routes** — add and tune routes, and set the margin of error allowance.
+- **Routes** — add and tune routes, and set the uncertainty allowance.
 
 You add a route from a GPX file (plan one in a route planner, or export a ride
 you've already recorded). Each route is tuned from two things you set: your
@@ -41,7 +41,7 @@ from day one. Each destination needs two routes, one each way.
   to pure ensemble by the next day. The central estimate and its spread emerge
   from that single population, so the spread reflects genuine forecast
   agreement, not a guess. Departures lean conservative so you're rarely late;
-  how much of the spread to apply is a tunable margin-of-error-allowance setting.
+  how much of the spread to apply is a tunable uncertainty-allowance setting.
 - It **learns each route** from the rides you log. It's usable from the first
   ride (starting from the speed and ground effect you set) and well-tuned after about
   ten rides in each direction, then keeps adapting as your fitness changes. When
