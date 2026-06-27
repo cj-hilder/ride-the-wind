@@ -53,7 +53,7 @@ export default function HelpPanel({ onClose }) {
         <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 14 }}>
          <ul style={ol}><li>Predicts your bike commute time from the forecast wind for your exact route at the time you ride.
 </li><li>Uses multiple forecasts to give you a range of predicted ride times.
-</li><li>You control how much the spread of forecasts affects your ride times by adjusting the <i>margin of error allowance</i>.
+</li><li>You control how much the spread of forecasts affects your ride times by adjusting the <i>uncertainty allowance</i>.
 </li><li>Recommends when to leave in order to arrive on time, based on those ride times.</li></ul>
         </div>
 
@@ -73,7 +73,7 @@ export default function HelpPanel({ onClose }) {
             <b>2. Ride</b> let's you record actual ride times which are then used to tune the model and make more accurate predictions. 
           </p>
           <p style={p}>
-            <b>3. Routes</b> is where you add new routes, hand tune your routes, and set the margin of error allowance.
+            <b>3. Routes</b> is where you add new routes, hand tune your routes, and set the uncertainty allowance.
           </p>
         </div>
 
@@ -86,7 +86,7 @@ export default function HelpPanel({ onClose }) {
             As you record rides it learns your real numbers and takes over the tuning. You might need <b>several rides in each direction</b>. If the learned times aren't working for you, just switch to manual and set them by hand.
           </p>
           <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
-           The app blends about 50 wind forecasts for your route. This enables it to predict a best case and worst case ride time by applying a margin of error taken from the spread of the forecasts. This means it can recommend departure times with a higher level of certainty of getting you there on time than a single forecast. You configure the margin of error allowance according to how important it is for you to arrive on time.
+           The app blends about 50 wind forecasts for your route. This enables it to predict a best case and worst case ride time from the spread of the forecasts. This means it can recommend departure times with a higher level of certainty of getting you there on time than a single forecast. You configure the uncertainty allowance according to how important it is for you to arrive on time.
           </p>
         </div>
 
@@ -120,6 +120,9 @@ export default function HelpPanel({ onClose }) {
         <div style={{ padding: "16px 0 4px" }}>
           <p style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.55, margin: 0 }}>
             Ride the Wind gives estimates from weather forecasts provided by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer" style={lnk}>Open-Meteo</a>, a free, open-source forecast service. Ride the Wind is provided as is, with no warranty and no liability for lateness, wet socks, lightning strike or any other outcome. It's free and open source — made by <a href="https://github.com/cj-hilder/ride-the-wind" target="_blank" rel="noopener noreferrer" style={lnk}>Chris Hilder</a> and released under the MIT License.
+          </p>
+          <p style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", margin: "10px 0 0" }}>
+            Made in New Zealand — works anywhere in the world.
           </p>
           <p style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", margin: "8px 0 0" }}>
             v{import.meta.env.VITE_APP_VERSION} · build {import.meta.env.VITE_BUILD_HASH} · {import.meta.env.VITE_BUILD_DATE}
