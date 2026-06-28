@@ -67,7 +67,7 @@ export default function HelpPanel({ onClose }) {
         <div style={section}>
           <h3 style={h3}>The three tabs</h3>
           <p style={p}>
-            <b>1. Plan</b> shows forecast ride times and recommended departures for the week ahead. Also indicates temperature and alerts you when rain, snow, fog, thunderstorms or sidewinds are forecast for your ride. Tap the temperature to display more info about the forecast wind.
+            <b>1. Plan</b> shows forecast ride times and recommended departures for the week ahead. Also indicates temperature and alerts you when rain, snow, fog, thunderstorms, strong gusts or crosswinds are forecast for your ride. Tap the temperature to display more info about the forecast wind.
           </p>
           <p style={p}>
             <b>2. Ride</b> let's you record actual ride times which are then used to tune the model and make more accurate predictions. 
