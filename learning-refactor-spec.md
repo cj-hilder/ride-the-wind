@@ -68,7 +68,7 @@ Each ride is classified by `|wind_factor|`:
 | class  | condition                              | ≈ along-route component | used for       |
 |--------|----------------------------------------|-------------------------|----------------|
 | still  | `|wf| < WF_STILL` (0.06)               | < 5 km/h                | baseline only  |
-| gentle | `WF_STILL ≤ |wf| < WF_WINDY`           | 5–10 km/h               | neither        |
+| gentle | `WF_STILL ≤ |wf| < WF_WINDY`           | 5–10 km/h               | k if opted in  |
 | windy  | `|wf| ≥ WF_WINDY` (0.25)               | ≥ 10 km/h               | k only         |
 
 Classification rides on the net along-route effect already baked into
@@ -79,6 +79,17 @@ Classification rides on the net along-route effect already baked into
 - A ride with strong **head and tail sections that average to near zero** also
   classifies still. The net effect is what the model predicts, so this is
   acceptable; noted so it reads as designed, not as a bug.
+
+**Contribution by class** (how a ride feeds the model, given its curation flag):
+- **still** rides → contribute to **baseline** only (never k).
+- **windy** rides → contribute to **k** only (and to the branch-2 baseline-from-
+  windy extrapolation when there are no still rides, §2.5).
+- **gentle** rides → contribute to **neither by default** (they default to
+  `included: false`). If the user explicitly marks a gentle ride **used**, it
+  contributes to **k** (not baseline) — its small `wind_factor` makes it a
+  low-leverage point in the origin fit, but the user's curation is honoured.
+  Still rides never feed k regardless of curation; gentle rides never feed
+  baseline.
 
 ### 2.4 Per-ride baseline reference (current / historic)
 
@@ -140,7 +151,9 @@ A baseline is "learned" (and earns its dot, §4) only when it resolves on branch
 **Manual mode:** from the k slider.
 
 **Learned mode**, per direction (head / tail):
-- Uses **only windy rides** in that direction.
+- Uses **windy rides** in that direction, **plus any gentle rides the user has
+  explicitly marked used** (gentle defaults to unused, so these are deliberate
+  opt-ins). Still rides are never used for k.
 - Each windy ride uses **its own effective baseline** `bᵢ` — the live
   configured baseline if the ride is `current`, or its frozen
   `savedBaselineSec` if `historic`. There is no single global baseline in the k
@@ -273,8 +286,9 @@ A new **Rides Manager** button per route opens the list of that route's rides.
 | edit           | icon → opens Ride Editor (§3.4)                                |
 
 **Default include state by class:**
-- **gentle** → default **excluded** (used in neither calculation), can be
-  included by checking the box.
+- **gentle** → default **excluded** (feeds neither baseline nor k), can be
+  included by checking the box — a used gentle ride then contributes to **k**
+  (not baseline).
 - **still / windy** → default **included**, can be excluded by unchecking.
 
 The list **reflects** each ride's current/historic state (it determines the k
