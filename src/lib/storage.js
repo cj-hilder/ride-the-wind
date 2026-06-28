@@ -581,6 +581,7 @@ export class Store {
 
 const SETTING_KEYS = [
   "globalAlertThresholdMin",
+  "conservatismPct", // the uncertainty allowance
   "wRefKmh",
   "lastOpenedRouteId",
   "persistentStorageGranted",

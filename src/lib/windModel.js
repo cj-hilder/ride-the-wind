@@ -231,11 +231,11 @@ export function sampleWind(hourly, atMs) {
   // take the hour the rider is in (the earlier bracket), not a blend, and the
   // probability likewise reflects that hour.
   const tempC = a.tempC == null || b.tempC == null ? (a.tempC ?? b.tempC ?? null) : a.tempC + (b.tempC - a.tempC) * t;
-  return { speed, fromDeg, tempC, precipMm: a.precipMm ?? 0, precipProb: a.precipProb ?? 0, snowfallCm: a.snowfallCm ?? 0, weatherCode: a.weatherCode ?? null };
+  return { speed, fromDeg, tempC, precipMm: a.precipMm ?? 0, precipProb: a.precipProb ?? 0, snowfallCm: a.snowfallCm ?? 0, weatherCode: a.weatherCode ?? null, gustKmh: a.gustKmh ?? null };
 }
 
 function pick(s) {
-  return { speed: s.speed, fromDeg: s.fromDeg, tempC: s.tempC ?? null, precipMm: s.precipMm ?? 0, precipProb: s.precipProb ?? 0, snowfallCm: s.snowfallCm ?? 0, weatherCode: s.weatherCode ?? null };
+  return { speed: s.speed, fromDeg: s.fromDeg, tempC: s.tempC ?? null, precipMm: s.precipMm ?? 0, precipProb: s.precipProb ?? 0, snowfallCm: s.snowfallCm ?? 0, weatherCode: s.weatherCode ?? null, gustKmh: s.gustKmh ?? null };
 }
 
 /** Shortest-path angular interpolation, degrees. */
@@ -328,7 +328,7 @@ export async function fetchForecast(lat, lon, opts = {}) {
   // clamped to the first remaining hour as the day advances.
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&hourly=wind_speed_10m,wind_direction_10m,temperature_2m,precipitation,precipitation_probability,snowfall,weather_code` +
+    `&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m,temperature_2m,precipitation,precipitation_probability,snowfall,weather_code` +
     `&wind_speed_unit=kmh&timeformat=unixtime&past_days=${pastDays}&forecast_days=${forecastDays}`;
 
   const res = await f(url);
@@ -415,6 +415,7 @@ export function parseForecast(data) {
       precipProb: h.precipitation_probability ? h.precipitation_probability[i] : 0,
       snowfallCm: h.snowfall ? h.snowfall[i] : 0,
       weatherCode: h.weather_code ? h.weather_code[i] : null,
+      gustKmh: h.wind_gusts_10m ? h.wind_gusts_10m[i] : null,
     });
   }
   out.sort((a, b) => a.time - b.time);

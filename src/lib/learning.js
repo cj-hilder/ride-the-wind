@@ -246,9 +246,18 @@ export function resolveK(rides, liveBaselineSec, config) {
   const sH = clampK(sliderKHead) ?? sliderKHead;
   const sT = clampK(sliderKTail) ?? sliderKTail;
 
-  const windy = rides.filter((r) => classifyRide(r.windFactor) === "windy");
-  const head = windy.filter((r) => r.windFactor > 0);
-  const tail = windy.filter((r) => r.windFactor < 0);
+  // k is learned from windy rides, PLUS any gentle rides the user has
+  // explicitly opted in. Gentle rides default to not-used (filtered out before
+  // this point in resolveModel), so the only gentle rides here are ones the user
+  // deliberately marked used — honour that by letting them feed k. Still rides
+  // never feed k (they carry no usable wind signal). Gentle rides have small
+  // wind_factor, so they're naturally low-leverage in the origin fit.
+  const forK = rides.filter((r) => {
+    const c = classifyRide(r.windFactor);
+    return c === "windy" || c === "gentle";
+  });
+  const head = forK.filter((r) => r.windFactor > 0);
+  const tail = forK.filter((r) => r.windFactor < 0);
 
   if (kMode !== "learn") {
     // Manual: slider values, split exactly as the user set it.
@@ -281,8 +290,8 @@ export function resolveK(rides, liveBaselineSec, config) {
     };
   }
 
-  // Combined learn: pool all windy rides (both directions) into one fit.
-  const pooled = fitKThroughOrigin(windy, liveBaselineSec);
+  // Combined learn: pool all contributing rides (both directions) into one fit.
+  const pooled = fitKThroughOrigin(forK, liveBaselineSec);
   if (pooled) {
     return {
       kHead: pooled.k, kTail: pooled.k,

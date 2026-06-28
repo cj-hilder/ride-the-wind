@@ -137,6 +137,39 @@ console.log('\nk resolution — learn, manual split with one side short:');
   ok('tail falls back to slider', k.sourceTail === 'slider' && k.kTail === 0.5);
 }
 
+console.log('\nk resolution — gentle rides contribute to k (option A):');
+{
+  const b = 1000;
+  // gentle wf in [0.06,0.25): a couple of gentle headwind rides reaching resolveK
+  // (i.e. user opted them in) should feed k. Use k=0.5 synthetic.
+  const gentleHead = [0.1, 0.2].map((w) => ride(w, b * (1 + 0.5 * w)));
+  const k = resolveK(gentleHead, b, { kMode: 'learn', split: false, sliderKHead: 1, sliderKTail: 1 });
+  ok('opted-in gentle rides feed k', k.sourceHead === 'learned' && near(k.kHead, 0.5, 0.05), `${k.kHead}`);
+}
+
+console.log('\nresolveModel — gentle gating: default excluded, used → feeds k:');
+{
+  const b = 1000;
+  // Two gentle headwind rides. Default included=false (gentle) → must NOT feed k.
+  const def = [0.1, 0.2].map((w) => ride(w, b * (1 + 0.5 * w), { included: false }));
+  // Plus a still ride to pin baseline so we isolate k behaviour.
+  const still = ride(0.0, b, { ageDays: 1 });
+  const mDefault = resolveModel([still, ...def], {
+    baselineMode: 'learn', sliderBaselineSec: 1500,
+    kMode: 'learn', split: false, sliderKHead: 1, sliderKTail: 1,
+  }, NOW);
+  ok('default (unused) gentle rides do NOT feed k', mDefault.kHeadSource === 'slider' && mDefault.kHead === 1);
+
+  // Same rides but user opted them in → now feed k.
+  const used = [0.1, 0.2].map((w) => ride(w, b * (1 + 0.5 * w), { included: true }));
+  const mUsed = resolveModel([still, ...used], {
+    baselineMode: 'learn', sliderBaselineSec: 1500,
+    kMode: 'learn', split: false, sliderKHead: 1, sliderKTail: 1,
+  }, NOW);
+  ok('used gentle rides feed k', mUsed.kHeadSource === 'learned' && near(mUsed.kHead, 0.5, 0.05), `${mUsed.kHead}`);
+  ok('baseline still from the still ride (gentle never feeds baseline)', near(mUsed.baselineSec, b, 1));
+}
+
 console.log('\nclampK applied in k fit (extreme slope):');
 {
   const b = 1000;
