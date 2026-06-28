@@ -691,7 +691,7 @@ export function createAppController(deps = {}) {
         : deltaSec < -(verdict.thresholdMin ?? 4) * 60 ? "tailwind" : "normal";
     }
 
-    // "What to expect" line: temp / rain / side wind at the arrival window.
+    // "What to expect" line: temp / rain / crosswind at the arrival window.
     let expect = null;
     let debug = null;
     if (next) {

@@ -6,7 +6,7 @@
  *   - temperature (°C, integer): min over the ride, unless max ≥ 26 °C → max
  *   - rain: blank | "maybe wet" | "wet" | "very wet", by mm-per-riding-hour
  *           (gated behind ≥25% probability)
- *   - side wind: blank | "side winds" | "strong side winds", by time-weighted
+ *   - crosswind: blank | "crosswinds" | "strong crosswinds", by time-weighted
  *           mean absolute crosswind
  *
  * Pure functions over injected forecast + segments + segment time weights, so
@@ -18,10 +18,26 @@
 const DEG = Math.PI / 180;
 
 export const TEMP_HOT_C = 26; // at/above this, show the max not the min
-export const RAIN_PROB_GATE = 15; // %, below which rain stays blank
-export const RAIN_BANDS = [0.05, 0.5, 2]; // total mm boundaries: maybe / wet / very
-export const SIDEWIND_BANDS = [15, 30]; // km/h: side / strong
-export const SNOW_CM_GATE = 0.1; // cm in an hour: any snow worth flagging
+// Rain is judged on TOTAL mm over the ride (a long drizzle soaks like a short
+// shower). Bands anchored to the cycling kit decision: light = water-resistant
+// layer copes (arrive damp); wet = full waterproofs justified; very wet = soaked
+// regardless. "maybe" is a separate probability-driven prefix (below).
+export const RAIN_PROB_GATE = 10;   // %, below which rain stays blank
+export const RAIN_PROB_MAYBE = 50;  // %, 10–50 → "maybe <x>"; ≥50 → "<x>"
+export const RAIN_BANDS = [0.1, 1, 4]; // total mm boundaries: light / wet / very
+export const CROSSWIND_BANDS = [15, 30]; // km/h: crosswinds / strong
+// Snow is a cm/HOUR rate. Any settling snow matters for traction/visibility, so
+// the bar is low. Intensity-labelled (no "maybe": the deterministic feed carries
+// no snow probability, so a likelihood claim would be invented confidence).
+export const SNOW_LIGHT_CM = 0.05; // cm/h: flurries, not settling much → "light snow"
+export const SNOW_FULL_CM = 0.5;   // cm/h: meaningful accumulation → "snow"
+// Strong-gust alert. The danger is the lull→gust DIFFERENTIAL that unsettles
+// handling, not absolute force, so require both a high absolute gust AND a
+// meaningful margin over sustained wind. 50 km/h is a 10 m-forecast figure
+// chosen with ground effect in mind (gusts attenuate at rider height, so a
+// forecast 50 reaches the rider as the speed that starts shoving them).
+export const GUST_ABS_KMH = 50;    // km/h: absolute gust floor
+export const GUST_OVER_SUSTAINED_KMH = 15; // km/h: gust must exceed sustained by this
 // WMO weather codes (Open-Meteo `weather_code`) for fog and snow.
 export const FOG_CODES = [45, 48];
 export const SNOW_CODES = [71, 73, 75, 77, 85, 86];
@@ -49,10 +65,12 @@ export function sampleConditions({ segments, times, windFn, departMs }) {
   const crosswinds = [];
   let precipTotalMm = 0; // mm actually falling during the ride
   const precipProb = [];
-  let snow = false; // snow forecast at any point during the ride
+  let snowMaxCm = 0; // max snowfall rate (cm/h) seen along the ride
+  let snowCode = false; // a definite snow WMO code at any point
   let fog = false;  // fog forecast at any point during the ride
   let thunder = false; // thunderstorm at any point
   let freezing = false; // freezing rain/drizzle (black-ice hazard) at any point
+  let strongGust = false; // a destabilising gust (high + gusty) at any point
   let clock = departMs;
   let totalSec = 0;
 
@@ -69,15 +87,21 @@ export function sampleConditions({ segments, times, windFn, departMs }) {
     precipTotalMm += (w.precipMm || 0) * (times[i] / 3600);
     precipProb.push(w.precipProb || 0);
     // Hazard flags: present if forecast at ANY point along the ride. snowfall is
-    // a direct cm/hour figure; the rest read the WMO code.
-    if ((w.snowfallCm || 0) >= SNOW_CM_GATE || SNOW_CODES.includes(w.weatherCode)) snow = true;
+    // a direct cm/hour rate (track the max for intensity banding); the rest read
+    // the WMO code. Strong gusts need both a high absolute gust and a gust that
+    // exceeds the sustained wind by a margin (the destabilising differential).
+    if ((w.snowfallCm || 0) > snowMaxCm) snowMaxCm = w.snowfallCm || 0;
+    if (SNOW_CODES.includes(w.weatherCode)) snowCode = true;
     if (FOG_CODES.includes(w.weatherCode)) fog = true;
     if (THUNDER_CODES.includes(w.weatherCode)) thunder = true;
     if (FREEZING_CODES.includes(w.weatherCode)) freezing = true;
+    const gust = w.gustKmh;
+    if (typeof gust === "number" && gust >= GUST_ABS_KMH &&
+        gust - (w.speed || 0) >= GUST_OVER_SUSTAINED_KMH) strongGust = true;
     clock += times[i] * 1000;
     totalSec += times[i];
   }
-  return { temps, crosswinds, precipTotalMm, precipProb, snow, fog, thunder, freezing, rideHours: totalSec / 3600 };
+  return { temps, crosswinds, precipTotalMm, precipProb, snowMaxCm, snowCode, fog, thunder, freezing, strongGust, rideHours: totalSec / 3600 };
 }
 
 /* ------------------------------------------------------------------ *
@@ -94,33 +118,52 @@ export function temperatureToken(temps) {
 }
 
 /**
- * Rain token from TOTAL precipitation accumulated over the ride (mm), gated by
- * probability. Total (not rate) so a longer ride in the same rain reads wetter
- * — the honest measure of arrival wetness. Returns null when dry, low-
- * confidence, or below the first band.
+ * Rain token from TOTAL precipitation over the ride (mm), with a probability-
+ * driven "maybe" prefix. Intensity (light / wet / very wet) comes from the mm
+ * total; "maybe" is prepended when the forecast probability is in the middling
+ * band (RAIN_PROB_GATE..RAIN_PROB_MAYBE), meaning "on the cards, not certain".
+ * Below the gate, or below the light band, returns null. Being liberal with
+ * "maybe" is deliberate: forecast rain often doesn't eventuate, and the cost of
+ * a needless jacket is far less than a soaked commute.
  */
 export function rainToken(precipTotalMm, precipProb) {
   const maxProb = precipProb && precipProb.length ? Math.max(...precipProb) : 0;
   if (maxProb < RAIN_PROB_GATE) return null;
 
   const total = precipTotalMm || 0; // mm over the ride
-  const [maybe, wet, very] = RAIN_BANDS;
-  if (total < maybe) return null;
-  if (total < wet) return "maybe wet";
-  if (total < very) return "wet";
-  return "very wet";
+  const [light, wet, very] = RAIN_BANDS;
+  if (total < light) return null;
+  const intensity = total < wet ? "light rain" : total < very ? "wet" : "very wet";
+  const maybe = maxProb < RAIN_PROB_MAYBE;
+  return maybe ? `maybe ${intensity}` : intensity;
 }
 
-/** Side-wind token from time-weighted mean absolute crosswind (km/h). */
-export function sideWindToken(crosswinds) {
+/**
+ * Snow token from the max snowfall RATE over the ride (cm/h), or a definite snow
+ * WMO code. Intensity-labelled: "light snow" (flurries, not settling) vs "snow"
+ * (meaningful accumulation). No "maybe" — the deterministic feed has no snow
+ * probability, so a likelihood claim would be invented. A definite snow code
+ * with a sub-light rate still reads "light snow" (the code confirms it's snow,
+ * the low rate says it's light). Returns null below the light floor and no code.
+ */
+export function snowToken(snowMaxCm, snowCode) {
+  const rate = snowMaxCm || 0;
+  if (rate >= SNOW_FULL_CM) return "snow";
+  if (rate >= SNOW_LIGHT_CM) return "light snow";
+  if (snowCode) return "light snow"; // code says snow but rate is trace/absent
+  return null;
+}
+
+/** Crosswind token from time-weighted mean absolute crosswind (km/h). */
+export function crosswindToken(crosswinds) {
   if (!crosswinds || crosswinds.length === 0) return null;
   let num = 0, den = 0;
   for (const c of crosswinds) { num += c.v * c.t; den += c.t; }
   const mean = den > 0 ? num / den : 0;
-  const [side, strong] = SIDEWIND_BANDS;
+  const [side, strong] = CROSSWIND_BANDS;
   if (mean < side) return null;
-  if (mean < strong) return "side winds";
-  return "strong side winds";
+  if (mean < strong) return "crosswinds";
+  return "strong crosswinds";
 }
 
 /* ------------------------------------------------------------------ *
@@ -138,9 +181,10 @@ export function whatToExpect({ segments, times, windFn, departMs }) {
     rainToken(c.precipTotalMm, c.precipProb),
     c.thunder ? "thunderstorms" : null,
     c.freezing ? "freezing rain" : null,
-    c.snow ? "snow" : null,
+    snowToken(c.snowMaxCm, c.snowCode),
     c.fog ? "fog" : null,
-    sideWindToken(c.crosswinds),
+    c.strongGust ? "strong gusts" : null,
+    crosswindToken(c.crosswinds),
   ].filter(Boolean);
   return { tokens, line: tokens.join(" · ") };
 }
