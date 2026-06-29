@@ -32,6 +32,16 @@ console.log('Route creation + config init:');
   ok('routeConfig assembles', cfg.sliderBaselineSec===1000 && cfg.kMode==='learn');
 }
 
+console.log('\nSetup persists explicit tuning modes (user toggled a pill):');
+{
+  uid=0; const s=mkStore();
+  // Mirrors the Setup path when the user flips a control to manual before saving.
+  const route=await s.createRoute(processed, { ...setup, baselineMode:'manual', kMode:'learn', split:true }, {kHead:0.5,kTail:0.5});
+  ok('explicit baselineMode persisted', route.baselineMode==='manual');
+  ok('explicit kMode persisted', route.kMode==='learn');
+  ok('explicit split persisted', route.split===true);
+}
+
 console.log('\nRides persist with curation fields; model resolves from log (learn mode):');
 {
   uid=0; const s=mkStore();

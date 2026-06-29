@@ -4,7 +4,8 @@
  * Computes three short condition tokens for the home card, from the same
  * forecast already fetched for the wind model:
  *   - temperature (°C, integer): min over the ride, unless max ≥ 26 °C → max
- *   - rain: blank | "maybe wet" | "wet" | "very wet", by mm-per-riding-hour
+ *   - rain: blank | "a little wet" | "wet" | "very wet" (optionally "maybe "-
+ *     prefixed), scored on the worse of peak hourly rate and ride total
  *           (gated behind ≥25% probability)
  *   - crosswind: blank | "crosswinds" | "strong crosswinds", by time-weighted
  *           mean absolute crosswind
@@ -18,13 +19,20 @@
 const DEG = Math.PI / 180;
 
 export const TEMP_HOT_C = 26; // at/above this, show the max not the min
-// Rain is judged on TOTAL mm over the ride (a long drizzle soaks like a short
-// shower). Bands anchored to the cycling kit decision: light = water-resistant
-// layer copes (arrive damp); wet = full waterproofs justified; very wet = soaked
-// regardless. "maybe" is a separate probability-driven prefix (below).
+// Rain wetness is scored on the WORSE of two mechanisms — a short intense shower
+// and a sustained soak — because total accumulation alone conflates them (a
+// 10-min downpour and a 45-min drizzle can share a total yet soak you very
+// differently). Level = worse of {peak hourly rate, ride total}, expressed as
+// "a little wet" / "wet" / "very wet" (about how wet the RIDER gets, not the
+// weather). "maybe" is a separate probability-driven prefix (below), gated on
+// the single max precipitation probability over the ride.
+//   - Peak rate (mm/h): the shower. Thresholds shaded ~30% below standing-still
+//     figures because riding into rain raises the effective wetting rate.
+//   - Ride total (mm): the sustained soak, accumulated over the actual ride.
 export const RAIN_PROB_GATE = 10;   // %, below which rain stays blank
 export const RAIN_PROB_MAYBE = 50;  // %, 10–50 → "maybe <x>"; ≥50 → "<x>"
-export const RAIN_BANDS = [0.1, 1, 4]; // total mm boundaries: light / wet / very
+export const RAIN_RATE_BANDS = [0.6, 2, 5]; // mm/h peak: a little / wet / very
+export const RAIN_TOTAL_BANDS = [0.3, 1.5, 5]; // mm total: a little / wet / very
 export const CROSSWIND_BANDS = [15, 30]; // km/h: crosswinds / strong
 // Snow is a cm/HOUR rate. Any settling snow matters for traction/visibility, so
 // the bar is low. Intensity-labelled (no "maybe": the deterministic feed carries
@@ -64,6 +72,7 @@ export function sampleConditions({ segments, times, windFn, departMs }) {
   const temps = [];
   const crosswinds = [];
   let precipTotalMm = 0; // mm actually falling during the ride
+  let precipPeakRate = 0; // max hourly precip rate (mm/h) any segment touches
   const precipProb = [];
   let snowMaxCm = 0; // max snowfall rate (cm/h) seen along the ride
   let snowCode = false; // a definite snow WMO code at any point
@@ -85,6 +94,7 @@ export function sampleConditions({ segments, times, windFn, departMs }) {
     // for times[i] seconds, so the rain that falls on them here is the hourly
     // rate prorated by their fraction of the hour. Summed = total over ride.
     precipTotalMm += (w.precipMm || 0) * (times[i] / 3600);
+    if ((w.precipMm || 0) > precipPeakRate) precipPeakRate = w.precipMm || 0;
     precipProb.push(w.precipProb || 0);
     // Hazard flags: present if forecast at ANY point along the ride. snowfall is
     // a direct cm/hour rate (track the max for intensity banding); the rest read
@@ -101,7 +111,7 @@ export function sampleConditions({ segments, times, windFn, departMs }) {
     clock += times[i] * 1000;
     totalSec += times[i];
   }
-  return { temps, crosswinds, precipTotalMm, precipProb, snowMaxCm, snowCode, fog, thunder, freezing, strongGust, rideHours: totalSec / 3600 };
+  return { temps, crosswinds, precipTotalMm, precipPeakRate, precipProb, snowMaxCm, snowCode, fog, thunder, freezing, strongGust, rideHours: totalSec / 3600 };
 }
 
 /* ------------------------------------------------------------------ *
@@ -118,22 +128,36 @@ export function temperatureToken(temps) {
 }
 
 /**
- * Rain token from TOTAL precipitation over the ride (mm), with a probability-
- * driven "maybe" prefix. Intensity (light / wet / very wet) comes from the mm
- * total; "maybe" is prepended when the forecast probability is in the middling
- * band (RAIN_PROB_GATE..RAIN_PROB_MAYBE), meaning "on the cards, not certain".
- * Below the gate, or below the light band, returns null. Being liberal with
- * "maybe" is deliberate: forecast rain often doesn't eventuate, and the cost of
- * a needless jacket is far less than a soaked commute.
+ * Rain token, scored on the WORSE of two wetting mechanisms, with a probability-
+ * driven "maybe" prefix. The level describes how wet the RIDER gets:
+ *   - peak hourly rate (mm/h) → the short intense shower;
+ *   - ride total (mm) → the sustained soak.
+ * Each maps to a level via its own bands; the reported level is the higher
+ * (worse) of the two. "maybe" is prepended when the single max probability over
+ * the ride is in the middling band (gate..maybe), meaning "on the cards, not
+ * certain". Below the gate, or below both first bands, returns null.
+ *
+ * @param {number} precipTotalMm  total mm accumulated over the ride
+ * @param {number} precipPeakRate max hourly rate (mm/h) any segment touches
+ * @param {number[]} precipProb   per-segment probabilities (%)
  */
-export function rainToken(precipTotalMm, precipProb) {
+export function rainToken(precipTotalMm, precipPeakRate, precipProb) {
   const maxProb = precipProb && precipProb.length ? Math.max(...precipProb) : 0;
   if (maxProb < RAIN_PROB_GATE) return null;
 
-  const total = precipTotalMm || 0; // mm over the ride
-  const [light, wet, very] = RAIN_BANDS;
-  if (total < light) return null;
-  const intensity = total < wet ? "light rain" : total < very ? "wet" : "very wet";
+  // Each mechanism → a level index: 0 none, 1 a little wet, 2 wet, 3 very wet.
+  const levelFrom = (value, bands) => {
+    if (value >= bands[2]) return 3;
+    if (value >= bands[1]) return 2;
+    if (value >= bands[0]) return 1;
+    return 0;
+  };
+  const rateLevel = levelFrom(precipPeakRate || 0, RAIN_RATE_BANDS);
+  const totalLevel = levelFrom(precipTotalMm || 0, RAIN_TOTAL_BANDS);
+  const level = Math.max(rateLevel, totalLevel); // worse of the two
+  if (level === 0) return null;
+
+  const intensity = level === 1 ? "a little wet" : level === 2 ? "wet" : "very wet";
   const maybe = maxProb < RAIN_PROB_MAYBE;
   return maybe ? `maybe ${intensity}` : intensity;
 }
@@ -178,7 +202,7 @@ export function whatToExpect({ segments, times, windFn, departMs }) {
   const c = sampleConditions({ segments, times, windFn, departMs });
   const tokens = [
     temperatureToken(c.temps),
-    rainToken(c.precipTotalMm, c.precipProb),
+    rainToken(c.precipTotalMm, c.precipPeakRate, c.precipProb),
     c.thunder ? "thunderstorms" : null,
     c.freezing ? "freezing rain" : null,
     snowToken(c.snowMaxCm, c.snowCode),

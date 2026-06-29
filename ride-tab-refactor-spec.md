@@ -159,8 +159,8 @@ Create the return trip from an existing route's geometry.
   slider values** as a sensible starting seed (the bike is the same), but starts
   with **no rides** — the return trip has different wind exposure and gradient,
   so its learned k will diverge. Modes default to learn/learn like any new route.
-- **Name:** no auto-suggested name; the user names it (the field is empty /
-  normal new-route naming).
+- **Name:** auto-suggest **"Reverse ‹original route name›"** (editable — the
+  user can accept or change it).
 - The user lands on the standard details form to set name/schedule/confirm.
 
 ### 3C. Import GPX file (tertiary)
@@ -251,9 +251,16 @@ No changes to the learning model, storage schema (beyond a possibly-reused
 
 ## 7. Build sequencing (suggested)
 
-1. **Item 1** (rename sweep) — trivial, do first.
+1. **Item 1** (rename sweep) — trivial, do first. **[DONE]**
 2. **Item 2** (Setup uses editor tuning controls) — UI consolidation; unblocks a
-   consistent details form used by all three creation methods.
+   consistent details form used by all three creation methods. **[DONE]** Note:
+   `TerrainControls` was *already* the shared component used by both Setup and
+   RouteEditor; Setup was merely passing dead manual-only mode props. The work
+   was wiring Setup's Manual/Learn pills to real `modes` state (default
+   learn/learn), a working `onModeChange`, and persisting the chosen modes via
+   `createRoute` — not a new extraction. With zero rides at setup, learn controls
+   correctly fall back to the sliders ("using your setting until enough rides
+   recorded").
 3. **Item 5** (live readouts) — self-contained additive UI on the existing Ride
    tab; derived-speed + average + clock + naive progress bar.
 4. **Item 4** (manual ride entry) — moderate; reuses wind reconstruction.
