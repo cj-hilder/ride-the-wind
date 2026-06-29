@@ -8,24 +8,34 @@ ok('max when hot (>=26)', temperatureToken([22,27,24])==='27°C', temperatureTok
 ok('rounds to integer', temperatureToken([4.4,4.6])==='4°C', temperatureToken([4.4,4.6]));
 ok('null when empty', temperatureToken([])===null);
 
-console.log('\nRain (total mm over ride; intensity by mm, "maybe" by probability):');
-ok('blank when prob below 10 gate', rainToken(5,[8])===null);
-ok('blank when dry', rainToken(0,[90])===null);
-// intensity bands (high prob → no "maybe")
-ok('light rain (0.1-1)', rainToken(0.3,[80])==='light rain', rainToken(0.3,[80]));
-ok('wet (1-4)', rainToken(2,[80])==='wet', rainToken(2,[80]));
-ok('very wet (>=4)', rainToken(5,[80])==='very wet', rainToken(5,[80]));
-ok('boundary 0.1 -> light rain', rainToken(0.1,[80])==='light rain');
-ok('just under 0.1 -> blank', rainToken(0.09,[80])===null);
-ok('boundary 1 -> wet', rainToken(1,[80])==='wet');
-ok('boundary 4 -> very wet', rainToken(4,[80])==='very wet');
-// "maybe" prefix when probability in 10-50 band
-ok('mid prob → maybe light rain', rainToken(0.3,[30])==='maybe light rain', rainToken(0.3,[30]));
-ok('mid prob → maybe wet', rainToken(2,[40])==='maybe wet', rainToken(2,[40]));
-ok('mid prob → maybe very wet', rainToken(5,[20])==='maybe very wet');
-ok('prob just over 10 gate counts (maybe)', rainToken(2,[11])==='maybe wet', rainToken(2,[11]));
-ok('boundary 50 prob → definite (no maybe)', rainToken(2,[50])==='wet', rainToken(2,[50]));
-ok('just under 50 → maybe', rainToken(2,[49])==='maybe wet');
+console.log('\nRain (worse-of {peak rate mm/h, total mm}; "maybe" by probability):');
+// rainToken(totalMm, peakRateMmH, probArray)
+ok('blank when prob below 10 gate', rainToken(5,5,[8])===null);
+ok('blank when dry', rainToken(0,0,[90])===null);
+// total-driven levels (low/zero peak rate so total dominates)
+ok('total 0.3 → a little wet', rainToken(0.3,0,[80])==='a little wet', rainToken(0.3,0,[80]));
+ok('total 1.5 → wet', rainToken(1.5,0,[80])==='wet');
+ok('total 5 → very wet', rainToken(5,0,[80])==='very wet');
+ok('total just under 0.3 → blank', rainToken(0.29,0,[80])===null);
+// rate-driven levels (tiny total so rate dominates)
+ok('rate 0.6 → a little wet', rainToken(0,0.6,[80])==='a little wet');
+ok('rate 2 → wet', rainToken(0,2,[80])==='wet');
+ok('rate 5 → very wet', rainToken(0,5,[80])==='very wet');
+ok('rate just under 0.6 → blank', rainToken(0,0.59,[80])===null);
+// worse-of: short intense shower — small total, high rate → graded on rate
+ok('15-min 3mm/h shower (total 0.75) → wet via rate', rainToken(0.75,3,[80])==='wet', rainToken(0.75,3,[80]));
+// worse-of: long gentle drizzle — rate below floor, total modest → a little wet
+ok('90-min 0.5mm/h drizzle (total 0.75) → a little wet via total', rainToken(0.75,0.5,[80])==='a little wet', rainToken(0.75,0.5,[80]));
+// worse-of takes the higher level when they disagree
+ok('rate says wet, total says very wet → very wet', rainToken(5,2,[80])==='very wet');
+ok('rate says very wet, total says a little → very wet', rainToken(0.3,5,[80])==='very wet');
+// "maybe" prefix from probability band, applied to worse-of level
+ok('mid prob → maybe a little wet', rainToken(0.3,0,[30])==='maybe a little wet');
+ok('mid prob → maybe wet', rainToken(0,2,[40])==='maybe wet');
+ok('mid prob → maybe very wet', rainToken(5,0,[20])==='maybe very wet');
+ok('prob just over 10 gate counts (maybe)', rainToken(0,2,[11])==='maybe wet');
+ok('boundary 50 prob → definite (no maybe)', rainToken(0,2,[50])==='wet');
+ok('just under 50 → maybe', rainToken(0,2,[49])==='maybe wet');
 
 console.log('\nCrosswind (time-weighted |crosswind| km/h):');
 const cw=(v)=>[{v,t:600}];
