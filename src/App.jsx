@@ -1705,9 +1705,15 @@ function Setup({ controller, onDone, onCancel }) {
   const [preview, setPreview] = useState(null);
   const [err, setErr] = useState(null);
   const [form, setForm] = useState({ name: "", speedKmh: 16, kHead: 0.35, kTail: 0.35, split: false, arrival: "08:45", timeMode: "arrive", days: ["MO", "TU", "WE", "TH", "FR"] });
+  // Tuning modes default to learn/learn (the new-route default), toggleable here
+  // for consistency with the route editor. At setup there are no rides, so learn
+  // controls fall back to the sliders and read "using your setting until enough
+  // rides recorded" — the same behaviour the editor shows for a starved route.
+  const [modes, setModes] = useState({ baselineMode: "learn", kMode: "learn" });
   const [saving, setSaving] = useState(false);
   const fileRef = useRef();
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const onModeChange = (which, m) => setModes((p) => ({ ...p, [which]: m }));
 
   const onFile = async (file) => {
     setErr(null);
@@ -1728,6 +1734,7 @@ function Setup({ controller, onDone, onCancel }) {
       seedStillAirSec: Math.round(baselineSec),
       seedHeadwind20Sec: Math.round(baselineSec * (1 + form.kHead)),
       seedTailwind20Sec: Math.round(baselineSec * (1 - form.kTail)),
+      baselineMode: modes.baselineMode, kMode: modes.kMode, split: form.split,
       targetArrival: form.arrival, timeMode: form.timeMode, activeDays: form.days,
     });
     onDone();
@@ -1775,12 +1782,12 @@ function Setup({ controller, onDone, onCancel }) {
           <Block n="3" title="Ride times">
             <TerrainControls distanceM={preview.totalDistance}
               value={{ speedKmh: form.speedKmh, kHead: form.kHead, kTail: form.kTail, split: form.split }}
-              modes={{ baselineMode: "manual", kMode: "manual" }}
-              onModeChange={() => {}} learned={null} autoSplit={false}
+              modes={modes}
+              onModeChange={onModeChange} learned={null} autoSplit={false}
               onChange={(next) => {
                 if (next._collapse) {
-                  // collapsing the split during setup: keep the headwind value
-                  // (setup is always manual; no confirm needed)
+                  // collapsing the split: keep the headwind value (no rides yet,
+                  // so no learned values to arbitrate — no confirm needed)
                   setForm((f) => ({ ...f, split: false, kHead: f.kHead, kTail: f.kHead }));
                   return;
                 }
@@ -2148,7 +2155,7 @@ function Empty({ name }) {
   return <div style={{ height: "100%", display: "grid", placeItems: "center", background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff", textAlign: "center", padding: 30 }}>
     <div>
       <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{name || "No routes yet"}</div>
-      <div style={{ fontSize: 14, color: "rgba(255,255,255,0.6)", marginTop: 8 }}>Add a route in the Routes tab to see your morning verdict.</div>
+      <div style={{ fontSize: 14, color: "rgba(255,255,255,0.6)", marginTop: 8 }}>Create a new route in the Routes tab to see your morning verdict.</div>
     </div>
   </div>;
 }
