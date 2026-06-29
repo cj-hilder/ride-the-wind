@@ -159,8 +159,8 @@ Create the return trip from an existing route's geometry.
   slider values** as a sensible starting seed (the bike is the same), but starts
   with **no rides** — the return trip has different wind exposure and gradient,
   so its learned k will diverge. Modes default to learn/learn like any new route.
-- **Name:** no auto-suggested name; the user names it (the field is empty /
-  normal new-route naming).
+- **Name:** auto-suggest **"Reverse ‹original route name›"** (editable — the
+  user can accept or change it).
 - The user lands on the standard details form to set name/schedule/confirm.
 
 ### 3C. Import GPX file (tertiary)
