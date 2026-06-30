@@ -1881,13 +1881,18 @@ function Speedometer({ kmh, size = 230 }) {
   const c = size / 2, r = c - 14;
   const labels = [0, 10, 20, 30, 40];
   const ticks = [];
-  for (let v = 0; v <= SPEEDO_MAX_KMH; v += 2) {
+  for (let v = 0; v <= SPEEDO_MAX_KMH; v += 1) {
     const ang = speedToAngle(v);
     const major = v % 10 === 0;
-    const o = polarPoint(c, c, r, ang);
-    const inr = polarPoint(c, c, r - (major ? 12 : 6), ang);
-    if (!major) ticks.push(<circle key={`d${v}`} cx={o.x} cy={o.y} r={1.4} fill="rgba(255,255,255,0.55)" />);
-    else ticks.push(<line key={`t${v}`} x1={o.x} y1={o.y} x2={inr.x} y2={inr.y} stroke="#fff" strokeWidth={2.2} strokeLinecap="round" />);
+    if (!major) {
+      // minor dots: one per 1 km/h, set just inside the circle, separated from it
+      const p = polarPoint(c, c, r - 9, ang);
+      ticks.push(<circle key={`d${v}`} cx={p.x} cy={p.y} r={1.3} fill="rgba(255,255,255,0.5)" />);
+    } else {
+      const o = polarPoint(c, c, r, ang);
+      const inr = polarPoint(c, c, r - 14, ang);
+      ticks.push(<line key={`t${v}`} x1={o.x} y1={o.y} x2={inr.x} y2={inr.y} stroke="#fff" strokeWidth={2.4} strokeLinecap="round" />);
+    }
   }
   const nums = labels.map((v) => {
     const p = polarPoint(c, c, r - 28, speedToAngle(v));
@@ -1912,7 +1917,7 @@ function Speedometer({ kmh, size = 230 }) {
 function ProgressBar({ travelledM, totalM }) {
   const { amberFill, redFill, fraction } = progressBar(travelledM, totalM);
   return (
-    <div style={{ width: "100%", height: 14, borderRadius: 7, background: "rgba(255,255,255,0.12)", position: "relative", overflow: "hidden" }}
+    <div style={{ width: "100%", height: 20, borderRadius: 10, background: "rgba(255,255,255,0.12)", position: "relative", overflow: "hidden" }}
       aria-label={`progress ${Math.round(fraction * 100)}%`}>
       <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${amberFill * 100}%`, background: "#e0a45e" }} />
       {redFill > 0 && (
@@ -2111,20 +2116,20 @@ function Capture({ controller, route, onDone }) {
         const avg = averageSpeedKmh(live.distanceM, movingSec);
         return (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "6px 4px 0" }}>
-            {/* top row: clock left, elapsed right */}
+            {/* top row: elapsed left, clock right */}
             <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-              <div style={{ width: "44%" }}>
-                <AnalogClock nowMs={nowMs} arrivalMs={arrivalMs} />
-              </div>
-              <div style={{ flex: 1, textAlign: "right", paddingTop: 6 }}>
+              <div style={{ flex: 1, textAlign: "left", paddingTop: 6 }}>
                 <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", letterSpacing: "0.04em", textTransform: "uppercase" }}>{paused ? "Paused" : "Elapsed"}</div>
                 <div style={{ fontFamily: "'Fraunces',serif", fontSize: 40, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.55 : 1, lineHeight: 1.1 }}>{fmtC(elapsed)}</div>
                 <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.45)", marginTop: 6 }}>avg {avg.toFixed(1)} km/h</div>
               </div>
+              <div style={{ width: "44%" }}>
+                <AnalogClock nowMs={nowMs} arrivalMs={arrivalMs} />
+              </div>
             </div>
             {/* speedometer */}
             <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0, padding: "4px 0" }}>
-              <div style={{ width: "72%", maxWidth: 280 }}>
+              <div style={{ width: "96%", maxWidth: 380 }}>
                 <Speedometer kmh={live.speedKmh} />
               </div>
             </div>
@@ -2133,10 +2138,10 @@ function Capture({ controller, route, onDone }) {
               <button onClick={togglePause} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: paused ? "#6fd49a" : "rgba(255,255,255,0.12)", color: paused ? "#0f2a1c" : "#fff", border: paused ? "none" : "1px solid rgba(255,255,255,0.25)" }}>
                 {paused ? "Continue" : "Pause"}
               </button>
-              <button onClick={finishNow} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 500, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.25)" }}>Finish now</button>
+              <button onClick={finishNow} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>Finish now</button>
             </div>
             {/* progress (existing route) — distance/total, red overage */}
-            <div style={{ marginTop: 16 }}>
+            <div style={{ margin: "26px 0 18px" }}>
               {totalM ? (
                 <ProgressBar travelledM={live.distanceM} totalM={totalM} />
               ) : (
