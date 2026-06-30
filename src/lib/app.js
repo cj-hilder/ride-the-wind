@@ -973,22 +973,23 @@ export function createAppController(deps = {}) {
    * or times out — callers should treat null as "couldn't check" and proceed
    * without the warning. Never rejects.
    */
-  function distanceToStart(route, { geo } = {}) {
+  function distanceToRegion(region, { geo } = {}) {
     const geoApi = geo || (typeof navigator !== "undefined" ? navigator.geolocation : null);
-    const start = route.startRegion;
-    if (!geoApi || !start) return Promise.resolve(null);
+    if (!geoApi || !region) return Promise.resolve(null);
     return new Promise((resolve) => {
       let settled = false;
       const done = (v) => { if (!settled) { settled = true; resolve(v); } };
       try {
         geoApi.getCurrentPosition(
-          (pos) => done(Math.round(haversineLocal(pos.coords.latitude, pos.coords.longitude, start.lat, start.lon))),
+          (pos) => done(Math.round(haversineLocal(pos.coords.latitude, pos.coords.longitude, region.lat, region.lon))),
           () => done(null),
           { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
         );
       } catch { done(null); }
     });
   }
+  function distanceToStart(route, opts) { return distanceToRegion(route && route.startRegion, opts); }
+  function distanceToEnd(route, opts) { return distanceToRegion(route && route.endRegion, opts); }
 
   async function startRide(route, { onTick, onFinish, geo } = {}) {
     const geoApi = geo || (typeof navigator !== "undefined" ? navigator.geolocation : null);
@@ -1029,7 +1030,16 @@ export function createAppController(deps = {}) {
             } else stoppedSince = null;
           } else stoppedSince = null;
 
-          if (onTick) onTick({ elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000, distanceM: traceDistance(trace) });
+          if (onTick) {
+            const dt = (fix.t - prev.t) / 1000;
+            const speedMps = dt > 0 ? moved / dt : 0;
+            onTick({
+              elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000,
+              distanceM: traceDistance(trace),
+              speedMps,                 // this-fix derived speed; UI smooths
+              distanceToEndM: dEnd,     // straight-line metres to the end region
+            });
+          }
           if (finished) { stop(); if (onFinish) onFinish(buildResult(fix.t)); }
         } else {
           trace.push(fix);
@@ -1091,7 +1101,7 @@ export function createAppController(deps = {}) {
     store,
     createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
     getHomeVerdict, listRoutesWithVerdict,
-    recordRide, listRides, startRide, distanceToStart, routeTuning, updateExampleSeeds,
+    recordRide, listRides, startRide, distanceToStart, distanceToEnd, routeTuning, updateExampleSeeds,
     updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,
     start,
     exportAll, importAll, requestPersistence,
