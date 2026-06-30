@@ -197,30 +197,96 @@ explicitly out of scope.)
 
 ---
 
-## 5. Ride tab live readouts
+## 5. Ride tab live readouts (detailed design)
 
-Add to the recording screen (additive; existing elapsed/distance/pause stay):
+The recording screen is redesigned as a mostly-graphical instrument panel,
+**white-on-black** for sunlight legibility and battery saving (true black
+background), with the app's **amber (#e0a45e)** reserved for *active indicators*
+(clock hands, speedometer needle, bezel marker, progress fill). Red is used only
+for progress overage. SVG throughout for sharpness.
 
-- **Clock time** — current wall-clock time (phone timezone), updated each second.
-- **Current speed** — **derived** from successive GPS fixes (not
-  `coords.speed`, for cross-device reliability), lightly **smoothed** over the
-  last few seconds / couple of fixes so it isn't jumpy. km/h.
-- **Average speed so far** — `distance-so-far ÷ elapsed-moving-time`, where
-  elapsed-moving-time **excludes paused time** (consistent with how the ride
-  time itself excludes pauses). km/h.
-- **Progress bar** — fill = `distance-travelled / total-route-length`, **not
-  capped**: if the rider detours or overshoots, the value legitimately exceeds
-  100% (e.g. 120%), which honestly signals they've ridden further than the route
-  length. The **numeric percentage shown is uncapped**; the **visual bar fill is
-  capped at 100%** so layout doesn't break, while the text reads the true value.
-  Shown during recording with **no gating** (no on-route check, no geometry).
-  **Deliberately naive:** it measures distance ridden against route length
-  regardless of where the rider actually went, so a detour makes it inaccurate.
-  This is an accepted simplification — a rough "how far through am I" indicator,
-  not a positional one.
+### Keep-awake (this turn)
+- **Screen Wake Lock** (`navigator.wakeLock.request('screen')`) acquired when
+  recording starts, released on finish, re-acquired on `visibilitychange` back
+  to visible. Keeps the screen on so the live readouts can be watched
+  uninterrupted. (Silent-audio background keep-alive is NOT in this turn — it
+  matters only for pocketed/backgrounded recording, addressed in turn 5.)
 
-All four are display-only; none affect the recorded ride, its `actualSec`, or
-wind reconstruction.
+### End-of-ride sanity check
+- Mirroring the existing start-of-ride check ("you're N km from the start —
+  continue?"), the **manual Finish** triggers an end check: if GPS says the
+  rider is more than the same threshold from the route's **end region**, confirm
+  "You're N km from the end of the route — really stop?" before finishing.
+  Reuses the `distanceToStart` machinery against `endRegion`. Same threshold as
+  the start check, for symmetry.
+
+### Layout (top → bottom)
+The speedometer is the hero element; the clock is secondary. Proportions below
+are starting points to tune on-device.
+
+**2a. Elapsed time — top-right.** Essentially unchanged from the current display
+(running elapsed, paused state). Plain white text.
+
+**2b. Analogue clock — top-left (~40–50% width).** Minimalist SVG watch face:
+- A simple circle, 12 hour markers (ticks), with **12 / 3 / 6 / 9 heavier** than
+  the other eight; **no numerals**. Plain hour + minute hands (white) showing the
+  current wall-clock time, updated each second (second hand optional/omitted for
+  minimalism — TBD visually).
+- **Bezel ring** around the face carrying a **single diver's-style arrival
+  marker**: a pip at the clock-angle of the **expected arrival time** (e.g.
+  arrive 8:47 → marker at the 47-minute angle, 282°). Mental model = the marker
+  sits at the arrival o'clock-position and the real minute hand sweeps toward it,
+  so the gap reads as time-to-arrival.
+  - Shown **only when expected arrival is < 60 min away** (so the within-hour
+    minute-angle is unambiguous); blank otherwise.
+  - The marker **stays in place once arrival is reached** (not cleared at t=0).
+- **Expected arrival** is dynamic: `now + remaining_distance / speed`, where
+  `remaining = max(0, route_total − distance_travelled)`. The speed used is the
+  **forecast ride-duration estimate until ≥ 1 km has been ridden**, after which
+  it switches to the **average speed so far** (avg has stabilised by 1 km;
+  before that it's too noisy). For a new-route recording (no known total) the
+  bezel marker does not show (no remaining distance to compute).
+
+**2c. Speedometer — centre (hero element).** Classic-car-style SVG gauge,
+stylistically matching the clock:
+- A complete circle. **0 at the 7:30 position (225°)**, sweeping **clockwise**
+  through **20 straight up (12 o'clock)** to **40 at the 4:30 position (315°)** —
+  a **270° sweep** for 0–40 km/h.
+- Numbers shown at **0, 10, 20, 30, 40**; intermediate values marked with small
+  dots. White markings.
+- **Amber needle** at the current **derived, smoothed** speed (see 2c-data).
+  Needle **pegs at 40** if exceeded (cycling rarely sustains more; a pegged
+  needle reads fine).
+
+**2c-data. Speed derivation.** Current speed is **derived from successive GPS
+fixes** (not `coords.speed`, for cross-device reliability), **smoothed** over the
+last few seconds / couple of fixes so the needle isn't jumpy. km/h.
+
+**2d. Pause / Finish-now buttons — below the speedometer.** The existing controls
+(pause toggle, finish), restyled to suit the white-on-black panel. Finish runs
+the end-of-ride sanity check above.
+
+**2e. Progress — bottom.**
+- **Existing-route ride:** a graphical **progress bar**, **no numbers**. Base
+  fill **amber**, left→right, = `distance-travelled / route-total`.
+  - **Overage > 100%:** the bar is full amber; the overage fills **from the right
+    edge leftward in red**, width = `(travelled/total − 1)` of the bar. At 150%
+    the right half is red; the red boundary moves left as the rider continues.
+    Red visual caps at full width (≥200% ridden → entirely red).
+- **New-route recording:** there is no known total to fill against, so the bar is
+  **replaced by a numeric distance covered so far** (e.g. "3.4 km"). (This is the
+  only numeric distance shown; the bar itself never shows numbers.)
+
+**Average speed** (used for the dynamic arrival, and a candidate small readout) =
+`distance-so-far ÷ elapsed-moving-time`, excluding paused time (consistent with
+how ride time excludes pauses).
+
+### Notes
+- All readouts are display-only; none affect the recorded ride, its `actualSec`,
+  or wind reconstruction.
+- The progress bar is deliberately **distance-travelled vs route-length**, no
+  on-route geometry — a detour makes it read high (hence the red overage is a
+  genuine "you've ridden further than the route" signal, not an error).
 
 ---
 
@@ -261,8 +327,17 @@ No changes to the learning model, storage schema (beyond a possibly-reused
    `createRoute` — not a new extraction. With zero rides at setup, learn controls
    correctly fall back to the sliders ("using your setting until enough rides
    recorded").
-3. **Item 5** (live readouts) — self-contained additive UI on the existing Ride
-   tab; derived-speed + average + clock + naive progress bar.
+3. **Item 5** (live readouts) — the instrument-panel redesign (analogue clock +
+   arrival bezel, classic speedometer, amber-on-black, progress bar with red
+   overage), **plus** screen Wake Lock keep-awake and the end-of-ride sanity
+   check (both pulled into this turn). Derived-speed + average + dynamic-arrival
+   logic is unit-testable; the SVG/GPS/Wake-Lock parts are device-verified.
+   **[DONE]** Pure math extracted to `lib/rideReadout.js` (gauge angle, clock
+   angles, arrival bezel, dynamic arrival w/ 1 km forecast→live switch, avg +
+   smoothed speed, progress amber/red fractions), covered by `testreadout.mjs`.
+   `onTick` extended with `speedMps`/`distanceToEndM`; new `distanceToEnd`
+   controller method; Wake Lock acquired on start / released on finish & pause /
+   re-acquired on visibility.
 4. **Item 4** (manual ride entry) — moderate; reuses wind reconstruction.
 5. **Item 3C / 3B** (GPX demotion + reverse) — the method chooser plus the
    reverse transform.
