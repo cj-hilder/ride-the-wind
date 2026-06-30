@@ -1,6 +1,6 @@
 import {
-  speedToAngle, polarPoint, clockAngles, arrivalBezelAngle, expectedArrivalMs,
-  averageSpeedKmh, smoothedSpeedKmh, progressBar,
+  speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
+  averageSpeedKmh, smoothedSpeedKmh, estimatedDistanceM,
   SPEEDO_START_DEG, SPEEDO_SWEEP_DEG, SPEEDO_MAX_KMH, ARRIVAL_LIVE_AFTER_M,
 } from './src/lib/rideReadout.js';
 
@@ -35,16 +35,22 @@ console.log('\nclockAngles:');
   ok('6:30 minute hand at 180°', near(a2.minute, 180));
 }
 
-console.log('\narrivalBezelAngle:');
+console.log('\narrivalBezel (always shows minute; grey ≥1h, amber <1h):');
 {
   const now = new Date(2026, 0, 1, 8, 0, 0).getTime();
-  const in25 = now + 25 * 60000; // arrive 08:25 → minute 25 → 150°
-  ok('25 min away → marker at 150°', near(arrivalBezelAngle(now, in25), 150));
-  const in90 = now + 90 * 60000;
-  ok('90 min away → null (beyond window)', arrivalBezelAngle(now, in90) === null);
-  ok('null arrival → null', arrivalBezelAngle(now, null) === null);
-  // at/just after arrival, still returns an angle (caller keeps it visible)
-  ok('at arrival still returns angle', arrivalBezelAngle(now, now) != null);
+  const in25 = now + 25 * 60000; // arrive 08:25 → minute 25 → 150°, imminent
+  const b25 = arrivalBezel(now, in25);
+  ok('25 min away → marker at 150°, imminent', near(b25.angle, 150) && b25.imminent === true);
+  const in90 = now + 90 * 60000; // 09:30 → minute 30 → 180°, not imminent
+  const b90 = arrivalBezel(now, in90);
+  ok('90 min away → still shows (180°), not imminent', near(b90.angle, 180) && b90.imminent === false);
+  ok('null arrival → null', arrivalBezel(now, null) === null);
+  // boundary: exactly 60 min away is NOT imminent (< 60 required)
+  const b60 = arrivalBezel(now, now + 60 * 60000);
+  ok('exactly 60 min → not imminent', b60.imminent === false);
+  // at/just after arrival → still returns angle, imminent
+  const bnow = arrivalBezel(now, now);
+  ok('at arrival still returns angle, imminent', bnow != null && bnow.imminent === true);
 }
 
 console.log('\nexpectedArrivalMs:');
@@ -68,6 +74,23 @@ console.log('\naverageSpeedKmh:');
 ok('5000 m / 1000 s = 18 km/h', near(averageSpeedKmh(5000, 1000), 18));
 ok('zero time → 0', averageSpeedKmh(100, 0) === 0);
 
+console.log('\nestimatedDistanceM (GPS clamped by route − line-of-sight):');
+{
+  const total = 10000;
+  // straight-line 2km from end → can have covered at most 8km
+  ok('detour: GPS 9km but 2km from end → capped 8km', estimatedDistanceM(9000, total, 2000) === 8000);
+  // GPS less than geometric cap → GPS wins (early on a looping route)
+  ok('GPS 3km, 2km from end (cap 8km) → 3km', estimatedDistanceM(3000, total, 2000) === 3000);
+  // at the end → full route
+  ok('at end (los 0) → full route', estimatedDistanceM(12000, total, 0) === total);
+  // line-of-sight to end exceeds route length (you're behind the start / early
+  // GPS noise) → geometric term is negative → estimate clamps to 0.
+  ok('los > route → clamps to 0', estimatedDistanceM(50, total, 12000) === 0);
+  // missing inputs → GPS unchanged
+  ok('no total → GPS unchanged', estimatedDistanceM(1234, null, 500) === 1234);
+  ok('never exceeds route', estimatedDistanceM(99999, total, 100) <= total);
+}
+
 console.log('\nsmoothedSpeedKmh:');
 {
   const now = 100000;
@@ -78,21 +101,6 @@ console.log('\nsmoothedSpeedKmh:');
   // old samples outside window fall back to last two
   const s2 = [{ t: now - 60000, distanceM: 0 }, { t: now - 2000, distanceM: 10 }, { t: now, distanceM: 30 }];
   ok('uses in-window samples (20m/2s=36)', near(smoothedSpeedKmh(s2, now), 36));
-}
-
-console.log('\nprogressBar:');
-{
-  const p50 = progressBar(2500, 5000);
-  ok('50% → amber .5, no red', near(p50.amberFill, 0.5) && p50.redFill === 0);
-  const p100 = progressBar(5000, 5000);
-  ok('100% → amber full, no red', near(p100.amberFill, 1) && p100.redFill === 0);
-  const p150 = progressBar(7500, 5000);
-  ok('150% → amber full, red .5', near(p150.amberFill, 1) && near(p150.redFill, 0.5));
-  const p200 = progressBar(10000, 5000);
-  ok('200% → red capped at full', near(p200.redFill, 1));
-  const p250 = progressBar(12500, 5000);
-  ok('250% → red still capped', near(p250.redFill, 1));
-  ok('no total → zeros', progressBar(100, 0).amberFill === 0);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

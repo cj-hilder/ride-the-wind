@@ -235,17 +235,18 @@ are starting points to tune on-device.
 - **Bezel ring** around the face carrying a **single diver's-style arrival
   marker**: a pip at the clock-angle of the **expected arrival time** (e.g.
   arrive 8:47 → marker at the 47-minute angle, 282°). Mental model = the marker
-  sits at the arrival o'clock-position and the real minute hand sweeps toward it,
-  so the gap reads as time-to-arrival.
-  - Shown **only when expected arrival is < 60 min away** (so the within-hour
-    minute-angle is unambiguous); blank otherwise.
-  - The marker **stays in place once arrival is reached** (not cleared at t=0).
-- **Expected arrival** is dynamic: `now + remaining_distance / speed`, where
-  `remaining = max(0, route_total − distance_travelled)`. The speed used is the
-  **forecast ride-duration estimate until ≥ 1 km has been ridden**, after which
-  it switches to the **average speed so far** (avg has stabilised by 1 km;
-  before that it's too noisy). For a new-route recording (no known total) the
-  bezel marker does not show (no remaining distance to compute).
+  sits at the arrival o'clock-position and the real minute hand sweeps toward it.
+  - Shown **always** (whenever an arrival estimate exists), coloured **grey when
+    arrival is ≥ 60 min away** and **amber when < 60 min** (imminent). Beyond
+    60 min the hour is ambiguous on a 12-h dial — understood as the approximate
+    minute-of-arrival.
+  - The marker **stays in place once arrival is reached**.
+- **Expected arrival** is dynamic: `now + (route_total − estimated_distance) /
+  speed`, where **estimated_distance** is the clamped value from 2e (so remaining
+  is never negative and arrival is never in the past until actually arrived). The
+  speed used is the **forecast ride-duration estimate until ≥ 1 km** of estimated
+  distance, then the **average speed so far**. For a new-route recording (no
+  total) the bezel marker does not show.
 
 **2c. Speedometer — centre (hero element).** Classic-car-style SVG gauge,
 stylistically matching the clock:
@@ -267,15 +268,15 @@ last few seconds / couple of fixes so the needle isn't jumpy. km/h.
 the end-of-ride sanity check above.
 
 **2e. Progress — bottom.**
-- **Existing-route ride:** a graphical **progress bar**, **no numbers**. Base
-  fill **amber**, left→right, = `distance-travelled / route-total`.
-  - **Overage > 100%:** the bar is full amber; the overage fills **from the right
-    edge leftward in red**, width = `(travelled/total − 1)` of the bar. At 150%
-    the right half is red; the red boundary moves left as the rider continues.
-    Red visual caps at full width (≥200% ridden → entirely red).
-- **New-route recording:** there is no known total to fill against, so the bar is
-  **replaced by a numeric distance covered so far** (e.g. "3.4 km"). (This is the
-  only numeric distance shown; the bar itself never shows numbers.)
+- **Existing-route ride:** a graphical **progress bar**, **no numbers**, amber
+  fill left→right = `estimated-distance / route-total`. **Estimated distance** =
+  `min(GPS distance travelled, route-total − line-of-sight-to-end)` — the
+  geometric cap means progress can never exceed 100%, so there is **no red
+  overage component** (a detour or GPS over-count is silently clamped rather than
+  shown as >100%). The line-of-sight term only ever *reduces* the estimate
+  (early on a curvy/looping route, GPS wins via the `min`).
+- **New-route recording:** no known total, so the bar is **replaced by a numeric
+  distance covered so far** (raw GPS distance).
 
 **Average speed** (used for the dynamic arrival, and a candidate small readout) =
 `distance-so-far ÷ elapsed-moving-time`, excluding paused time (consistent with
