@@ -1897,8 +1897,20 @@ function Speedometer({ kmh, size = 230 }) {
     }
   }
   const nums = labels.map((v) => {
-    const p = polarPoint(c, c, r - 28, speedToAngle(v));
-    return <text key={`n${v}`} x={p.x} y={p.y} fill="#fff" fontSize={15} fontWeight={600} textAnchor="middle" dominantBaseline="central" fontFamily="'Fraunces',serif">{v}</text>;
+    const ang = speedToAngle(v);
+    // Classic radial speedo: every number sits inside the rim at a uniform
+    // radius, rotated to its gauge angle. Numbers whose angle falls in the lower
+    // half (would read upside-down) get an extra 180° so they stay readable —
+    // here that's 0 (225°) and 40 (135°).
+    const norm = ((ang % 360) + 360) % 360;
+    const upsideDown = norm > 90 && norm < 270;
+    const rot = ang + (upsideDown ? 180 : 0);
+    const p = polarPoint(c, c, r - 18, ang);
+    return (
+      <text key={`n${v}`} x={p.x} y={p.y} fill="#fff" fontSize={15} fontWeight={600}
+        textAnchor="middle" dominantBaseline="central" fontFamily="'Fraunces',serif"
+        transform={`rotate(${rot} ${p.x} ${p.y})`}>{v}</text>
+    );
   });
   const needleAng = speedToAngle(kmh);
   const tip = polarPoint(c, c, r - 6, needleAng);
@@ -2113,7 +2125,7 @@ function Capture({ controller, route, onDone }) {
           nowMs, distanceM: live.distanceM, routeTotalM: totalM,
           movingSec, forecastRemainingSec: route.baselineTimeSec ?? null,
         });
-        const avg = averageSpeedKmh(live.distanceM, movingSec);
+        const avg = Math.round(averageSpeedKmh(live.distanceM, movingSec) * 2) / 2;
         return (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "6px 4px 0" }}>
             {/* top row: elapsed left, clock right */}
