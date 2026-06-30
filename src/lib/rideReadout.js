@@ -44,23 +44,19 @@ export function clockAngles(ms) {
 }
 
 /**
- * Bezel marker angle (clockwise from 12) for an expected arrival instant, or
- * null when it should not be shown. Shown only when the arrival is between 0 and
- * ARRIVAL_BEZEL_WINDOW_MIN minutes away (so the within-hour minute position is
- * unambiguous). The marker sits at the arrival's minute-of-hour position — the
- * same place the minute hand will be at arrival — so the real minute hand sweeps
- * toward it. Returns the angle even at/after arrival (stays in place), as long
- * as it was within the window; pass `arrivedStays` to keep showing once reached.
+ * Bezel marker for the expected arrival time: returns { angle, imminent } or
+ * null only when there is no arrival estimate. The marker shows the arrival's
+ * minute-of-hour position **regardless of how far away** it is (on a 12-hour
+ * dial the hour is ambiguous beyond 60 min, understood as approximate). The
+ * caller colours it: grey when arrival is ≥ 60 min away, amber when < 60 min
+ * (imminent). The marker stays in place at/after arrival.
  */
-export function arrivalBezelAngle(nowMs, arrivalMs, { windowMin = ARRIVAL_BEZEL_WINDOW_MIN } = {}) {
+export function arrivalBezel(nowMs, arrivalMs, { windowMin = ARRIVAL_BEZEL_WINDOW_MIN } = {}) {
   if (arrivalMs == null) return null;
   const minsAway = (arrivalMs - nowMs) / 60000;
-  if (minsAway > windowMin) return null; // too far out → blank
-  // (minsAway may be <= 0 once reached; we still place the marker — caller keeps
-  //  it visible on arrival.)
   const d = new Date(arrivalMs);
   const minute = d.getMinutes() + d.getSeconds() / 60;
-  return minute * 6; // 360/60
+  return { angle: minute * 6, imminent: minsAway < windowMin };
 }
 
 /**
@@ -85,6 +81,23 @@ export function expectedArrivalMs({
   return nowMs + (remaining / avg) * 1000;
 }
 
+/**
+ * Estimated distance travelled along the route:
+ *   min( GPS distance travelled, routeTotal − lineOfSightToEnd )
+ * The second term is the most you can geometrically have covered given you are
+ * still `lineOfSightToEnd` (straight-line) from the destination — so a detour or
+ * GPS over-count can't push the estimate past the route length. The min means
+ * the geometric term only ever *reduces* the estimate (early on a curvy/looping
+ * route, GPS wins). Clamped to [0, routeTotal]; arrival/progress derived from
+ * this never overshoot. Returns gpsDistanceM unchanged if inputs are missing.
+ */
+export function estimatedDistanceM(gpsDistanceM, routeTotalM, lineOfSightToEndM) {
+  const gps = Math.max(0, gpsDistanceM || 0);
+  if (routeTotalM == null || lineOfSightToEndM == null) return gps;
+  const geom = routeTotalM - lineOfSightToEndM; // most you can have covered
+  return Math.max(0, Math.min(routeTotalM, Math.min(gps, geom)));
+}
+
 /** Average speed (km/h) so far = distance / moving-time (pauses excluded). */
 export function averageSpeedKmh(distanceM, movingSec) {
   if (!movingSec || movingSec <= 0) return 0;
@@ -107,21 +120,4 @@ export function smoothedSpeedKmh(samples, nowMs, windowMs = SPEED_SMOOTH_WINDOW_
   if (dt <= 0) return 0;
   const dd = last.distanceM - first.distanceM;
   return Math.max(0, (dd / dt) * 3.6);
-}
-
-/**
- * Progress bar geometry. fraction = travelled / total (uncapped). Returns the
- * amber base fill fraction (0..1) and the red overage fraction (0..1, filling
- * from the right), each capped for the visual:
- *   - amberFill: min(1, fraction)
- *   - redFill:   min(1, max(0, fraction - 1))   // 150% → 0.5 ; ≥200% → 1
- */
-export function progressBar(travelledM, totalM) {
-  if (!totalM || totalM <= 0) return { fraction: 0, amberFill: 0, redFill: 0 };
-  const fraction = travelledM / totalM;
-  return {
-    fraction,
-    amberFill: Math.max(0, Math.min(1, fraction)),
-    redFill: Math.max(0, Math.min(1, fraction - 1)),
-  };
 }
