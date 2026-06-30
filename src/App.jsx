@@ -19,6 +19,10 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
  * ========================================================================== */
 
 import { createAppController } from "./lib/app.js";
+import {
+  speedToAngle, polarPoint, clockAngles, arrivalBezelAngle, expectedArrivalMs,
+  averageSpeedKmh, smoothedSpeedKmh, progressBar, SPEEDO_MAX_KMH,
+} from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
 /* Error boundary around the active screen. A render error in one screen (e.g. a
@@ -1835,6 +1839,90 @@ function Setup({ controller, onDone, onCancel }) {
 }
 
 /* ============================================================================
+ * Live ride instruments (SVG). White-on-black; amber for active indicators.
+ * Pure-math helpers live in lib/rideReadout.js.
+ * ========================================================================== */
+function AnalogClock({ nowMs, arrivalMs, size = 150 }) {
+  const c = size / 2, r = c - 6;
+  const a = clockAngles(nowMs);
+  const hand = (angle, len, w, color) => {
+    const p = polarPoint(c, c, len, angle);
+    return <line x1={c} y1={c} x2={p.x} y2={p.y} stroke={color} strokeWidth={w} strokeLinecap="round" />;
+  };
+  const ticks = [];
+  for (let i = 0; i < 12; i++) {
+    const ang = i * 30;
+    const heavy = i % 3 === 0;
+    const o = polarPoint(c, c, r, ang);
+    const inr = polarPoint(c, c, r - (heavy ? 11 : 7), ang);
+    ticks.push(<line key={i} x1={o.x} y1={o.y} x2={inr.x} y2={inr.y} stroke="#fff" strokeWidth={heavy ? 2.4 : 1.2} strokeLinecap="round" opacity={heavy ? 0.95 : 0.6} />);
+  }
+  const bezel = arrivalBezelAngle(nowMs, arrivalMs);
+  let marker = null;
+  if (bezel != null) {
+    const tip = polarPoint(c, c, r + 3, bezel);
+    const baseL = polarPoint(c, c, r + 9, bezel - 4);
+    const baseR = polarPoint(c, c, r + 9, bezel + 4);
+    marker = <polygon points={`${tip.x},${tip.y} ${baseL.x},${baseL.y} ${baseR.x},${baseR.y}`} fill="#e0a45e" />;
+  }
+  return (
+    <svg viewBox={`-10 -10 ${size + 20} ${size + 20}`} width="100%" style={{ display: "block" }}>
+      <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth={1.5} />
+      {ticks}
+      {marker}
+      {hand(a.hour, r * 0.5, 3.2, "#fff")}
+      {hand(a.minute, r * 0.78, 2.2, "#fff")}
+      <circle cx={c} cy={c} r={3} fill="#e0a45e" />
+    </svg>
+  );
+}
+
+function Speedometer({ kmh, size = 230 }) {
+  const c = size / 2, r = c - 14;
+  const labels = [0, 10, 20, 30, 40];
+  const ticks = [];
+  for (let v = 0; v <= SPEEDO_MAX_KMH; v += 2) {
+    const ang = speedToAngle(v);
+    const major = v % 10 === 0;
+    const o = polarPoint(c, c, r, ang);
+    const inr = polarPoint(c, c, r - (major ? 12 : 6), ang);
+    if (!major) ticks.push(<circle key={`d${v}`} cx={o.x} cy={o.y} r={1.4} fill="rgba(255,255,255,0.55)" />);
+    else ticks.push(<line key={`t${v}`} x1={o.x} y1={o.y} x2={inr.x} y2={inr.y} stroke="#fff" strokeWidth={2.2} strokeLinecap="round" />);
+  }
+  const nums = labels.map((v) => {
+    const p = polarPoint(c, c, r - 28, speedToAngle(v));
+    return <text key={`n${v}`} x={p.x} y={p.y} fill="#fff" fontSize={15} fontWeight={600} textAnchor="middle" dominantBaseline="central" fontFamily="'Fraunces',serif">{v}</text>;
+  });
+  const needleAng = speedToAngle(kmh);
+  const tip = polarPoint(c, c, r - 6, needleAng);
+  const tail = polarPoint(c, c, -12, needleAng);
+  const shown = Math.round(Math.max(0, kmh || 0));
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ display: "block" }}>
+      <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth={1.5} />
+      {ticks}{nums}
+      <line x1={tail.x} y1={tail.y} x2={tip.x} y2={tip.y} stroke="#e0a45e" strokeWidth={3.2} strokeLinecap="round" />
+      <circle cx={c} cy={c} r={6} fill="#e0a45e" />
+      <text x={c} y={c + r * 0.5} fill="rgba(255,255,255,0.55)" fontSize={12} textAnchor="middle">km/h</text>
+      <text x={c} y={c + r * 0.5 - 16} fill="#fff" fontSize={26} fontWeight={600} textAnchor="middle" fontFamily="'Fraunces',serif" fontVariantNumeric="tabular-nums">{shown}</text>
+    </svg>
+  );
+}
+
+function ProgressBar({ travelledM, totalM }) {
+  const { amberFill, redFill, fraction } = progressBar(travelledM, totalM);
+  return (
+    <div style={{ width: "100%", height: 14, borderRadius: 7, background: "rgba(255,255,255,0.12)", position: "relative", overflow: "hidden" }}
+      aria-label={`progress ${Math.round(fraction * 100)}%`}>
+      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${amberFill * 100}%`, background: "#e0a45e" }} />
+      {redFill > 0 && (
+        <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: `${redFill * 100}%`, background: "#d9534f" }} />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================================
  * Capture — tap to start, auto-finish, confirm (real controller.recordRide)
  * ========================================================================== */
 function Capture({ controller, route, onDone }) {
@@ -1844,23 +1932,61 @@ function Capture({ controller, route, onDone }) {
   const [result, setResult] = useState(null);
   const [confirm, setConfirm] = useState(null);
   const [adjustMin, setAdjustMin] = useState(0); // minutes added/removed at review
+  const [nowMs, setNowMs] = useState(Date.now());   // ticking clock for the dial
+  const [live, setLive] = useState({ distanceM: 0, distanceToEndM: null, speedKmh: 0 });
+  const [endConfirm, setEndConfirm] = useState(null); // {metres} when far from end on finish
   const ref = useRef({});
+  const speedSamplesRef = useRef([]); // {t, distanceM} for smoothing
+  const wakeRef = useRef(null);
+  // Forecast remaining seconds (set once recording begins) for the arrival dial
+  // before 1 km is ridden.
+  const forecastRemainingRef = useRef(null);
 
   if (!route) return <Empty />;
 
   const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
 
+  // Screen Wake Lock: keep the screen on while recording so the live readouts
+  // can be watched. Re-acquire when the page becomes visible again.
+  const acquireWake = async () => {
+    try {
+      if (navigator.wakeLock && !wakeRef.current) {
+        wakeRef.current = await navigator.wakeLock.request("screen");
+        wakeRef.current.addEventListener?.("release", () => { wakeRef.current = null; });
+      }
+    } catch { /* wake lock unavailable or denied; harmless */ }
+  };
+  const releaseWake = () => { try { wakeRef.current?.release?.(); } catch {} wakeRef.current = null; };
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible" && state === "riding" && !paused) acquireWake(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [state, paused]);
+  useEffect(() => () => releaseWake(), []);
+
   // Begin recording. If GPS says we're well away from the route's start, ask
   // first — guards against accidentally recording from the wrong place.
   const beginRecording = async () => {
     setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0);
+    setLive({ distanceM: 0, distanceToEndM: null, speedKmh: 0 });
+    speedSamplesRef.current = [];
+    acquireWake();
     const handle = await controller.startRide(route, {
-      onTick: ({ elapsedSec }) => setElapsed(elapsedSec),
+      onTick: ({ elapsedSec, distanceM, distanceToEndM }) => {
+        setElapsed(elapsedSec);
+        const t = Date.now();
+        const samples = speedSamplesRef.current;
+        samples.push({ t, distanceM });
+        // keep ~last 15s of samples
+        while (samples.length > 2 && t - samples[0].t > 15000) samples.shift();
+        setLive({ distanceM, distanceToEndM, speedKmh: smoothedSpeedKmh(samples, t) });
+      },
       onFinish: (r) => {
+        releaseWake();
         setResult({ actualSec: r.actualSec, distance: r.distanceM, startedAt: r.startedAt, endedAt: r.endedAt, pausedSec: r.pausedSec || 0, forecastWind: r.forecastWind });
         setState("done");
       },
-    }).catch((e) => { alert(e.message); setState("armed"); });
+    }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); });
     ref.current = { handle };
   };
 
@@ -1885,13 +2011,32 @@ function Capture({ controller, route, onDone }) {
     return () => clearInterval(id);
   }, [state, paused]);
 
+  // Wall-clock tick for the analogue dial (once per second while riding).
+  useEffect(() => {
+    if (state !== "riding") return;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [state]);
+
   useEffect(() => () => ref.current.handle?.stop?.(), []);
 
   const togglePause = () => {
     const h = ref.current.handle;
     if (!h) return;
-    if (paused) { h.resume?.(); setPaused(false); }
-    else { h.pause?.(); setPaused(true); }
+    if (paused) { h.resume?.(); setPaused(false); acquireWake(); }
+    else { h.pause?.(); setPaused(true); releaseWake(); }
+  };
+
+  // Manual finish with an end-of-ride sanity check mirroring the start check:
+  // if GPS says we're well away from the route end, confirm before stopping.
+  const doFinish = () => ref.current.handle?.manualFinish?.();
+  const finishNow = async () => {
+    if (!route.isExample) {
+      const metres = await controller.distanceToEnd(route).catch(() => null);
+      if (metres != null && metres > 100) { setEndConfirm({ metres }); return; }
+    }
+    doFinish();
   };
 
   const fmtC = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -1914,8 +2059,8 @@ function Capture({ controller, route, onDone }) {
   return (
     <div style={{
       height: "100%", color: "#fff", padding: 24, position: "relative",
-      background: state === "riding" ? (paused ? "linear-gradient(165deg,#2a2438,#3a3048 55%,#473c52)" : "linear-gradient(165deg,#16324a,#1d4258 55%,#2a5a6e)") : "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)",
-      transition: "background 1s", display: "flex", flexDirection: "column",
+      background: state === "riding" ? "#000" : "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)",
+      transition: "background 0.6s", display: "flex", flexDirection: "column",
     }}>
       {state === "armed" && (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 26 }}>
@@ -1956,18 +2101,64 @@ function Capture({ controller, route, onDone }) {
           </div>
         </div>
       )}
-      {state === "riding" && (
-        <div style={{ flex: 1, paddingTop: 40 }}>
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.55)" }}>{paused ? "Paused · time not counting" : "Elapsed · GPS active"}</div>
-          <div style={{ fontFamily: "'Fraunces',serif", fontSize: 76, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.6 : 1 }}>{fmtC(elapsed)}</div>
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", marginTop: 20 }}>
-            {paused ? "Resume when you're moving again." : "Finish detected automatically near your destination."}
+      {state === "riding" && (() => {
+        const movingSec = elapsed; // elapsed already excludes paused time
+        const totalM = route.totalDistance ?? null;
+        const arrivalMs = expectedArrivalMs({
+          nowMs, distanceM: live.distanceM, routeTotalM: totalM,
+          movingSec, forecastRemainingSec: route.baselineTimeSec ?? null,
+        });
+        const avg = averageSpeedKmh(live.distanceM, movingSec);
+        return (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "6px 4px 0" }}>
+            {/* top row: clock left, elapsed right */}
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+              <div style={{ width: "44%" }}>
+                <AnalogClock nowMs={nowMs} arrivalMs={arrivalMs} />
+              </div>
+              <div style={{ flex: 1, textAlign: "right", paddingTop: 6 }}>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", letterSpacing: "0.04em", textTransform: "uppercase" }}>{paused ? "Paused" : "Elapsed"}</div>
+                <div style={{ fontFamily: "'Fraunces',serif", fontSize: 40, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.55 : 1, lineHeight: 1.1 }}>{fmtC(elapsed)}</div>
+                <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.45)", marginTop: 6 }}>avg {avg.toFixed(1)} km/h</div>
+              </div>
+            </div>
+            {/* speedometer */}
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0, padding: "4px 0" }}>
+              <div style={{ width: "72%", maxWidth: 280 }}>
+                <Speedometer kmh={live.speedKmh} />
+              </div>
+            </div>
+            {/* buttons */}
+            <div style={{ display: "flex", gap: 12 }}>
+              <button onClick={togglePause} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: paused ? "#6fd49a" : "rgba(255,255,255,0.12)", color: paused ? "#0f2a1c" : "#fff", border: paused ? "none" : "1px solid rgba(255,255,255,0.25)" }}>
+                {paused ? "Continue" : "Pause"}
+              </button>
+              <button onClick={finishNow} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 500, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.25)" }}>Finish now</button>
+            </div>
+            {/* progress (existing route) — distance/total, red overage */}
+            <div style={{ marginTop: 16 }}>
+              {totalM ? (
+                <ProgressBar travelledM={live.distanceM} totalM={totalM} />
+              ) : (
+                <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>
+                  {(live.distanceM / 1000).toFixed(2)} km
+                </div>
+              )}
+            </div>
           </div>
-          <div style={{ display: "flex", gap: 12, marginTop: 28 }}>
-            <button onClick={togglePause} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: paused ? "#6fd49a" : "rgba(255,255,255,0.12)", color: paused ? "#0f2a1c" : "#fff", border: paused ? "none" : "1px solid rgba(255,255,255,0.18)" }}>
-              {paused ? "Continue" : "Pause"}
-            </button>
-            <button onClick={() => ref.current.handle?.manualFinish?.()} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 500, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Finish now</button>
+        );
+      })()}
+      {endConfirm && (
+        <div style={{ position: "absolute", inset: 0, zIndex: 20, display: "grid", placeItems: "center", background: "rgba(0,0,0,0.6)", padding: 28 }}>
+          <div style={{ maxWidth: 320, background: "#1d1b38", borderRadius: 18, padding: "22px 22px", border: "1px solid rgba(255,255,255,0.14)", textAlign: "center" }}>
+            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 8 }}>Away from the end</div>
+            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 18 }}>
+              You are {endConfirm.metres >= 1000 ? `${(endConfirm.metres / 1000).toFixed(1)} km` : `${endConfirm.metres} metres`} from the end of this route. Really stop?
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setEndConfirm(null)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Keep riding</button>
+              <button onClick={() => { setEndConfirm(null); doFinish(); }} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 14, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Stop now</button>
+            </div>
           </div>
         </div>
       )}
