@@ -20,8 +20,8 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 
 import { createAppController } from "./lib/app.js";
 import {
-  speedToAngle, polarPoint, clockAngles, arrivalBezelAngle, expectedArrivalMs,
-  averageSpeedKmh, smoothedSpeedKmh, progressBar, SPEEDO_MAX_KMH,
+  speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
+  averageSpeedKmh, smoothedSpeedKmh, estimatedDistanceM, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
@@ -1857,13 +1857,14 @@ function AnalogClock({ nowMs, arrivalMs, size = 150 }) {
     const inr = polarPoint(c, c, r - (heavy ? 11 : 7), ang);
     ticks.push(<line key={i} x1={o.x} y1={o.y} x2={inr.x} y2={inr.y} stroke="#fff" strokeWidth={heavy ? 2.4 : 1.2} strokeLinecap="round" opacity={heavy ? 0.95 : 0.6} />);
   }
-  const bezel = arrivalBezelAngle(nowMs, arrivalMs);
+  const bz = arrivalBezel(nowMs, arrivalMs);
   let marker = null;
-  if (bezel != null) {
-    const tip = polarPoint(c, c, r + 3, bezel);
-    const baseL = polarPoint(c, c, r + 9, bezel - 4);
-    const baseR = polarPoint(c, c, r + 9, bezel + 4);
-    marker = <polygon points={`${tip.x},${tip.y} ${baseL.x},${baseL.y} ${baseR.x},${baseR.y}`} fill="#e0a45e" />;
+  if (bz != null) {
+    const col = bz.imminent ? "#e0a45e" : "rgba(255,255,255,0.45)";
+    const tip = polarPoint(c, c, r + 3, bz.angle);
+    const baseL = polarPoint(c, c, r + 9, bz.angle - 4);
+    const baseR = polarPoint(c, c, r + 9, bz.angle + 4);
+    marker = <polygon points={`${tip.x},${tip.y} ${baseL.x},${baseL.y} ${baseR.x},${baseR.y}`} fill={col} />;
   }
   return (
     <svg viewBox={`-10 -10 ${size + 20} ${size + 20}`} width="100%" style={{ display: "block" }}>
@@ -1927,14 +1928,11 @@ function Speedometer({ kmh, size = 230 }) {
 }
 
 function ProgressBar({ travelledM, totalM }) {
-  const { amberFill, redFill, fraction } = progressBar(travelledM, totalM);
+  const frac = totalM > 0 ? Math.max(0, Math.min(1, travelledM / totalM)) : 0;
   return (
     <div style={{ width: "100%", height: 20, borderRadius: 10, background: "rgba(255,255,255,0.12)", position: "relative", overflow: "hidden" }}
-      aria-label={`progress ${Math.round(fraction * 100)}%`}>
-      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${amberFill * 100}%`, background: "#e0a45e" }} />
-      {redFill > 0 && (
-        <div style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: `${redFill * 100}%`, background: "#d9534f" }} />
-      )}
+      aria-label={`progress ${Math.round(frac * 100)}%`}>
+      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${frac * 100}%`, background: "#e0a45e" }} />
     </div>
   );
 }
@@ -2121,8 +2119,12 @@ function Capture({ controller, route, onDone }) {
       {state === "riding" && (() => {
         const movingSec = elapsed; // elapsed already excludes paused time
         const totalM = route.totalDistance ?? null;
+        // Estimated distance travelled: GPS distance clamped by how far you must
+        // still be from the end (line of sight), so it never exceeds the route —
+        // progress stays ≤100% and arrival is never in the past.
+        const estDist = estimatedDistanceM(live.distanceM, totalM, live.distanceToEndM);
         const arrivalMs = expectedArrivalMs({
-          nowMs, distanceM: live.distanceM, routeTotalM: totalM,
+          nowMs, distanceM: estDist, routeTotalM: totalM,
           movingSec, forecastRemainingSec: route.baselineTimeSec ?? null,
         });
         const avg = Math.round(averageSpeedKmh(live.distanceM, movingSec) * 2) / 2;
@@ -2155,7 +2157,7 @@ function Capture({ controller, route, onDone }) {
             {/* progress (existing route) — distance/total, red overage */}
             <div style={{ margin: "26px 0 18px" }}>
               {totalM ? (
-                <ProgressBar travelledM={live.distanceM} totalM={totalM} />
+                <ProgressBar travelledM={estDist} totalM={totalM} />
               ) : (
                 <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>
                   {(live.distanceM / 1000).toFixed(2)} km
