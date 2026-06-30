@@ -1905,7 +1905,7 @@ function Speedometer({ kmh, size = 230 }) {
     const norm = ((ang % 360) + 360) % 360;
     const upsideDown = norm > 90 && norm < 270;
     const rot = ang + (upsideDown ? 180 : 0);
-    const p = polarPoint(c, c, r - 18, ang);
+    const p = polarPoint(c, c, r - 21.5, ang);
     return (
       <text key={`n${v}`} x={p.x} y={p.y} fill="#fff" fontSize={15} fontWeight={600}
         textAnchor="middle" dominantBaseline="central" fontFamily="'Fraunces',serif"
