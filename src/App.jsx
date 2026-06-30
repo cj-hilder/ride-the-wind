@@ -1885,9 +1885,11 @@ function Speedometer({ kmh, size = 230 }) {
     const ang = speedToAngle(v);
     const major = v % 10 === 0;
     if (!major) {
-      // minor dots: one per 1 km/h, set just inside the circle, separated from it
+      // minor dots: one per 1 km/h, set just inside the circle, separated from
+      // it. The "5" dots (5,15,25,35) are white and a touch larger.
+      const five = v % 5 === 0;
       const p = polarPoint(c, c, r - 9, ang);
-      ticks.push(<circle key={`d${v}`} cx={p.x} cy={p.y} r={1.3} fill="rgba(255,255,255,0.5)" />);
+      ticks.push(<circle key={`d${v}`} cx={p.x} cy={p.y} r={five ? 2.1 : 1.3} fill={five ? "#fff" : "rgba(255,255,255,0.5)"} />);
     } else {
       const o = polarPoint(c, c, r, ang);
       const inr = polarPoint(c, c, r - 14, ang);
@@ -1901,7 +1903,6 @@ function Speedometer({ kmh, size = 230 }) {
   const needleAng = speedToAngle(kmh);
   const tip = polarPoint(c, c, r - 6, needleAng);
   const tail = polarPoint(c, c, -12, needleAng);
-  const shown = Math.round(Math.max(0, kmh || 0));
   return (
     <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ display: "block" }}>
       <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth={1.5} />
@@ -1909,7 +1910,6 @@ function Speedometer({ kmh, size = 230 }) {
       <line x1={tail.x} y1={tail.y} x2={tip.x} y2={tip.y} stroke="#e0a45e" strokeWidth={3.2} strokeLinecap="round" />
       <circle cx={c} cy={c} r={6} fill="#e0a45e" />
       <text x={c} y={c + r * 0.5} fill="rgba(255,255,255,0.55)" fontSize={12} textAnchor="middle">km/h</text>
-      <text x={c} y={c + r * 0.5 - 16} fill="#fff" fontSize={26} fontWeight={600} textAnchor="middle" fontFamily="'Fraunces',serif" fontVariantNumeric="tabular-nums">{shown}</text>
     </svg>
   );
 }
@@ -2121,9 +2121,9 @@ function Capture({ controller, route, onDone }) {
               <div style={{ flex: 1, textAlign: "left", paddingTop: 6 }}>
                 <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", letterSpacing: "0.04em", textTransform: "uppercase" }}>{paused ? "Paused" : "Elapsed"}</div>
                 <div style={{ fontFamily: "'Fraunces',serif", fontSize: 40, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.55 : 1, lineHeight: 1.1 }}>{fmtC(elapsed)}</div>
-                <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.45)", marginTop: 6 }}>avg {avg.toFixed(1)} km/h</div>
+                <div style={{ fontSize: 23, color: "#fff", marginTop: 6 }}>avg {avg.toFixed(1)} km/h</div>
               </div>
-              <div style={{ width: "44%" }}>
+              <div style={{ width: "48%" }}>
                 <AnalogClock nowMs={nowMs} arrivalMs={arrivalMs} />
               </div>
             </div>
