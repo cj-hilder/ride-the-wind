@@ -1,6 +1,6 @@
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
-  averageSpeedKmh, smoothedSpeedKmh, estimatedDistanceM,
+  averageSpeedKmh, emaStep, estimatedDistanceM,
   SPEEDO_START_DEG, SPEEDO_SWEEP_DEG, SPEEDO_MAX_KMH, ARRIVAL_LIVE_AFTER_M,
 } from './src/lib/rideReadout.js';
 
@@ -56,18 +56,37 @@ console.log('\narrivalBezel (always shows minute; grey ≥1h, amber <1h):');
 console.log('\nexpectedArrivalMs:');
 {
   const now = 1_000_000_000_000;
-  // before 1 km: forecast estimate
-  const a = expectedArrivalMs({ nowMs: now, distanceM: 200, routeTotalM: 5000, movingSec: 60, forecastRemainingSec: 1200 });
+  // before 1 km of REAL gps distance: forecast estimate
+  const a = expectedArrivalMs({ nowMs: now, estDistanceM: 200, gpsDistanceM: 200, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 1200 });
   ok('before 1km uses forecast', a === now + 1200 * 1000, `${a}`);
-  // after 1 km: live remaining/avg
-  // distance 2000 of 5000 → remaining 3000; moving 400s → avg 5 m/s → 600s
-  const b = expectedArrivalMs({ nowMs: now, distanceM: 2000, routeTotalM: 5000, movingSec: 400, forecastRemainingSec: 9999 });
-  ok('after 1km uses live estimate', b === now + 600 * 1000, `${b}`);
-  // no route total (new recording) → null
-  ok('no total → null', expectedArrivalMs({ nowMs: now, distanceM: 2000, routeTotalM: null, movingSec: 400 }) === null);
-  // past the end → remaining 0 → arrival ~ now
-  const c = expectedArrivalMs({ nowMs: now, distanceM: 6000, routeTotalM: 5000, movingSec: 1000, forecastRemainingSec: 0 });
-  ok('overshot → arrival now', c === now, `${c}`);
+  // after 1 km: remaining (from est) / pace. est 2000 of 5000 → remaining 3000; pace 5 → 600s
+  const b = expectedArrivalMs({ nowMs: now, estDistanceM: 2000, gpsDistanceM: 2000, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 9999 });
+  ok('after 1km uses remaining/pace', b === now + 600 * 1000, `${b}`);
+  // DETOUR case: gps distance large (rode far) but est distance small (clamped);
+  // pace is healthy → arrival stays sensible, NOT blown out.
+  const detour = expectedArrivalMs({ nowMs: now, estDistanceM: 500, gpsDistanceM: 3000, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 9999 });
+  // remaining = 4500 / 5 = 900s — reasonable, not hours
+  ok('detour: healthy pace keeps arrival sensible', detour === now + 900 * 1000, `${detour}`);
+  ok('no total → null', expectedArrivalMs({ nowMs: now, estDistanceM: 2000, gpsDistanceM: 2000, routeTotalM: null, paceMps: 5 }) === null);
+  ok('zero pace after 1km → null', expectedArrivalMs({ nowMs: now, estDistanceM: 2000, gpsDistanceM: 2000, routeTotalM: 5000, paceMps: 0 }) === null);
+  // overshot est → remaining 0 → arrival now
+  const c = expectedArrivalMs({ nowMs: now, estDistanceM: 5000, gpsDistanceM: 6000, routeTotalM: 5000, paceMps: 5 });
+  ok('reached end → arrival now', c === now, `${c}`);
+}
+
+console.log('\nemaStep (time-aware):');
+{
+  ok('seeds on null prev', emaStep(null, 10, 1000, 5000) === 10);
+  ok('zero dt → unchanged', emaStep(5, 20, 0, 5000) === 5);
+  // one time-constant of elapsed → ~63% toward the sample
+  const oneTau = emaStep(0, 10, 5000, 5000);
+  ok('Δt = τ → ~63% toward sample', Math.abs(oneTau - 6.32) < 0.05, `${oneTau}`);
+  // small Δt relative to τ → barely moves
+  const small = emaStep(10, 20, 100, 45 * 60000);
+  ok('Δt ≪ τ → barely moves', Math.abs(small - 10) < 0.01, `${small}`);
+  // large Δt relative to τ → nearly reaches sample
+  const big = emaStep(0, 10, 60000, 5000);
+  ok('Δt ≫ τ → nearly reaches sample', big > 9.9, `${big}`);
 }
 
 console.log('\naverageSpeedKmh:');
@@ -89,18 +108,6 @@ console.log('\nestimatedDistanceM (GPS clamped by route − line-of-sight):');
   // missing inputs → GPS unchanged
   ok('no total → GPS unchanged', estimatedDistanceM(1234, null, 500) === 1234);
   ok('never exceeds route', estimatedDistanceM(99999, total, 100) <= total);
-}
-
-console.log('\nsmoothedSpeedKmh:');
-{
-  const now = 100000;
-  // two samples 5s apart, 50 m → 10 m/s → 36 km/h
-  const s = [{ t: now - 5000, distanceM: 0 }, { t: now, distanceM: 50 }];
-  ok('50m in 5s → 36 km/h', near(smoothedSpeedKmh(s, now), 36));
-  ok('one sample → 0', smoothedSpeedKmh([{ t: now, distanceM: 0 }], now) === 0);
-  // old samples outside window fall back to last two
-  const s2 = [{ t: now - 60000, distanceM: 0 }, { t: now - 2000, distanceM: 10 }, { t: now, distanceM: 30 }];
-  ok('uses in-window samples (20m/2s=36)', near(smoothedSpeedKmh(s2, now), 36));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
