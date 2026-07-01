@@ -991,6 +991,22 @@ export function createAppController(deps = {}) {
   function distanceToStart(route, opts) { return distanceToRegion(route && route.startRegion, opts); }
   function distanceToEnd(route, opts) { return distanceToRegion(route && route.endRegion, opts); }
 
+  /**
+   * "What to expect" for a ride starting NOW (as opposed to getHomeVerdict's
+   * planned departure). Same computation as the Plan line, but departing at the
+   * current time so the alerts reflect the actual ride. Returns the whatToExpect
+   * result ({ line, tokens, ... }) or null if the forecast can't be fetched.
+   */
+  async function rideExpectation(route) {
+    if (!route || !route.segments) return null;
+    const stationSeries = await stationSeriesFor(route).catch(() => []);
+    if (!stationSeries.length) return null;
+    const baseSpeed = speedFromBaseline(route.totalDistance, route.baselineTimeSec);
+    const times = segmentTimes(route.segments, baseSpeed, { useGradient: true });
+    const windFn = makeWindFn(stationSeries);
+    return whatToExpect({ segments: route.segments, times, windFn, departMs: now() });
+  }
+
   async function startRide(route, { onTick, onFinish, geo } = {}) {
     const geoApi = geo || (typeof navigator !== "undefined" ? navigator.geolocation : null);
     if (!geoApi) throw new Error("Geolocation unavailable.");
@@ -1009,7 +1025,8 @@ export function createAppController(deps = {}) {
 
     const watchId = geoApi.watchPosition(
       (pos) => {
-        const fix = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: Date.now() };
+        const fix = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: Date.now(),
+          gpsSpeedMps: (typeof pos.coords.speed === "number" && pos.coords.speed >= 0) ? pos.coords.speed : null };
         // While paused, ignore movement entirely — no distance, no finish
         // detection, no trace growth, and the clock is held.
         if (paused) { prev = fix; return; }
@@ -1037,6 +1054,7 @@ export function createAppController(deps = {}) {
               elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000,
               distanceM: traceDistance(trace),
               speedMps,                 // this-fix derived speed; UI smooths
+              gpsSpeedMps: fix.gpsSpeedMps, // device GPS speed if available (m/s)
               distanceToEndM: dEnd,     // straight-line metres to the end region
             });
           }
@@ -1101,7 +1119,7 @@ export function createAppController(deps = {}) {
     store,
     createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
     getHomeVerdict, listRoutesWithVerdict,
-    recordRide, listRides, startRide, distanceToStart, distanceToEnd, routeTuning, updateExampleSeeds,
+    recordRide, listRides, startRide, distanceToStart, distanceToEnd, rideExpectation, routeTuning, updateExampleSeeds,
     updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,
     start,
     exportAll, importAll, requestPersistence,
