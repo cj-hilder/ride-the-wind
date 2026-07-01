@@ -148,6 +148,25 @@ nothing to salvage a marginal route with.
     elapsed recording, e.g. **> 25%**).
 - Thresholds above are **tunable named constants**; firm values TBD.
 
+**Trace treatment differs by purpose (design principle).** A recorded trace serves
+two different jobs that want opposite handling, so filtering is applied per
+purpose, never universally:
+- **Route geometry (recording a new route, this section):** *filter* implausible
+  fixes before resampling into segments. A bad fix baked into route geometry is a
+  permanent zigzag (wrong bearings/distances forever), whereas a gap is bridged
+  by a locally-straight line and is usually recoverable — so here **bad data is
+  worse than a gap**, and since the trace is resampled anyway, filtering costs
+  nothing.
+- **Ride measurement (recording a ride on an existing route, item 4 / live
+  capture):** **keep every fix** — do not filter the recorded trace. The ride's
+  `actualSec` comes from the clock (start/finish), not the trace, and distance is
+  a secondary input to wind_factor, so trace imperfections barely matter;
+  filtering would add the risk of dropping real early movement for negligible
+  benefit. Cleverness (accuracy gate, sane-speed clamp) is applied only at the
+  **display** layer (the live speedometer needle) and at **route construction**,
+  never by silently editing recorded ride ground truth. Principle: *record
+  faithfully, interpret carefully.*
+
 ### 3B. Reverse an existing route (secondary)
 
 Create the return trip from an existing route's geometry.
@@ -276,8 +295,14 @@ stylistically matching the clock:
   needle reads fine).
 
 **2c-data. Speed derivation.** Current speed is **derived from successive GPS
-fixes** (not `coords.speed`, for cross-device reliability), **smoothed** over the
-last few seconds / couple of fixes so the needle isn't jumpy. km/h.
+fixes** (not `coords.speed`, which proved jumpier), smoothed with a time-aware
+**EMA (τ≈5s)**, with the needle additionally CSS-transitioned for a classic-car
+glide. Startup spikes are suppressed three ways, all **display-only** (the
+recorded trace keeps every fix): the needle EMA seeds at 0, per-fix speeds above
+a sane cycling max (~70 km/h) are rejected as GPS artefacts, and fixes with poor
+reported **accuracy** (`coords.accuracy` worse than ~30 m, typical during GPS
+acquisition) are skipped without advancing the EMA baseline so the next good fix
+measures a clean interval.
 
 **2d. Pause / Finish-now buttons — below the speedometer.** The existing controls
 (pause toggle, finish), restyled to suit the white-on-black panel. Finish runs
