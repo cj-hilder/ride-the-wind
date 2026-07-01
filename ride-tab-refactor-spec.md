@@ -205,6 +205,22 @@ background), with the app's **amber (#e0a45e)** reserved for *active indicators*
 (clock hands, speedometer needle, bezel marker, progress fill). Red is used only
 for progress overage. SVG throughout for sharpness.
 
+### Navigation lock while recording
+- While a ride is actively recording (including while **paused**), the **tab bar
+  is hidden** and navigation is locked to the ride screen. The only way off is
+  **Finish** (manual — with the end-of-ride sanity check — or automatic at the
+  end region). This prevents accidental taps navigating away mid-ride on a moving
+  bike, and (deliberately) sidesteps lifting the ride session above the tab
+  switch: since you can't leave the ride screen, the session never has to survive
+  a tab change. Implemented by `Capture` reporting recording state up
+  (`onRecordingChange`); `App` hides the `TabBar` while true.
+
+### What-to-expect line (this ride)
+- The recording screen shows a **what-to-expect line** — the same hazard/
+  temperature summary as the Plan tab, computed for the **actual ride start
+  time** (departing now) via `controller.rideExpectation(route)`. Below the
+  progress bar; hidden for the example route.
+
 ### Keep-awake (this turn)
 - **Screen Wake Lock** (`navigator.wakeLock.request('screen')`) acquired when
   recording starts, released on finish, re-acquired on `visibilitychange` back
