@@ -12,6 +12,7 @@ export const ARRIVAL_BEZEL_WINDOW_MIN = 60; // bezel marker shows only within th
 export const ARRIVAL_LIVE_AFTER_M = 1000;   // switch forecast→live after 1 km
 export const SPEED_EMA_TAU_MS = 5000;        // needle speed EMA time constant ~5s
 export const SPEED_SANE_MAX_MPS = 19.4;      // ~70 km/h: above this a per-fix speed is a GPS artefact, not cycling
+export const GPS_ACCURACY_GATE_M = 30;       // fixes with reported accuracy worse than this are skipped for the needle
 export const PACE_EMA_TAU_MS = 45 * 60000;   // arrival pace EMA time constant ~45min
 
 /**

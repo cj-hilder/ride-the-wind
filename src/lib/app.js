@@ -1026,7 +1026,8 @@ export function createAppController(deps = {}) {
     const watchId = geoApi.watchPosition(
       (pos) => {
         const fix = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: Date.now(),
-          gpsSpeedMps: (typeof pos.coords.speed === "number" && pos.coords.speed >= 0) ? pos.coords.speed : null };
+          gpsSpeedMps: (typeof pos.coords.speed === "number" && pos.coords.speed >= 0) ? pos.coords.speed : null,
+          accuracyM: (typeof pos.coords.accuracy === "number" && pos.coords.accuracy >= 0) ? pos.coords.accuracy : null };
         // While paused, ignore movement entirely — no distance, no finish
         // detection, no trace growth, and the clock is held.
         if (paused) { prev = fix; return; }
@@ -1055,6 +1056,7 @@ export function createAppController(deps = {}) {
               distanceM: traceDistance(trace),
               speedMps,                 // this-fix derived speed; UI smooths
               gpsSpeedMps: fix.gpsSpeedMps, // device GPS speed if available (m/s)
+              accuracyM: fix.accuracyM, // device GPS accuracy estimate (m), or null
               distanceToEndM: dEnd,     // straight-line metres to the end region
             });
           }
