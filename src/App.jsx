@@ -22,7 +22,7 @@ import { createAppController } from "./lib/app.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   averageSpeedKmh, emaStep, estimatedDistanceM,
-  SPEED_EMA_TAU_MS, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, SPEEDO_MAX_KMH,
+  SPEED_EMA_TAU_MS, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
@@ -2007,26 +2007,23 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     }
     acquireWake();
     const handle = await controller.startRide(route, {
-      onTick: ({ elapsedSec, distanceM, distanceToEndM }) => {
+      onTick: ({ elapsedSec, distanceM, distanceToEndM, accuracyM }) => {
         setElapsed(elapsedSec);
         const t = Date.now();
         const em = emaRef.current;
-        // Per-interval derived speed from the real GPS distance delta. Derived
-        // (distance/time) is smoother than the device's instantaneous speed.
-        if (em.lastT != null) {
+        // Accuracy gate (DISPLAY ONLY): a poor-accuracy fix (large reported
+        // error, typical of GPS acquisition at the start) is skipped for the
+        // needle EMA so its position noise can't spike the gauge. We do NOT
+        // advance the EMA's distance/time baseline on a skipped fix, so the next
+        // good fix measures a clean interval across the gap. This gates only the
+        // live readout — the recorded trace keeps every fix (see recording).
+        const goodFix = accuracyM == null || accuracyM <= GPS_ACCURACY_GATE_M;
+        if (em.lastT != null && goodFix) {
           const dt = t - em.lastT;
           if (dt > 0) {
             let instMps = Math.max(0, (distanceM - em.lastDistM) / (dt / 1000));
-            // Reject GPS startup/position-settle jumps: an interval implying a
-            // speed no cyclist sustains is an artefact, not real motion. Clamp it
-            // out so it can't spike the needle.
             if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
-            // Needle: fast (~5s) EMA, seeded at 0, so a bad first interval is
-            // smoothed away rather than adopted.
             em.speedMps = emaStep(em.speedMps, instMps, dt, SPEED_EMA_TAU_MS);
-            // Arrival pace: seed once at the 1 km mark with this ride's average
-            // speed so far (real, today-specific), then refine per interval with
-            // the slow (~45min) EMA so it tracks sustained effort changes.
             if (!em.paceSeeded && distanceM >= ARRIVAL_LIVE_AFTER_M && elapsedSec > 0) {
               em.paceMps = distanceM / elapsedSec;
               em.paceSeeded = true;
@@ -2035,7 +2032,10 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
             }
           }
         }
-        em.lastT = t; em.lastDistM = distanceM;
+        // Advance the baseline only on a good fix (or the very first fix, to
+        // establish a starting point); a skipped noisy fix leaves the baseline
+        // where it was so the next good interval is measured cleanly.
+        if (goodFix || em.lastT == null) { em.lastT = t; em.lastDistM = distanceM; }
         setLive({ distanceM, distanceToEndM, speedKmh: (em.speedMps || 0) * 3.6 });
       },
       onFinish: (r) => {
