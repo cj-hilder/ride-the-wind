@@ -22,7 +22,7 @@ import { createAppController } from "./lib/app.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   averageSpeedKmh, emaStep, estimatedDistanceM,
-  SPEED_EMA_TAU_MS, PACE_EMA_TAU_MS, SPEEDO_MAX_KMH,
+  SPEED_EMA_TAU_MS, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
@@ -1995,7 +1995,12 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const beginRecording = async () => {
     setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0);
     setLive({ distanceM: 0, distanceToEndM: null, speedKmh: 0 });
-    emaRef.current = { speedMps: null, paceMps: null, lastT: null, lastDistM: 0 };
+    // Needle speed seeds at 0 (rider is stationary). Arrival pace is left
+    // dormant (null) and seeded at the 1 km mark with this ride's actual average
+    // speed so far — a truer, today-specific anchor than the forecast — then
+    // refined per-interval by the 45-min EMA. Arrival uses the forecast estimate
+    // until 1 km anyway, so pace is never needed before it's seeded.
+    emaRef.current = { speedMps: 0, paceMps: null, paceSeeded: false, lastT: null, lastDistM: 0 };
     setExpectLine(null);
     if (!route.isExample) {
       controller.rideExpectation(route).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
@@ -2011,12 +2016,23 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         if (em.lastT != null) {
           const dt = t - em.lastT;
           if (dt > 0) {
-            const instMps = Math.max(0, (distanceM - em.lastDistM) / (dt / 1000));
-            // Needle: fast (~5s) EMA for a responsive-but-smooth gauge.
+            let instMps = Math.max(0, (distanceM - em.lastDistM) / (dt / 1000));
+            // Reject GPS startup/position-settle jumps: an interval implying a
+            // speed no cyclist sustains is an artefact, not real motion. Clamp it
+            // out so it can't spike the needle.
+            if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
+            // Needle: fast (~5s) EMA, seeded at 0, so a bad first interval is
+            // smoothed away rather than adopted.
             em.speedMps = emaStep(em.speedMps, instMps, dt, SPEED_EMA_TAU_MS);
-            // Arrival pace: slow (~45min) EMA of the SAME real-distance pace, so
-            // it reflects sustained effort and isn't cratered by a detour.
-            em.paceMps = emaStep(em.paceMps, instMps, dt, PACE_EMA_TAU_MS);
+            // Arrival pace: seed once at the 1 km mark with this ride's average
+            // speed so far (real, today-specific), then refine per interval with
+            // the slow (~45min) EMA so it tracks sustained effort changes.
+            if (!em.paceSeeded && distanceM >= ARRIVAL_LIVE_AFTER_M && elapsedSec > 0) {
+              em.paceMps = distanceM / elapsedSec;
+              em.paceSeeded = true;
+            } else if (em.paceSeeded) {
+              em.paceMps = emaStep(em.paceMps, instMps, dt, PACE_EMA_TAU_MS);
+            }
           }
         }
         em.lastT = t; em.lastDistM = distanceM;
