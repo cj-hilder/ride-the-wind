@@ -10,7 +10,22 @@ export const SPEEDO_START_DEG = 225;     // 0 km/h at the 7:30 position
 export const SPEEDO_SWEEP_DEG = 270;     // clockwise sweep 0→max (to 4:30 = 315°)
 export const ARRIVAL_BEZEL_WINDOW_MIN = 60; // bezel marker shows only within this
 export const ARRIVAL_LIVE_AFTER_M = 1000;   // switch forecast→live after 1 km
-export const SPEED_SMOOTH_WINDOW_MS = 6000; // smoothing window for derived speed
+export const SPEED_EMA_TAU_MS = 5000;        // needle speed EMA time constant ~5s
+export const PACE_EMA_TAU_MS = 45 * 60000;   // arrival pace EMA time constant ~45min
+
+/**
+ * Time-aware exponential moving average step. Given the previous EMA value, a new
+ * sample, and elapsed time since the last sample, returns the updated EMA.
+ * α = 1 − exp(−Δt/τ) correctly handles irregular (GPS) sampling — a fixed α
+ * would over/under-weight depending on fix cadence. If prev is null/NaN, the
+ * sample seeds the EMA.
+ */
+export function emaStep(prev, sample, dtMs, tauMs) {
+  if (prev == null || Number.isNaN(prev)) return sample;
+  if (!(dtMs > 0) || !(tauMs > 0)) return prev;
+  const alpha = 1 - Math.exp(-dtMs / tauMs);
+  return prev + alpha * (sample - prev);
+}
 
 /**
  * Map a speed (km/h) to a needle angle in degrees, measured clockwise from the
@@ -60,25 +75,31 @@ export function arrivalBezel(nowMs, arrivalMs, { windowMin = ARRIVAL_BEZEL_WINDO
 }
 
 /**
- * Expected arrival instant (ms). Until `distanceM` reaches ARRIVAL_LIVE_AFTER_M,
- * use the forecast estimate (now + forecastRemainingSec). After that, switch to
- * the live estimate: remaining distance ÷ average speed so far.
- *   remaining = max(0, routeTotalM - distanceM)
- *   avgSpeedMps = distanceM / movingSec   (moving time excludes pauses)
- * Returns null if it can't be computed (e.g. no route total for a new recording).
+ * Expected arrival instant (ms). `estDistanceM` is the estimated distance along
+ * the route (clamped; drives *remaining*). `gpsDistanceM` is the real distance
+ * ridden (drives the forecast→live switch). `paceMps` is the smoothed pace
+ * (a GPS-distance-based EMA, supplied by the caller) used for the live estimate.
+ *
+ * Until the rider has genuinely ridden ARRIVAL_LIVE_AFTER_M (real GPS distance),
+ * use the forecast estimate. After that: remaining ÷ pace.
+ *
+ * Crucially, `remaining` uses the clamped *estimated* distance (so a detour keeps
+ * remaining near the true route length) while `pace` comes from *real* GPS
+ * distance (so a detour doesn't crater the pace). Feeding the clamped distance
+ * into both — the old bug — made pace collapse during an early detour and blew
+ * arrival out to hours.
  */
 export function expectedArrivalMs({
-  nowMs, distanceM, routeTotalM, movingSec, forecastRemainingSec,
+  nowMs, estDistanceM, gpsDistanceM, routeTotalM, paceMps, forecastRemainingSec,
 }) {
   if (routeTotalM == null) return null; // new-route recording: no total
-  const remaining = Math.max(0, routeTotalM - (distanceM || 0));
-  if ((distanceM || 0) < ARRIVAL_LIVE_AFTER_M) {
+  const remaining = Math.max(0, routeTotalM - (estDistanceM || 0));
+  if ((gpsDistanceM || 0) < ARRIVAL_LIVE_AFTER_M) {
     if (forecastRemainingSec == null) return null;
     return nowMs + forecastRemainingSec * 1000;
   }
-  const avg = movingSec > 0 ? distanceM / movingSec : 0; // m/s
-  if (avg <= 0) return null;
-  return nowMs + (remaining / avg) * 1000;
+  if (!(paceMps > 0)) return null;
+  return nowMs + (remaining / paceMps) * 1000;
 }
 
 /**
@@ -102,22 +123,4 @@ export function estimatedDistanceM(gpsDistanceM, routeTotalM, lineOfSightToEndM)
 export function averageSpeedKmh(distanceM, movingSec) {
   if (!movingSec || movingSec <= 0) return 0;
   return (distanceM / movingSec) * 3.6;
-}
-
-/**
- * Smooth instantaneous speed from a buffer of recent {t, distanceM} samples by
- * taking total distance over total time across the window. Returns km/h.
- * `samples` are cumulative-distance readings; the window is the most recent
- * `windowMs`. Falls back to 0 with fewer than two samples in window.
- */
-export function smoothedSpeedKmh(samples, nowMs, windowMs = SPEED_SMOOTH_WINDOW_MS) {
-  if (!samples || samples.length < 2) return 0;
-  const cutoff = nowMs - windowMs;
-  const win = samples.filter((s) => s.t >= cutoff);
-  const use = win.length >= 2 ? win : samples.slice(-2);
-  const first = use[0], last = use[use.length - 1];
-  const dt = (last.t - first.t) / 1000;
-  if (dt <= 0) return 0;
-  const dd = last.distanceM - first.distanceM;
-  return Math.max(0, (dd / dt) * 3.6);
 }
