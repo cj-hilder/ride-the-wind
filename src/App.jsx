@@ -176,6 +176,7 @@ export default function App() {
   const controller = controllerRef.current;
 
   const [screen, setScreen] = useState("home"); // home | setup | capture
+  const [recording, setRecording] = useState(false); // ride in progress → lock nav
   const [routes, setRoutes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -302,12 +303,13 @@ export default function App() {
             onCancel={() => setScreen("routes")} />
         ) : (
           <Capture controller={controller} route={active?.route}
+            onRecordingChange={setRecording}
             onDone={async () => { await refresh(); setScreen("home"); }} />
         )}
         </ScreenBoundary>
       </div>
 
-      <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} />
+      {!recording && <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} />}
 
       {showHelp && <HelpPanel onClose={acceptHelp} />}
     </div>
@@ -1862,12 +1864,12 @@ function AnalogClock({ nowMs, arrivalMs, size = 150 }) {
   if (bz != null) {
     const col = bz.imminent ? "#e0a45e" : "rgba(255,255,255,0.45)";
     const tip = polarPoint(c, c, r + 3, bz.angle);
-    const baseL = polarPoint(c, c, r + 9, bz.angle - 4);
-    const baseR = polarPoint(c, c, r + 9, bz.angle + 4);
+    const baseL = polarPoint(c, c, r + 15, bz.angle - 6);
+    const baseR = polarPoint(c, c, r + 15, bz.angle + 6);
     marker = <polygon points={`${tip.x},${tip.y} ${baseL.x},${baseL.y} ${baseR.x},${baseR.y}`} fill={col} />;
   }
   return (
-    <svg viewBox={`-10 -10 ${size + 20} ${size + 20}`} width="100%" style={{ display: "block" }}>
+    <svg viewBox={`-18 -18 ${size + 36} ${size + 36}`} width="100%" style={{ display: "block" }}>
       <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth={1.5} />
       {ticks}
       {marker}
@@ -1940,7 +1942,7 @@ function ProgressBar({ travelledM, totalM }) {
 /* ============================================================================
  * Capture — tap to start, auto-finish, confirm (real controller.recordRide)
  * ========================================================================== */
-function Capture({ controller, route, onDone }) {
+function Capture({ controller, route, onDone, onRecordingChange }) {
   const [state, setState] = useState("armed");
   const [elapsed, setElapsed] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -1950,6 +1952,8 @@ function Capture({ controller, route, onDone }) {
   const [nowMs, setNowMs] = useState(Date.now());   // ticking clock for the dial
   const [live, setLive] = useState({ distanceM: 0, distanceToEndM: null, speedKmh: 0 });
   const [endConfirm, setEndConfirm] = useState(null); // {metres} when far from end on finish
+  const [expectLine, setExpectLine] = useState(null); // what-to-expect for the ride
+  const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
   const ref = useRef({});
   const speedSamplesRef = useRef([]); // {t, distanceM} for smoothing
   const wakeRef = useRef(null);
@@ -1957,9 +1961,12 @@ function Capture({ controller, route, onDone }) {
   // before 1 km is ridden.
   const forecastRemainingRef = useRef(null);
 
-  if (!route) return <Empty />;
-
-  const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
+  // Report recording state up so App can lock navigation (hide the tab bar)
+  // while a ride is in progress — including while paused. On unmount, clear it.
+  useEffect(() => {
+    onRecordingChange?.(state === "riding");
+  }, [state, onRecordingChange]);
+  useEffect(() => () => onRecordingChange?.(false), [onRecordingChange]);
 
   // Screen Wake Lock: keep the screen on while recording so the live readouts
   // can be watched. Re-acquire when the page becomes visible again.
@@ -1985,16 +1992,22 @@ function Capture({ controller, route, onDone }) {
     setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0);
     setLive({ distanceM: 0, distanceToEndM: null, speedKmh: 0 });
     speedSamplesRef.current = [];
+    setExpectLine(null);
+    if (!route.isExample) {
+      controller.rideExpectation(route).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
+    }
     acquireWake();
     const handle = await controller.startRide(route, {
-      onTick: ({ elapsedSec, distanceM, distanceToEndM }) => {
+      onTick: ({ elapsedSec, distanceM, distanceToEndM, gpsSpeedMps }) => {
         setElapsed(elapsedSec);
         const t = Date.now();
         const samples = speedSamplesRef.current;
         samples.push({ t, distanceM });
         // keep ~last 15s of samples
         while (samples.length > 2 && t - samples[0].t > 15000) samples.shift();
-        setLive({ distanceM, distanceToEndM, speedKmh: smoothedSpeedKmh(samples, t) });
+        // Prefer the device GPS speed when available; else derive from fixes.
+        const speedKmh = (typeof gpsSpeedMps === "number") ? gpsSpeedMps * 3.6 : smoothedSpeedKmh(samples, t);
+        setLive({ distanceM, distanceToEndM, speedKmh });
       },
       onFinish: (r) => {
         releaseWake();
@@ -2035,6 +2048,9 @@ function Capture({ controller, route, onDone }) {
   }, [state]);
 
   useEffect(() => () => ref.current.handle?.stop?.(), []);
+
+  // All hooks above run unconditionally; safe to bail on a missing route here.
+  if (!route) return <Empty />;
 
   const togglePause = () => {
     const h = ref.current.handle;
@@ -2142,7 +2158,7 @@ function Capture({ controller, route, onDone }) {
               </div>
             </div>
             {/* speedometer */}
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0, padding: "4px 0" }}>
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0 }}>
               <div style={{ width: "96%", maxWidth: 380 }}>
                 <Speedometer kmh={live.speedKmh} />
               </div>
@@ -2154,8 +2170,8 @@ function Capture({ controller, route, onDone }) {
               </button>
               <button onClick={finishNow} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>Finish now</button>
             </div>
-            {/* progress (existing route) — distance/total, red overage */}
-            <div style={{ margin: "26px 0 18px" }}>
+            {/* progress (existing route) — estimated distance / total */}
+            <div style={{ margin: "18px 0 6px" }}>
               {totalM ? (
                 <ProgressBar travelledM={estDist} totalM={totalM} />
               ) : (
@@ -2164,6 +2180,12 @@ function Capture({ controller, route, onDone }) {
                 </div>
               )}
             </div>
+            {/* what to expect for this ride (forecast at actual start time) */}
+            {expectLine && (
+              <div style={{ textAlign: "center", fontSize: 13, color: "rgba(255,255,255,0.7)", lineHeight: 1.4, minHeight: 18 }}>
+                {expectLine}
+              </div>
+            )}
           </div>
         );
       })()}
