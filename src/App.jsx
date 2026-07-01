@@ -21,7 +21,8 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { createAppController } from "./lib/app.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
-  averageSpeedKmh, smoothedSpeedKmh, estimatedDistanceM, SPEEDO_MAX_KMH,
+  averageSpeedKmh, emaStep, estimatedDistanceM,
+  SPEED_EMA_TAU_MS, PACE_EMA_TAU_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
@@ -1857,7 +1858,7 @@ function AnalogClock({ nowMs, arrivalMs, size = 150 }) {
     const heavy = i % 3 === 0;
     const o = polarPoint(c, c, r, ang);
     const inr = polarPoint(c, c, r - (heavy ? 11 : 7), ang);
-    ticks.push(<line key={i} x1={o.x} y1={o.y} x2={inr.x} y2={inr.y} stroke="#fff" strokeWidth={heavy ? 2.4 : 1.2} strokeLinecap="round" opacity={heavy ? 0.95 : 0.6} />);
+    ticks.push(<line key={i} x1={o.x} y1={o.y} x2={inr.x} y2={inr.y} stroke="#fff" strokeWidth={heavy ? 2.4 : 1.2} strokeLinecap="round" opacity={heavy ? 0.95 : 0.78} />);
   }
   const bz = arrivalBezel(nowMs, arrivalMs);
   let marker = null;
@@ -1916,13 +1917,16 @@ function Speedometer({ kmh, size = 230 }) {
     );
   });
   const needleAng = speedToAngle(kmh);
-  const tip = polarPoint(c, c, r - 6, needleAng);
-  const tail = polarPoint(c, c, -12, needleAng);
   return (
     <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ display: "block" }}>
       <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth={1.5} />
       {ticks}{nums}
-      <line x1={tail.x} y1={tail.y} x2={tip.x} y2={tip.y} stroke="#e0a45e" strokeWidth={3.2} strokeLinecap="round" />
+      {/* Needle drawn pointing straight up, rotated to the speed angle. The CSS
+          transition on the group's transform makes it glide between readings —
+          the classic-car sweep — independent of the ~5s speed EMA. */}
+      <g style={{ transform: `rotate(${needleAng}deg)`, transformOrigin: `${c}px ${c}px`, transition: "transform 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
+        <line x1={c} y1={c + 12} x2={c} y2={c - (r - 6)} stroke="#e0a45e" strokeWidth={3.2} strokeLinecap="round" />
+      </g>
       <circle cx={c} cy={c} r={6} fill="#e0a45e" />
       <text x={c} y={c + r * 0.5} fill="rgba(255,255,255,0.55)" fontSize={12} textAnchor="middle">km/h</text>
     </svg>
@@ -1955,11 +1959,11 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const [expectLine, setExpectLine] = useState(null); // what-to-expect for the ride
   const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
   const ref = useRef({});
-  const speedSamplesRef = useRef([]); // {t, distanceM} for smoothing
   const wakeRef = useRef(null);
-  // Forecast remaining seconds (set once recording begins) for the arrival dial
-  // before 1 km is ridden.
-  const forecastRemainingRef = useRef(null);
+  // EMA state (persist across ticks). `emaRef` holds the smoothed needle speed
+  // (~5s) and the smoothed arrival pace (~45min), plus the last tick's distance
+  // and timestamp so we can derive per-interval pace and elapsed Δt.
+  const emaRef = useRef({ speedMps: null, paceMps: null, lastT: null, lastDistM: 0 });
 
   // Report recording state up so App can lock navigation (hide the tab bar)
   // while a ride is in progress — including while paused. On unmount, clear it.
@@ -1991,23 +1995,32 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const beginRecording = async () => {
     setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0);
     setLive({ distanceM: 0, distanceToEndM: null, speedKmh: 0 });
-    speedSamplesRef.current = [];
+    emaRef.current = { speedMps: null, paceMps: null, lastT: null, lastDistM: 0 };
     setExpectLine(null);
     if (!route.isExample) {
       controller.rideExpectation(route).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
     }
     acquireWake();
     const handle = await controller.startRide(route, {
-      onTick: ({ elapsedSec, distanceM, distanceToEndM, gpsSpeedMps }) => {
+      onTick: ({ elapsedSec, distanceM, distanceToEndM }) => {
         setElapsed(elapsedSec);
         const t = Date.now();
-        const samples = speedSamplesRef.current;
-        samples.push({ t, distanceM });
-        // keep ~last 15s of samples
-        while (samples.length > 2 && t - samples[0].t > 15000) samples.shift();
-        // Prefer the device GPS speed when available; else derive from fixes.
-        const speedKmh = (typeof gpsSpeedMps === "number") ? gpsSpeedMps * 3.6 : smoothedSpeedKmh(samples, t);
-        setLive({ distanceM, distanceToEndM, speedKmh });
+        const em = emaRef.current;
+        // Per-interval derived speed from the real GPS distance delta. Derived
+        // (distance/time) is smoother than the device's instantaneous speed.
+        if (em.lastT != null) {
+          const dt = t - em.lastT;
+          if (dt > 0) {
+            const instMps = Math.max(0, (distanceM - em.lastDistM) / (dt / 1000));
+            // Needle: fast (~5s) EMA for a responsive-but-smooth gauge.
+            em.speedMps = emaStep(em.speedMps, instMps, dt, SPEED_EMA_TAU_MS);
+            // Arrival pace: slow (~45min) EMA of the SAME real-distance pace, so
+            // it reflects sustained effort and isn't cratered by a detour.
+            em.paceMps = emaStep(em.paceMps, instMps, dt, PACE_EMA_TAU_MS);
+          }
+        }
+        em.lastT = t; em.lastDistM = distanceM;
+        setLive({ distanceM, distanceToEndM, speedKmh: (em.speedMps || 0) * 3.6 });
       },
       onFinish: (r) => {
         releaseWake();
@@ -2140,8 +2153,8 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         // progress stays ≤100% and arrival is never in the past.
         const estDist = estimatedDistanceM(live.distanceM, totalM, live.distanceToEndM);
         const arrivalMs = expectedArrivalMs({
-          nowMs, distanceM: estDist, routeTotalM: totalM,
-          movingSec, forecastRemainingSec: route.baselineTimeSec ?? null,
+          nowMs, estDistanceM: estDist, gpsDistanceM: live.distanceM, routeTotalM: totalM,
+          paceMps: emaRef.current.paceMps, forecastRemainingSec: route.baselineTimeSec ?? null,
         });
         const avg = Math.round(averageSpeedKmh(live.distanceM, movingSec) * 2) / 2;
         return (
