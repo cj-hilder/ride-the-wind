@@ -1540,7 +1540,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
   const [days, setDays] = useState(route.activeDays);
   const [timeMode, setTimeMode] = useState(route.timeMode === "depart" ? "depart" : "arrive");
   const [confirmDel, setConfirmDel] = useState(false);
-  const [reversing, setReversing] = useState(false); // creating return trip
+  const [nameErr, setNameErr] = useState(null); // rename collision message
   const toggleDay = (d) => setDays(days.includes(d) ? days.filter((x) => x !== d) : [...days, d]);
 
   // Tuning: load the manual sliders, learned view (with per-quantity sources),
@@ -1629,16 +1629,22 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
       // Persist slider values, modes, split, and schedule. Editing a slider NEVER
       // wipes rides — manual/learn is a per-quantity switch and ride history is
       // curated separately in View rides.
-      await controller.updateRoute(route.id, {
-        ...valToConfig(val),
-        baselineMode: modes.baselineMode,
-        kMode: modes.kMode,
-        name: name.trim() || route.name,
-        targetArrival: arrival,
-        activeDays: days,
-        timeMode,
-      });
+      try {
+        await controller.updateRoute(route.id, {
+          ...valToConfig(val),
+          baselineMode: modes.baselineMode,
+          kMode: modes.kMode,
+          name: name.trim() || route.name,
+          targetArrival: arrival,
+          activeDays: days,
+          timeMode,
+        });
+      } catch (e) {
+        setNameErr(e.message || "Couldn't save changes.");
+        return; // abort: don't snapshot/close on a rejected save (e.g. name clash)
+      }
     }
+    setNameErr(null);
     snapshot();
     // Refresh the editor's own learned view / dots from the just-applied state,
     // and quietly recompute the verdict beneath — without closing or collapsing
@@ -1661,19 +1667,6 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
   };
 
   const del = async () => { await controller.deleteRoute(route.id); onDeleted(); };
-  const makeReturnTrip = async () => {
-    setReversing(true);
-    try {
-      await controller.createReverseRoute(route.id, {});
-      // onDeleted closes this editor and does a full routes refresh — exactly the
-      // effect we want after creating the return trip (land back on the list with
-      // the new route visible). Not a delete; reused for its close+refresh effect.
-      onDeleted();
-    } catch (e) {
-      alert(e.message || "Couldn't create the return trip.");
-      setReversing(false);
-    }
-  };
 
   const onTuningChange = (next) => {
     if (next._collapse) { delete next._collapse; setCollapseAsk({ next }); return; }
@@ -1696,8 +1689,9 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
   return (
     <div style={{ padding: "4px 16px 16px", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
       <label style={lbl}>Route name</label>
-      <input value={name} onChange={(e) => setName(e.target.value)} disabled={route.isExample}
-        style={{ ...INP, ...(route.isExample ? { opacity: 0.5, cursor: "not-allowed" } : {}) }} />
+      <input value={name} onChange={(e) => { setName(e.target.value); if (nameErr) setNameErr(null); }} disabled={route.isExample}
+        style={{ ...INP, ...(route.isExample ? { opacity: 0.5, cursor: "not-allowed" } : {}), ...(nameErr ? { borderColor: "#e8927c" } : {}) }} />
+      {nameErr && <div style={{ fontSize: 12.5, color: "#e8927c", marginTop: 6, lineHeight: 1.4 }}>{nameErr}</div>}
 
       <label style={{ ...lbl, marginTop: 12 }}>{timeMode === "depart" ? "Departure time" : "Target arrival"}</label>
       <input type="time" value={arrival} onChange={(e) => setArrival(e.target.value)} style={INP} />
@@ -1781,14 +1775,6 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
             <button onClick={() => setCollapseAsk(null)} style={{ ...backupBtn, flex: 0.6 }}>Cancel</button>
           </div>
         </div>
-      )}
-
-      {/* Create the return trip (reversed geometry, inherited tuning, no rides) */}
-      {!route.isExample && (
-        <button onClick={makeReturnTrip} disabled={reversing} style={{
-          ...backupBtn, marginTop: 16, opacity: reversing ? 0.5 : 1,
-          cursor: reversing ? "default" : "pointer",
-        }}>{reversing ? "Creating…" : "Create return trip (reverse this route)"}</button>
       )}
 
       {/* Delete route entirely (disabled for the ephemeral example) */}
@@ -1882,6 +1868,7 @@ function Setup({ controller, onDone, onCancel }) {
 
   const valid = preview && form.name.trim() && form.speedKmh > 0 && form.days.length;
   const save = async () => {
+    setErr(null);
     setSaving(true);
     const baselineSec = preview.totalDistance / (form.speedKmh / 3.6);
     const setup = {
@@ -1892,9 +1879,14 @@ function Setup({ controller, onDone, onCancel }) {
       baselineMode: modes.baselineMode, kMode: modes.kMode, split: form.split,
       targetArrival: form.arrival, timeMode: form.timeMode, activeDays: form.days,
     };
-    if (processed) await controller.createRouteFromProcessed(processed, setup);
-    else await controller.createRoute(gpxText, setup);
-    onDone();
+    try {
+      if (processed) await controller.createRouteFromProcessed(processed, setup);
+      else await controller.createRoute(gpxText, setup);
+      onDone();
+    } catch (e) {
+      setErr(e.message || "Couldn't save the route.");
+      setSaving(false);
+    }
   };
   const toggleDay = (d) => set("days", form.days.includes(d) ? form.days.filter((x) => x !== d) : [...form.days, d]);
 
@@ -2025,6 +2017,7 @@ function Setup({ controller, onDone, onCancel }) {
             </div>
           </Block>
           <div style={{ padding: "8px 22px 0" }}>
+            {err && <Warn>{err}</Warn>}
             <button onClick={save} disabled={!valid || saving} style={{
               width: "100%", padding: 16, borderRadius: 16, border: "none", cursor: valid ? "pointer" : "default",
               fontFamily: "'Fraunces',serif", fontSize: 17, fontWeight: 600,
