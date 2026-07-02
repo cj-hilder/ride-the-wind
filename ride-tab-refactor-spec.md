@@ -303,14 +303,19 @@ stylistically matching the clock:
   needle reads fine).
 
 **2c-data. Speed derivation.** Current speed is **derived from successive GPS
-fixes** (not `coords.speed`, which proved jumpier), smoothed with a time-aware
-**EMA (τ≈5s)**, with the needle additionally CSS-transitioned for a classic-car
-glide. Startup spikes are suppressed three ways, all **display-only** (the
-recorded trace keeps every fix): the needle EMA seeds at 0, per-fix speeds above
-a sane cycling max (~70 km/h) are rejected as GPS artefacts, and fixes with poor
-reported **accuracy** (`coords.accuracy` worse than ~30 m, typical during GPS
-acquisition) are skipped without advancing the EMA baseline so the next good fix
-measures a clean interval.
+fixes** (not `coords.speed`, which proved jumpier). Each fix's speed sample is
+only as trustworthy as its reported **accuracy** — a sample from two ±30 m fixes
+has a huge speed error (tens of km/h over a ~1 s interval), which is why a raw
+needle dances even when stationary. So the needle EMA is **variance-weighted**:
+its time constant τ adapts per sample from the two fixes' accuracies
+(`needleTauMs`, τ ∝ acc_prev² + acc_now², clamped) — a tight fix (≈ reference
+accuracy) snaps the needle, a loose one barely nudges it (dozens of samples to
+converge). The needle additionally CSS-transitions for a classic-car glide.
+Per-sample speeds above a sane cycling max (~70 km/h) are rejected as GPS
+artefacts, and truly garbage fixes (accuracy worse than a hard cutoff) are
+dropped entirely. All of this is **display-only** — the recorded trace keeps
+every fix, and the arrival **pace** EMA keeps its slow fixed τ (per-fix accuracy
+matters far less over 45-min windows).
 
 **2d. Pause / Finish-now buttons — below the speedometer.** The existing controls
 (pause toggle, finish), restyled to suit the white-on-black panel. Finish runs

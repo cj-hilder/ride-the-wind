@@ -13,10 +13,37 @@ export const SPEEDO_START_DEG = 225;     // 0 km/h at the 7:30 position
 export const SPEEDO_SWEEP_DEG = 270;     // clockwise sweep 0→max (to 4:30 = 315°)
 export const ARRIVAL_BEZEL_WINDOW_MIN = 60; // bezel marker shows only within this
 export const ARRIVAL_LIVE_AFTER_M = 1000;   // switch forecast→live after 1 km
-export const SPEED_EMA_TAU_MS = 5000;        // needle speed EMA time constant ~5s
+export const SPEED_EMA_TAU_MS = 5000;        // legacy fixed needle τ (kept for reference/fallback)
 export const SPEED_SANE_MAX_MPS = 19.4;      // ~70 km/h: above this a per-fix speed is a GPS artefact, not cycling
-export const GPS_ACCURACY_GATE_M = 30;       // fixes with reported accuracy worse than this are skipped for the needle
+export const GPS_ACCURACY_GATE_M = 30;       // (legacy) fixes worse than this were skipped for the needle
 export const PACE_EMA_TAU_MS = 45 * 60000;   // arrival pace EMA time constant ~45min
+
+// Adaptive needle smoothing. Each GPS fix reports a horizontal accuracy (metres);
+// a speed sample derived from two fixes has an error that scales with
+// sqrt(acc_prev² + acc_now²)/dt, so an accurate fix should move the needle fast
+// and a poor one barely at all. We turn the per-sample position variance into an
+// EMA time constant τ (inverse-variance weighting): small τ (snappy) for tight
+// fixes, large τ (heavily smoothed) for loose ones.
+export const NEEDLE_ACC_REF_M = 4;           // accuracy at which a sample is basically trusted (τ ≈ min)
+export const NEEDLE_TAU_MIN_MS = 1200;       // floor τ for an excellent fix (not a 1-sample snap: accuracy can lie)
+export const NEEDLE_TAU_MAX_MS = 40000;      // ceiling τ for a poor fix (≈ dozens of samples to converge)
+export const GPS_ACCURACY_HARD_M = 50;       // above this a fix is still dropped for the needle (garbage)
+
+/**
+ * Adaptive needle EMA time constant (ms) from the two fixes' reported accuracies.
+ * τ scales with the speed-sample position variance (acc_prev² + acc_now²),
+ * normalised so that two reference-accuracy fixes give τ ≈ NEEDLE_TAU_MIN_MS,
+ * clamped to [MIN, MAX]. Missing accuracies are treated as the reference (assume
+ * ok) so behaviour is unchanged on devices that don't report accuracy.
+ */
+export function needleTauMs(accPrev, accNow) {
+  const ap = (accPrev == null || Number.isNaN(accPrev)) ? NEEDLE_ACC_REF_M : accPrev;
+  const an = (accNow == null || Number.isNaN(accNow)) ? NEEDLE_ACC_REF_M : accNow;
+  const variance = ap * ap + an * an;
+  const refVar = 2 * NEEDLE_ACC_REF_M * NEEDLE_ACC_REF_M;
+  const tau = NEEDLE_TAU_MIN_MS * (variance / refVar);
+  return Math.max(NEEDLE_TAU_MIN_MS, Math.min(NEEDLE_TAU_MAX_MS, tau));
+}
 
 /**
  * Time-aware exponential moving average step. Given the previous EMA value, a new

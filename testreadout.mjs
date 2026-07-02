@@ -1,6 +1,7 @@
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   averageSpeedKmh, emaStep, routePolyline, projectToRoute, OFF_ROUTE_M,
+  needleTauMs, NEEDLE_TAU_MIN_MS, NEEDLE_TAU_MAX_MS, NEEDLE_ACC_REF_M,
   SPEEDO_START_DEG, SPEEDO_SWEEP_DEG, SPEEDO_MAX_KMH, ARRIVAL_LIVE_AFTER_M,
 } from './src/lib/rideReadout.js';
 
@@ -142,6 +143,28 @@ console.log('\nroutePolyline + projectToRoute (along-route projection):');
   ok('post-gap (no hint) snaps to nearest ~1500', Math.abs(heal.alongM - 1500) < 5, `${heal.alongM}`);
 
   ok('empty route → offRoute', projectToRoute({ lat: 0, lon: 0 }, [], null).offRoute === true);
+}
+
+console.log('\nneedleTauMs (adaptive needle smoothing from GPS accuracy):');
+{
+  // Two reference-accuracy fixes → τ at the floor (snappy).
+  ok('reference accuracy → τ ≈ min', needleTauMs(NEEDLE_ACC_REF_M, NEEDLE_ACC_REF_M) === NEEDLE_TAU_MIN_MS);
+  // Excellent fixes (0.5 m) → clamped at the floor (can't go below).
+  ok('excellent fixes → τ at floor', needleTauMs(0.5, 0.5) === NEEDLE_TAU_MIN_MS);
+  // Poor fixes (30 m) → τ near/at the ceiling (heavily smoothed).
+  const t30 = needleTauMs(30, 30);
+  ok('30 m fixes → τ large (near ceiling)', t30 >= NEEDLE_TAU_MAX_MS * 0.9, `${t30}`);
+  // Monotonic: worse accuracy → larger τ.
+  ok('worse accuracy → larger τ', needleTauMs(10, 10) > needleTauMs(4, 4));
+  ok('τ monotonic across range', needleTauMs(20, 20) >= needleTauMs(10, 10));
+  // Missing accuracy treated as reference (unchanged behaviour on silent devices).
+  ok('null accuracy → treated as reference', needleTauMs(null, null) === NEEDLE_TAU_MIN_MS);
+  // Always within the clamp band.
+  ok('always within [min,max]', (() => { for (const a of [0, 1, 5, 15, 40, 100]) { const v = needleTauMs(a, a); if (v < NEEDLE_TAU_MIN_MS || v > NEEDLE_TAU_MAX_MS) return false; } return true; })());
+  // A tight fix moves the EMA much more than a loose one over the same dt.
+  const tight = emaStep(0, 10, 1000, needleTauMs(2, 2));
+  const loose = emaStep(0, 10, 1000, needleTauMs(30, 30));
+  ok('tight fix moves needle more than loose', tight > loose * 3, `tight ${tight.toFixed(2)} loose ${loose.toFixed(2)}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

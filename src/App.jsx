@@ -22,7 +22,7 @@ import { createAppController } from "./lib/app.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   averageSpeedKmh, emaStep, routePolyline, projectToRoute,
-  SPEED_EMA_TAU_MS, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, SPEEDO_MAX_KMH,
+  needleTauMs, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
@@ -1865,25 +1865,26 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
 
   const begin = async () => {
     setState("recording"); setElapsed(0); setPaused(false); setLive({ distanceM: 0, speedKmh: 0 });
-    emaRef.current = { speedMps: 0, lastT: null, lastDistM: 0 };
+    emaRef.current = { speedMps: 0, lastT: null, lastDistM: 0, lastAccM: null };
     acquireWake(); startAudio();
     const handle = await controller.recordRoute({
       onTick: ({ elapsedSec, distanceM, accuracyM }) => {
         setElapsed(elapsedSec);
-        // Same display-only needle smoothing as ride capture: 5s EMA of the raw
-        // trace-distance delta, poor-accuracy fixes skipped, sane-speed clamp.
+        // Same display-only needle smoothing as ride capture: variance-weighted
+        // EMA (adaptive τ from GPS accuracy), sane-speed clamp, garbage fixes
+        // dropped above the hard cutoff.
         const t = Date.now();
         const em = emaRef.current;
-        const goodFix = accuracyM == null || accuracyM <= GPS_ACCURACY_GATE_M;
-        if (em.lastT != null && goodFix) {
+        const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
+        if (em.lastT != null && needleUsable) {
           const dt = t - em.lastT;
           if (dt > 0) {
             let instMps = Math.max(0, (distanceM - em.lastDistM) / (dt / 1000));
             if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
-            em.speedMps = emaStep(em.speedMps, instMps, dt, SPEED_EMA_TAU_MS);
+            em.speedMps = emaStep(em.speedMps, instMps, dt, needleTauMs(em.lastAccM, accuracyM));
           }
         }
-        if (goodFix || em.lastT == null) { em.lastT = t; em.lastDistM = distanceM; }
+        if (needleUsable || em.lastT == null) { em.lastT = t; em.lastDistM = distanceM; em.lastAccM = accuracyM; }
         setLive({ distanceM, speedKmh: (em.speedMps || 0) * 3.6 });
       },
     }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); stopAudio(); });
@@ -2420,7 +2421,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     // projection, so they self-heal after a GPS gap and never need the clamp.
     emaRef.current = {
       speedMps: 0, paceMps: null, paceSeeded: false,
-      lastT: null, lastDistM: 0, lastAlongM: null,
+      lastT: null, lastDistM: 0, lastAlongM: null, lastAccM: null,
       polyline: routePolyline(route),
     };
     setExpectLine(null);
@@ -2441,21 +2442,24 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           proj = projectToRoute({ lat, lon }, em.polyline, em.lastAlongM);
         }
 
-        if (em.lastT != null && goodFix) {
+        if (em.lastT != null) {
           const dt = t - em.lastT;
-          if (dt > 0) {
-            // Speed from raw trace-distance delta (real movement, on- or
-            // off-route). The needle uses a fast 5s EMA; the arrival pace uses a
-            // slow 45min EMA of the SAME real movement, so pace is always live —
-            // it reflects how fast the rider is going regardless of whether they
-            // are on the route. (Off-route it's *remaining distance* that's
-            // unknown, not pace.) Time-aware EMAs absorb gaps correctly.
+          // Needle: variance-weighted EMA. A fix's speed sample is only as good as
+          // its position accuracy, so we adapt τ per sample — a tight fix snaps the
+          // needle, a loose one barely nudges it (which is why a stationary rider's
+          // needle no longer dances on GPS jitter). Drop only truly garbage fixes
+          // (worse than the hard cutoff); everything else contributes, weighted.
+          const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
+          if (dt > 0 && needleUsable) {
             let instMps = Math.max(0, (distanceM - em.lastDistM) / (dt / 1000));
             if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
-            em.speedMps = emaStep(em.speedMps, instMps, dt, SPEED_EMA_TAU_MS);
-            // Seed pace at 1 km of real distance with the average so far, then
-            // refine per-fix. Seeding uses real distance/time so it works even if
-            // the opening kilometre included off-route portions.
+            const tau = needleTauMs(em.lastAccM, accuracyM);
+            em.speedMps = emaStep(em.speedMps, instMps, dt, tau);
+          }
+          // Pace (arrival): fed from real trace movement on any good fix. Uses the
+          // slow fixed τ; accuracy weighting matters far less over 45-min windows.
+          if (dt > 0 && goodFix) {
+            const instMps = Math.max(0, Math.min(SPEED_SANE_MAX_MPS, (distanceM - em.lastDistM) / (dt / 1000)));
             if (!em.paceSeeded && distanceM >= ARRIVAL_LIVE_AFTER_M && elapsedSec > 0) {
               em.paceMps = distanceM / elapsedSec;
               em.paceSeeded = true;
@@ -2465,10 +2469,12 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           }
         }
 
-        if (goodFix || em.lastT == null) {
-          em.lastT = t; em.lastDistM = distanceM;
-          if (!proj.offRoute) em.lastAlongM = proj.alongM;
-        }
+        // Advance the needle baseline on any needle-usable fix (so successive
+        // intervals are measured cleanly), and the projection/pace baseline on a
+        // good fix. Track last accuracy for the next sample's adaptive τ.
+        const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
+        if (needleUsable || em.lastT == null) { em.lastT = t; em.lastDistM = distanceM; em.lastAccM = accuracyM; }
+        if (goodFix && !proj.offRoute) em.lastAlongM = proj.alongM;
         setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6 });
       },
       onFinish: (r) => {
