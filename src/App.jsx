@@ -21,7 +21,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { createAppController } from "./lib/app.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
-  averageSpeedKmh, emaStep, estimatedDistanceM,
+  averageSpeedKmh, emaStep, routePolyline, projectToRoute,
   SPEED_EMA_TAU_MS, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
@@ -1954,7 +1954,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const [confirm, setConfirm] = useState(null);
   const [adjustMin, setAdjustMin] = useState(0); // minutes added/removed at review
   const [nowMs, setNowMs] = useState(Date.now());   // ticking clock for the dial
-  const [live, setLive] = useState({ distanceM: 0, distanceToEndM: null, speedKmh: 0 });
+  const [live, setLive] = useState({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0 });
   const [endConfirm, setEndConfirm] = useState(null); // {metres} when far from end on finish
   const [expectLine, setExpectLine] = useState(null); // what-to-expect for the ride
   const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
@@ -1994,49 +1994,66 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   // first — guards against accidentally recording from the wrong place.
   const beginRecording = async () => {
     setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0);
-    setLive({ distanceM: 0, distanceToEndM: null, speedKmh: 0 });
-    // Needle speed seeds at 0 (rider is stationary). Arrival pace is left
-    // dormant (null) and seeded at the 1 km mark with this ride's actual average
-    // speed so far — a truer, today-specific anchor than the forecast — then
-    // refined per-interval by the 45-min EMA. Arrival uses the forecast estimate
-    // until 1 km anyway, so pace is never needed before it's seeded.
-    emaRef.current = { speedMps: 0, paceMps: null, paceSeeded: false, lastT: null, lastDistM: 0 };
+    setLive({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0 });
+    // Needle speed seeds at 0 (rider stationary). Arrival pace is dormant (null)
+    // and seeded at the 1 km along-route mark with the average speed so far, then
+    // refined by the 45-min EMA. Pace samples use ALONG-ROUTE distance (gap- and
+    // curve-immune); the needle uses raw trace distance (real instantaneous
+    // speed, including off-route). Progress/remaining come from along-route
+    // projection, so they self-heal after a GPS gap and never need the clamp.
+    emaRef.current = {
+      speedMps: 0, paceMps: null, paceSeeded: false,
+      lastT: null, lastDistM: 0, lastAlongM: null,
+      polyline: routePolyline(route),
+    };
     setExpectLine(null);
     if (!route.isExample) {
       controller.rideExpectation(route).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
     }
     acquireWake();
     const handle = await controller.startRide(route, {
-      onTick: ({ elapsedSec, distanceM, distanceToEndM, accuracyM }) => {
+      onTick: ({ elapsedSec, distanceM, accuracyM, lat, lon }) => {
         setElapsed(elapsedSec);
         const t = Date.now();
         const em = emaRef.current;
-        // Accuracy gate (DISPLAY ONLY): a poor-accuracy fix (large reported
-        // error, typical of GPS acquisition at the start) is skipped for the
-        // needle EMA so its position noise can't spike the gauge. We do NOT
-        // advance the EMA's distance/time baseline on a skipped fix, so the next
-        // good fix measures a clean interval across the gap. This gates only the
-        // live readout — the recorded trace keeps every fix (see recording).
         const goodFix = accuracyM == null || accuracyM <= GPS_ACCURACY_GATE_M;
+
+        // Project the fix onto the route for progress + pace (gap-immune).
+        let proj = { alongM: em.lastAlongM || 0, offRoute: true };
+        if (goodFix && lat != null && em.polyline.length >= 2) {
+          proj = projectToRoute({ lat, lon }, em.polyline, em.lastAlongM);
+        }
+
         if (em.lastT != null && goodFix) {
           const dt = t - em.lastT;
           if (dt > 0) {
+            // Needle: raw trace-distance delta → 5s EMA (real speed, incl. detour).
             let instMps = Math.max(0, (distanceM - em.lastDistM) / (dt / 1000));
             if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
             em.speedMps = emaStep(em.speedMps, instMps, dt, SPEED_EMA_TAU_MS);
-            if (!em.paceSeeded && distanceM >= ARRIVAL_LIVE_AFTER_M && elapsedSec > 0) {
-              em.paceMps = distanceM / elapsedSec;
-              em.paceSeeded = true;
-            } else if (em.paceSeeded) {
-              em.paceMps = emaStep(em.paceMps, instMps, dt, PACE_EMA_TAU_MS);
+
+            // Pace: ALONG-ROUTE delta → 45min EMA. Skip while off-route (hold the
+            // last pace; a detour makes no route progress). Seed at 1 km along.
+            if (!proj.offRoute && em.lastAlongM != null) {
+              const alongDelta = proj.alongM - em.lastAlongM;
+              if (alongDelta >= 0) {
+                const paceSample = alongDelta / (dt / 1000);
+                if (!em.paceSeeded && proj.alongM >= ARRIVAL_LIVE_AFTER_M && elapsedSec > 0) {
+                  em.paceMps = proj.alongM / elapsedSec; // average so far, along-route
+                  em.paceSeeded = true;
+                } else if (em.paceSeeded && paceSample <= SPEED_SANE_MAX_MPS) {
+                  em.paceMps = emaStep(em.paceMps, paceSample, dt, PACE_EMA_TAU_MS);
+                }
+              }
             }
           }
         }
-        // Advance the baseline only on a good fix (or the very first fix, to
-        // establish a starting point); a skipped noisy fix leaves the baseline
-        // where it was so the next good interval is measured cleanly.
-        if (goodFix || em.lastT == null) { em.lastT = t; em.lastDistM = distanceM; }
-        setLive({ distanceM, distanceToEndM, speedKmh: (em.speedMps || 0) * 3.6 });
+
+        if (goodFix || em.lastT == null) {
+          em.lastT = t; em.lastDistM = distanceM;
+          if (!proj.offRoute) em.lastAlongM = proj.alongM;
+        }
+        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, speedKmh: (em.speedMps || 0) * 3.6 });
       },
       onFinish: (r) => {
         releaseWake();
@@ -2164,12 +2181,13 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
       {state === "riding" && (() => {
         const movingSec = elapsed; // elapsed already excludes paused time
         const totalM = route.totalDistance ?? null;
-        // Estimated distance travelled: GPS distance clamped by how far you must
-        // still be from the end (line of sight), so it never exceeds the route —
-        // progress stays ≤100% and arrival is never in the past.
-        const estDist = estimatedDistanceM(live.distanceM, totalM, live.distanceToEndM);
+        // Along-route position from projection drives progress + remaining. It's
+        // gap-immune (self-heals on any fix) and never exceeds the route, so no
+        // clamp is needed. `gpsDistanceM` (real trace) still gates the 1 km
+        // forecast→live arrival switch.
+        const alongM = live.alongM || 0;
         const arrivalMs = expectedArrivalMs({
-          nowMs, estDistanceM: estDist, gpsDistanceM: live.distanceM, routeTotalM: totalM,
+          nowMs, estDistanceM: alongM, gpsDistanceM: live.distanceM, routeTotalM: totalM,
           paceMps: emaRef.current.paceMps, forecastRemainingSec: route.baselineTimeSec ?? null,
         });
         const avg = Math.round(averageSpeedKmh(live.distanceM, movingSec) * 2) / 2;
@@ -2202,7 +2220,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
             {/* progress (existing route) — estimated distance / total */}
             <div style={{ margin: "18px 0 6px" }}>
               {totalM ? (
-                <ProgressBar travelledM={estDist} totalM={totalM} />
+                <ProgressBar travelledM={alongM} totalM={totalM} />
               ) : (
                 <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>
                   {(live.distanceM / 1000).toFixed(2)} km
