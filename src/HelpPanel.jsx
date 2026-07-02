@@ -93,7 +93,7 @@ export default function HelpPanel({ onClose }) {
         <div style={section}>
           <h3 style={h3}>Adding a route</h3>
           <p style={p}>
-            The simplest way to add a route is to <b>record it while you ride</b>. Choose <b>New</b>, tap <b>Record with GPS</b>, and ride the route once — the app traces your path and turns it into a route, and that first ride even counts as your first timing. This is the easiest way and needs no files or planning.
+            The simplest way to add a route is to <b>record it while you ride</b>. Choose <b>New</b>, tap <b>Record with GPS</b>, and ride the route once.
           </p>
           <p style={p}>
             You can also <b>import a GPX file</b> (the path drawn on a map). That's handy if you'd rather plan the route before you ride it, or if you already have a GPX exported from Strava, Komoot, Garmin or a mapping site — just choose <b>New</b> → <b>Import a GPX file</b> and open it. To make one from scratch:
