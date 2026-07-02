@@ -1,4 +1,4 @@
-import { haversine, bearing, resample, processGpx, parseGpx } from './src/lib/gpxRoute.js';
+import { haversine, bearing, resample, processGpx, parseGpx, reverseRoute } from './src/lib/gpxRoute.js';
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail='') {
@@ -55,6 +55,30 @@ try { parseGpx('', { domParser: new DOMParser() }); ok('empty throws', false); }
 catch (e) { ok('empty throws EMPTY_FILE', e.code === 'EMPTY_FILE'); }
 try { parseGpx('<gpx></gpx>', { domParser: new DOMParser() }); ok('no points throws', false); }
 catch (e) { ok('no points throws NO_POINTS', e.code === 'NO_POINTS'); }
+
+console.log('\nreverseRoute:');
+{
+  const rev = reverseRoute({
+    segments: route.segments, totalDistance: route.totalDistance,
+    hasElevation: route.hasElevation, start: route.start, end: route.end,
+  });
+  ok('same segment count', rev.segments.length === route.segments.length, `${rev.segments.length} vs ${route.segments.length}`);
+  ok('total distance preserved', near(rev.totalDistance, route.totalDistance, 1), `${rev.totalDistance}`);
+  ok('start/end swapped', near(rev.start.lat, route.end.lat, 1e-9) && near(rev.start.lon, route.end.lon, 1e-9) && near(rev.end.lat, route.start.lat, 1e-9), JSON.stringify({s:rev.start,e:rev.end}));
+  // first leg of the original heads ~east (90); the reversed route's LAST leg
+  // should head ~west (270) — reversed direction.
+  const revLast = rev.segments[rev.segments.length - 1].bearing;
+  ok('reversed last leg heads ~west (~270)', near(revLast, 270, 2), `got ${revLast.toFixed(1)}`);
+  // reversing twice returns (approximately) the original geometry
+  const back = reverseRoute({ segments: rev.segments, totalDistance: rev.totalDistance, hasElevation: rev.hasElevation, start: rev.start, end: rev.end });
+  ok('double reverse restores start', near(back.start.lat, route.start.lat, 1e-9) && near(back.start.lon, route.start.lon, 1e-9));
+  ok('double reverse restores first bearing', near(back.segments[0].bearing, route.segments[0].bearing, 0.5), `${back.segments[0].bearing} vs ${route.segments[0].bearing}`);
+  // elevation still detected after reverse
+  ok('reversed route keeps elevation flag', rev.hasElevation === route.hasElevation);
+  // empty route → swaps regions, no segments
+  const empty = reverseRoute({ segments: [], start: {lat:1,lon:2}, end: {lat:3,lon:4} });
+  ok('empty reverse swaps regions', empty.segments.length === 0 && empty.start.lat === 3 && empty.end.lat === 1);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -174,6 +174,31 @@ console.log('\nManual ride entry (recordManualRide):');
 }
 clock = new Date(2026,4,31,21,30).getTime(); // restore for later tests
 
+console.log('\nReverse route (createReverseRoute):');
+{
+  const rApp = mkApp(stubForecast(90, 20));
+  const src = await rApp.createRoute(gpx, { name:'Morning Commute', seedStillAirSec:1200,
+    seedHeadwind20Sec:1560, seedTailwind20Sec:900, targetArrival:'08:45',
+    activeDays:['MO','TU','WE','TH','FR'] }, {kHead:0.6,kTail:0.3});
+  const rev = await rApp.createReverseRoute(src.id, {});
+  ok('reverse gets a new id', rev.id !== src.id);
+  ok('auto name "Reverse <src>"', rev.name === 'Reverse Morning Commute', rev.name);
+  ok('total distance preserved', Math.abs(rev.totalDistance - src.totalDistance) < 1);
+  ok('inherits baseline seed', rev.seedStillAirSec === 1200);
+  // createRoute derives sliders from seed times (0.3 head, 0.25 tail here), and
+  // the reverse inherits those stored sliders verbatim.
+  ok('inherits k sliders', Math.abs(rev.sliderKHead - 0.3) < 1e-6 && Math.abs(rev.sliderKTail - 0.25) < 1e-6, `${rev.sliderKHead}/${rev.sliderKTail}`);
+  ok('modes learn/learn', rev.baselineMode === 'learn' && rev.kMode === 'learn');
+  const revRides = await rApp.listRides(rev.id);
+  ok('reverse starts with no rides', revRides.length === 0);
+  // start/end swapped vs source
+  ok('start = source end', Math.abs(rev.startRegion.lat - src.endRegion.lat) < 1e-9 && Math.abs(rev.startRegion.lon - src.endRegion.lon) < 1e-9);
+  ok('end = source start', Math.abs(rev.endRegion.lat - src.startRegion.lat) < 1e-9);
+  // custom name honoured
+  const rev2 = await rApp.createReverseRoute(src.id, { name:'Evening ride home' });
+  ok('custom name honoured', rev2.name === 'Evening ride home');
+}
+
 console.log('\nExcluded ride is ignored by the resolver:');
 {
   const t=await app.routeTuning(route.id);

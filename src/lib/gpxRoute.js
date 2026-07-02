@@ -243,6 +243,50 @@ export function buildSegments(points) {
   return { segments, totalDistance: total, maxGap, hasElevation };
 }
 
+/**
+ * Reverse a processed route into the return-trip geometry. Rather than hand-
+ * transform segment indices/bearings (error-prone, because each segment stores
+ * its START point), we reconstruct the ordered point list from the route, reverse
+ * it, and re-run buildSegments — so bearings, distances and elevation deltas are
+ * all recomputed by the same trusted path, guaranteeing consistency.
+ *
+ * Elevation: segments carry eleDelta (not absolute ele), so we integrate the
+ * deltas into a cumulative elevation to rebuild each point's `ele`, letting
+ * buildSegments recompute reversed (negated) deltas naturally. If the route has
+ * no elevation, points carry no `ele` and deltas stay null.
+ *
+ * @param {{segments:Object[], totalDistance:number, hasElevation:boolean, start:{lat:number,lon:number}, end:{lat:number,lon:number}}} route
+ * @returns {{segments:Object[], totalDistance:number, hasElevation:boolean, maxGap:number, start:Object, end:Object}}
+ */
+export function reverseRoute(route) {
+  const segs = route.segments || [];
+  if (!segs.length) {
+    return { segments: [], totalDistance: 0, hasElevation: false, maxGap: 0,
+      start: route.end, end: route.start };
+  }
+  const hasEle = route.hasElevation;
+  const pts = [];
+  let cumEle = 0;
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    pts.push({ lat: s.lat, lon: s.lon, ele: hasEle ? cumEle : undefined });
+    if (hasEle && s.eleDelta != null) cumEle += s.eleDelta;
+  }
+  const end = route.end || { lat: segs[segs.length - 1].lat, lon: segs[segs.length - 1].lon };
+  pts.push({ lat: end.lat, lon: end.lon, ele: hasEle ? cumEle : undefined });
+
+  pts.reverse();
+  const built = buildSegments(pts);
+  return {
+    segments: built.segments,
+    totalDistance: built.totalDistance,
+    hasElevation: built.hasElevation,
+    maxGap: built.maxGap,
+    start: { lat: pts[0].lat, lon: pts[0].lon },
+    end: { lat: pts[pts.length - 1].lat, lon: pts[pts.length - 1].lon },
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * Orchestration
  * ------------------------------------------------------------------ */

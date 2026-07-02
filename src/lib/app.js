@@ -14,7 +14,7 @@
  * tests) so this whole layer is exercisable headlessly.
  */
 
-import { processGpx } from "./gpxRoute.js";
+import { processGpx, reverseRoute } from "./gpxRoute.js";
 import {
   seedKSplit as computeSeedKSplit,
   fetchForecast as realFetchForecast,
@@ -340,6 +340,48 @@ export function createAppController(deps = {}) {
     );
     const route = await store.createRoute(processed, setup, seededK);
     return route;
+  }
+
+  /**
+   * Create the return-trip route from an existing route: reversed geometry
+   * (via reverseRoute), inheriting the source's speed/k slider seeds and split
+   * (same bike), but with NO rides (the return trip has different wind/gradient,
+   * so it learns its own k). Modes default to learn/learn like any new route.
+   * The caller supplies name/schedule (the details form); name defaults to
+   * "Reverse <source name>".
+   */
+  async function createReverseRoute(sourceId, setup = {}) {
+    const src = await store.getRoute(sourceId);
+    if (!src) throw new Error("Source route not found.");
+    const rev = reverseRoute({
+      segments: src.segments, totalDistance: src.totalDistance,
+      hasElevation: src.hasElevation,
+      start: src.startRegion, end: src.endRegion,
+    });
+    const processed = {
+      segments: rev.segments,
+      totalDistance: rev.totalDistance,
+      hasElevation: rev.hasElevation,
+      start: rev.start,
+      end: rev.end,
+    };
+    // Inherit the source's seeds/config as the new route's starting point.
+    const fullSetup = {
+      name: setup.name != null ? setup.name : `Reverse ${src.name}`,
+      seedStillAirSec: src.seedStillAirSec,
+      seedHeadwind20Sec: src.seedHeadwind20Sec,
+      seedTailwind20Sec: src.seedTailwind20Sec,
+      split: src.split ?? false,
+      baselineMode: "learn", kMode: "learn", // new route: learn from its own rides
+      targetArrival: setup.targetArrival ?? src.targetArrival,
+      timeMode: setup.timeMode ?? src.timeMode,
+      activeDays: setup.activeDays ?? [],
+      startRadius: src.startRegion?.radius, endRadius: src.endRegion?.radius,
+    };
+    // Inherit k sliders directly (not re-derived from seed times), so the return
+    // trip starts from the same hand/learned k the rider settled on.
+    const seededK = { kHead: src.sliderKHead ?? 1.0, kTail: src.sliderKTail ?? 1.0 };
+    return store.createRoute(processed, fullSetup, seededK);
   }
 
   const listRoutes = () => store.listRoutes();
@@ -1146,7 +1188,7 @@ export function createAppController(deps = {}) {
 
   return {
     store,
-    createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
+    createRoute, createReverseRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
     getHomeVerdict, listRoutesWithVerdict,
     recordRide, recordManualRide, listRides, startRide, distanceToStart, distanceToEnd, rideExpectation, routeTuning, updateExampleSeeds,
     updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,

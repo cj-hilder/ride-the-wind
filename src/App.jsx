@@ -1540,6 +1540,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
   const [days, setDays] = useState(route.activeDays);
   const [timeMode, setTimeMode] = useState(route.timeMode === "depart" ? "depart" : "arrive");
   const [confirmDel, setConfirmDel] = useState(false);
+  const [reversing, setReversing] = useState(false); // creating return trip
   const toggleDay = (d) => setDays(days.includes(d) ? days.filter((x) => x !== d) : [...days, d]);
 
   // Tuning: load the manual sliders, learned view (with per-quantity sources),
@@ -1660,6 +1661,19 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
   };
 
   const del = async () => { await controller.deleteRoute(route.id); onDeleted(); };
+  const makeReturnTrip = async () => {
+    setReversing(true);
+    try {
+      await controller.createReverseRoute(route.id, {});
+      // onDeleted closes this editor and does a full routes refresh — exactly the
+      // effect we want after creating the return trip (land back on the list with
+      // the new route visible). Not a delete; reused for its close+refresh effect.
+      onDeleted();
+    } catch (e) {
+      alert(e.message || "Couldn't create the return trip.");
+      setReversing(false);
+    }
+  };
 
   const onTuningChange = (next) => {
     if (next._collapse) { delete next._collapse; setCollapseAsk({ next }); return; }
@@ -1767,6 +1781,14 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
             <button onClick={() => setCollapseAsk(null)} style={{ ...backupBtn, flex: 0.6 }}>Cancel</button>
           </div>
         </div>
+      )}
+
+      {/* Create the return trip (reversed geometry, inherited tuning, no rides) */}
+      {!route.isExample && (
+        <button onClick={makeReturnTrip} disabled={reversing} style={{
+          ...backupBtn, marginTop: 16, opacity: reversing ? 0.5 : 1,
+          cursor: reversing ? "default" : "pointer",
+        }}>{reversing ? "Creating…" : "Create return trip (reverse this route)"}</button>
       )}
 
       {/* Delete route entirely (disabled for the ephemeral example) */}

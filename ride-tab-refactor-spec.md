@@ -416,7 +416,13 @@ No changes to the learning model, storage schema (beyond a possibly-reused
    button in the Rides Manager opens `ManualRideEntry` (two time inputs, today-
    only, finish ≤ now and > start).
 5. **Item 3C / 3B** (GPX demotion + reverse) — the method chooser plus the
-   reverse transform.
+   reverse transform. **[3B DONE]** `reverseRoute` (gpxRoute.js) reconstructs the
+   point list, reverses it, and re-runs `buildSegments` so bearings/distances/
+   elevation-deltas recompute consistently; `controller.createReverseRoute(
+   sourceId, {name?})` builds reversed geometry, inherits the source's speed/k
+   slider seeds + split (learn/learn, no rides), names it "Reverse <source>" by
+   default. UI: a "Create return trip" button in the route editor. (Method
+   chooser + 3C GPX demotion still to do.)
 6. **Item 3A** (record by GPS) — largest new piece; build last on top of the
    method chooser and the shared details form.
 
