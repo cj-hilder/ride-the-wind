@@ -1810,7 +1810,9 @@ function RouteRecorder({ controller, onCancel, onRecorded, err }) {
   const [elapsed, setElapsed] = useState(0);
   const [paused, setPaused] = useState(false);
   const [live, setLive] = useState({ distanceM: 0, speedKmh: 0 });
+  const [nowMs, setNowMs] = useState(Date.now());
   const ref = useRef({});
+  const emaRef = useRef({ speedMps: 0, lastT: null, lastDistM: 0 });
   const wakeRef = useRef(null);
   const audioRef = useRef(null);
 
@@ -1854,14 +1856,34 @@ function RouteRecorder({ controller, onCancel, onRecorded, err }) {
     const id = setInterval(() => setElapsed((e) => e + 1), 1000);
     return () => clearInterval(id);
   }, [state, paused]);
+  useEffect(() => {
+    if (state !== "recording") return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [state]);
 
   const begin = async () => {
     setState("recording"); setElapsed(0); setPaused(false); setLive({ distanceM: 0, speedKmh: 0 });
+    emaRef.current = { speedMps: 0, lastT: null, lastDistM: 0 };
     acquireWake(); startAudio();
     const handle = await controller.recordRoute({
-      onTick: ({ elapsedSec, distanceM, speedMps }) => {
+      onTick: ({ elapsedSec, distanceM, accuracyM }) => {
         setElapsed(elapsedSec);
-        setLive({ distanceM, speedKmh: Math.max(0, (speedMps || 0) * 3.6) });
+        // Same display-only needle smoothing as ride capture: 5s EMA of the raw
+        // trace-distance delta, poor-accuracy fixes skipped, sane-speed clamp.
+        const t = Date.now();
+        const em = emaRef.current;
+        const goodFix = accuracyM == null || accuracyM <= GPS_ACCURACY_GATE_M;
+        if (em.lastT != null && goodFix) {
+          const dt = t - em.lastT;
+          if (dt > 0) {
+            let instMps = Math.max(0, (distanceM - em.lastDistM) / (dt / 1000));
+            if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
+            em.speedMps = emaStep(em.speedMps, instMps, dt, SPEED_EMA_TAU_MS);
+          }
+        }
+        if (goodFix || em.lastT == null) { em.lastT = t; em.lastDistM = distanceM; }
+        setLive({ distanceM, speedKmh: (em.speedMps || 0) * 3.6 });
       },
     }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); stopAudio(); });
     handle?.onFinish?.((rec) => { releaseWake(); stopAudio(); onRecorded(rec); });
@@ -1873,33 +1895,34 @@ function RouteRecorder({ controller, onCancel, onRecorded, err }) {
     else { h.pause?.(); setPaused(true); releaseWake(); }
   };
   const finish = () => ref.current.handle?.manualFinish?.();
-  const fmtC = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const avg = elapsed > 0 ? Math.round((live.distanceM / elapsed) * 3.6 * 2) / 2 : 0;
+
+  if (state === "recording") {
+    // Full black instrument screen, identical to ride capture. Differences per
+    // spec: center line reads "Recording" (red) in place of the off-route
+    // message; the bottom slot shows km recorded (no progress bar); no arrival
+    // marker (arrivalMs null); no what-to-expect caption.
+    return (
+      <div style={{ position: "fixed", inset: 0, zIndex: 50, background: "#000", color: "#fff", display: "flex", flexDirection: "column", padding: "16px 14px 20px" }}>
+        <InstrumentPanel
+          elapsed={elapsed} paused={paused} avg={avg}
+          nowMs={nowMs} arrivalMs={null} speedKmh={live.speedKmh}
+          centerMessage={{ text: "Recording", color: "#d9534f" }}
+          onPause={togglePause} onFinish={finish} finishLabel="Finish"
+          bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
+        />
+        {err && <div style={{ padding: "0 8px" }}><Warn>{err}</Warn></div>}
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: "0 22px" }}>
-      {state === "armed" ? (
-        <div>
-          <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", lineHeight: 1.5, marginBottom: 18 }}>
-            Start at the beginning of your route, then ride it once. Keep the app open — tap Finish when you arrive.
-          </div>
-          {err && <Warn>{err}</Warn>}
-          <button onClick={begin} style={{ width: "100%", padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Start recording</button>
-        </div>
-      ) : (
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-            <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "rgba(255,255,255,0.5)" }}>{paused ? "Paused" : "Recording"}</span>
-            <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)" }}>{live.speedKmh.toFixed(1)} km/h</span>
-          </div>
-          <div style={{ fontFamily: "'Fraunces',serif", fontSize: 46, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.55 : 1 }}>{fmtC(elapsed)}</div>
-          <div style={{ fontFamily: "'Fraunces',serif", fontSize: 20, fontWeight: 600, marginTop: 2 }}>{(live.distanceM / 1000).toFixed(2)} km</div>
-          <div style={{ display: "flex", gap: 12, marginTop: 22 }}>
-            <button onClick={togglePause} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: paused ? "#6fd49a" : "rgba(255,255,255,0.12)", color: paused ? "#0f2a1c" : "#fff", border: paused ? "none" : "1px solid rgba(255,255,255,0.25)" }}>{paused ? "Continue" : "Pause"}</button>
-            <button onClick={finish} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>Finish</button>
-          </div>
-          {err && <Warn>{err}</Warn>}
-        </div>
-      )}
+      <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", lineHeight: 1.5, marginBottom: 18 }}>
+        Start at the beginning of your route, then ride it once. Keep the app open — tap Finish when you arrive.
+      </div>
+      {err && <Warn>{err}</Warn>}
+      <button onClick={begin} style={{ width: "100%", padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Start recording</button>
     </div>
   );
 }
@@ -2250,6 +2273,63 @@ function Speedometer({ kmh, size = 230 }) {
   );
 }
 
+/* ============================================================================
+ * InstrumentPanel — the shared black instrument screen used by BOTH ride capture
+ * and route recording. Layout: elapsed+avg top-left, analog clock top-right,
+ * a center status line, the speedometer hero, Pause/Finish buttons, then a
+ * bottom slot (progress bar / distance) and an optional caption line. All the
+ * variable content is passed in so the two modes stay pixel-identical.
+ * ========================================================================== */
+function InstrumentPanel({
+  elapsed, paused, avg, nowMs, arrivalMs, speedKmh,
+  centerMessage, onPause, onFinish, finishLabel = "Finish now",
+  bottom, caption,
+}) {
+  const fmtC = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "6px 4px 0" }}>
+      {/* top row: elapsed left, clock right */}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ flex: 1, textAlign: "left", paddingTop: 6 }}>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", letterSpacing: "0.04em", textTransform: "uppercase" }}>{paused ? "Paused" : "Elapsed"}</div>
+          <div style={{ fontFamily: "'Fraunces',serif", fontSize: 40, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.55 : 1, lineHeight: 1.1 }}>{fmtC(elapsed)}</div>
+          <div style={{ fontSize: 23, color: "#fff", marginTop: 6 }}>avg {avg.toFixed(1)} km/h</div>
+        </div>
+        <div style={{ width: "48%" }}>
+          <AnalogClock nowMs={nowMs} arrivalMs={arrivalMs} />
+        </div>
+      </div>
+      {/* center status line (off-route message, or "Recording") */}
+      {centerMessage && (
+        <div style={{ textAlign: "center", paddingTop: 8, fontSize: 15, fontWeight: 600, fontFamily: "'Fraunces',serif", color: centerMessage.color || "#e0a45e" }}>
+          {centerMessage.text}
+        </div>
+      )}
+      {/* speedometer */}
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0 }}>
+        <div style={{ width: "96%", maxWidth: 380 }}>
+          <Speedometer kmh={speedKmh} />
+        </div>
+      </div>
+      {/* buttons */}
+      <div style={{ display: "flex", gap: 12 }}>
+        <button onClick={onPause} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: paused ? "#6fd49a" : "rgba(255,255,255,0.12)", color: paused ? "#0f2a1c" : "#fff", border: paused ? "none" : "1px solid rgba(255,255,255,0.25)" }}>
+          {paused ? "Continue" : "Pause"}
+        </button>
+        <button onClick={onFinish} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>{finishLabel}</button>
+      </div>
+      {/* bottom slot: progress bar (ride, known total) or distance number */}
+      <div style={{ margin: "18px 0 6px" }}>{bottom}</div>
+      {/* optional caption (what-to-expect on a ride) */}
+      {caption && (
+        <div style={{ textAlign: "center", fontSize: 13, color: "rgba(255,255,255,0.7)", lineHeight: 1.4, minHeight: 18 }}>
+          {caption}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProgressBar({ travelledM, totalM }) {
   const frac = totalM > 0 ? Math.max(0, Math.min(1, travelledM / totalM)) : 0;
   return (
@@ -2511,55 +2591,18 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         });
         const avg = Math.round(averageSpeedKmh(live.distanceM, movingSec) * 2) / 2;
         return (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "6px 4px 0" }}>
-            {/* top row: elapsed left, clock right */}
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-              <div style={{ flex: 1, textAlign: "left", paddingTop: 6 }}>
-                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", letterSpacing: "0.04em", textTransform: "uppercase" }}>{paused ? "Paused" : "Elapsed"}</div>
-                <div style={{ fontFamily: "'Fraunces',serif", fontSize: 40, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.55 : 1, lineHeight: 1.1 }}>{fmtC(elapsed)}</div>
-                <div style={{ fontSize: 23, color: "#fff", marginTop: 6 }}>avg {avg.toFixed(1)} km/h</div>
-              </div>
-              <div style={{ width: "48%" }}>
-                <AnalogClock nowMs={nowMs} arrivalMs={arrivalMs} />
-              </div>
-            </div>
-            {/* off-route status: explains frozen progress + unknown arrival,
-                and reassures the rider that movement is still tracked */}
-            {live.offRoute && live.offRouteM != null && (
-              <div style={{ textAlign: "center", paddingTop: 8, color: "#e0a45e", fontSize: 15, fontWeight: 600, fontFamily: "'Fraunces',serif" }}>
-                Off route by {(live.offRouteM / 1000).toFixed(1)} km
-              </div>
-            )}
-            {/* speedometer */}
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0 }}>
-              <div style={{ width: "96%", maxWidth: 380 }}>
-                <Speedometer kmh={live.speedKmh} />
-              </div>
-            </div>
-            {/* buttons */}
-            <div style={{ display: "flex", gap: 12 }}>
-              <button onClick={togglePause} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: paused ? "#6fd49a" : "rgba(255,255,255,0.12)", color: paused ? "#0f2a1c" : "#fff", border: paused ? "none" : "1px solid rgba(255,255,255,0.25)" }}>
-                {paused ? "Continue" : "Pause"}
-              </button>
-              <button onClick={finishNow} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>Finish now</button>
-            </div>
-            {/* progress (existing route) — estimated distance / total */}
-            <div style={{ margin: "18px 0 6px" }}>
-              {totalM ? (
-                <ProgressBar travelledM={alongM} totalM={totalM} />
-              ) : (
-                <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>
-                  {(live.distanceM / 1000).toFixed(2)} km
-                </div>
-              )}
-            </div>
-            {/* what to expect for this ride (forecast at actual start time) */}
-            {expectLine && (
-              <div style={{ textAlign: "center", fontSize: 13, color: "rgba(255,255,255,0.7)", lineHeight: 1.4, minHeight: 18 }}>
-                {expectLine}
-              </div>
-            )}
-          </div>
+          <InstrumentPanel
+            elapsed={elapsed} paused={paused} avg={avg}
+            nowMs={nowMs} arrivalMs={arrivalMs} speedKmh={live.speedKmh}
+            centerMessage={live.offRoute && live.offRouteM != null
+              ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
+              : null}
+            onPause={togglePause} onFinish={finishNow}
+            bottom={totalM
+              ? <ProgressBar travelledM={alongM} totalM={totalM} />
+              : <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
+            caption={expectLine}
+          />
         );
       })()}
       {endConfirm && (

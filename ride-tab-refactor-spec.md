@@ -69,9 +69,13 @@ track.
   end region yet.)
 - **Manual finish.** The user ends recording with a **Finish** button. There is
   no automatic end detection (no end region exists during creation).
-- **UX during recording** mirrors normal ride recording (elapsed time, live
-  distance, GPS-active state, pause support if cheap to reuse) **without** the
-  progress bar and **without** a map.
+- **UX during recording** reuses the **same instrument panel as ride capture**
+  (elapsed + avg top-left, analog clock top-right, speedometer centre, Pause/
+  Finish below) via a shared `InstrumentPanel` component, with four differences:
+  the centre status line reads **"Recording"** in red (where the off-route
+  message sits on a ride); the bottom slot shows **km recorded so far** (in place
+  of the progress bar); there is **no what-to-expect caption**; and **no expected
+  arrival marker** on the clock (arrivalMs null). No map.
 - **On finish**, the collected trace is converted to the same internal route
   representation as an imported GPX: feed the trace through the **same
   processing path as `processGpx`/`previewGpx`** (resample to ~50 m spacing,
