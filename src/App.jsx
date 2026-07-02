@@ -1798,6 +1798,112 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
 const backupBtn = { flex: 1, padding: "11px 14px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, background: "rgba(255,255,255,0.08)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" };
 const lbl = { display: "block", fontSize: 12.5, color: "rgba(255,255,255,0.6)", margin: "0 0 6px" };
 
+/* ============================================================================
+ * RouteRecorder — record a new route by GPS. Mirrors ride capture (elapsed,
+ * live distance/speed, pause) but with NO end detection and NO progress/map.
+ * Keep-alive: screen Wake Lock + a near-silent looping audio element so the
+ * browser doesn't suspend watchPosition when the screen locks / app backgrounds.
+ * On Finish, hands the raw traversal up via onRecorded (the parent gates it).
+ * ========================================================================== */
+function RouteRecorder({ controller, onCancel, onRecorded, err }) {
+  const [state, setState] = useState("armed"); // armed | recording
+  const [elapsed, setElapsed] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const [live, setLive] = useState({ distanceM: 0, speedKmh: 0 });
+  const ref = useRef({});
+  const wakeRef = useRef(null);
+  const audioRef = useRef(null);
+
+  const acquireWake = async () => {
+    try { if (navigator.wakeLock && !wakeRef.current) {
+      wakeRef.current = await navigator.wakeLock.request("screen");
+      wakeRef.current.addEventListener?.("release", () => { wakeRef.current = null; });
+    } } catch { /* unavailable */ }
+  };
+  const releaseWake = () => { try { wakeRef.current?.release?.(); } catch {} wakeRef.current = null; };
+
+  // Silent-audio keep-alive: a looping, effectively-inaudible tone via WebAudio,
+  // started on the Start gesture (autoplay needs a gesture) and stopped on finish.
+  const startAudio = () => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      gain.gain.value = 0.0001; // inaudible but non-zero → media session stays live
+      osc.frequency.value = 440;
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      audioRef.current = { ctx, osc };
+    } catch { /* audio keep-alive unavailable; wake lock still helps */ }
+  };
+  const stopAudio = () => {
+    try { audioRef.current?.osc?.stop(); audioRef.current?.ctx?.close(); } catch {}
+    audioRef.current = null;
+  };
+
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible" && state === "recording" && !paused) acquireWake(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [state, paused]);
+  useEffect(() => () => { releaseWake(); stopAudio(); ref.current.handle?.stop?.(); }, []);
+  useEffect(() => {
+    if (state !== "recording" || paused) return;
+    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(id);
+  }, [state, paused]);
+
+  const begin = async () => {
+    setState("recording"); setElapsed(0); setPaused(false); setLive({ distanceM: 0, speedKmh: 0 });
+    acquireWake(); startAudio();
+    const handle = await controller.recordRoute({
+      onTick: ({ elapsedSec, distanceM, speedMps }) => {
+        setElapsed(elapsedSec);
+        setLive({ distanceM, speedKmh: Math.max(0, (speedMps || 0) * 3.6) });
+      },
+    }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); stopAudio(); });
+    handle?.onFinish?.((rec) => { releaseWake(); stopAudio(); onRecorded(rec); });
+    ref.current = { handle };
+  };
+  const togglePause = () => {
+    const h = ref.current.handle; if (!h) return;
+    if (paused) { h.resume?.(); setPaused(false); acquireWake(); }
+    else { h.pause?.(); setPaused(true); releaseWake(); }
+  };
+  const finish = () => ref.current.handle?.manualFinish?.();
+  const fmtC = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+  return (
+    <div style={{ padding: "0 22px" }}>
+      {state === "armed" ? (
+        <div>
+          <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", lineHeight: 1.5, marginBottom: 18 }}>
+            Start at the beginning of your route, then ride it once. Keep the app open — tap Finish when you arrive.
+          </div>
+          {err && <Warn>{err}</Warn>}
+          <button onClick={begin} style={{ width: "100%", padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Start recording</button>
+        </div>
+      ) : (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+            <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em", color: "rgba(255,255,255,0.5)" }}>{paused ? "Paused" : "Recording"}</span>
+            <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)" }}>{live.speedKmh.toFixed(1)} km/h</span>
+          </div>
+          <div style={{ fontFamily: "'Fraunces',serif", fontSize: 46, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.55 : 1 }}>{fmtC(elapsed)}</div>
+          <div style={{ fontFamily: "'Fraunces',serif", fontSize: 20, fontWeight: 600, marginTop: 2 }}>{(live.distanceM / 1000).toFixed(2)} km</div>
+          <div style={{ display: "flex", gap: 12, marginTop: 22 }}>
+            <button onClick={togglePause} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: paused ? "#6fd49a" : "rgba(255,255,255,0.12)", color: paused ? "#0f2a1c" : "#fff", border: paused ? "none" : "1px solid rgba(255,255,255,0.25)" }}>{paused ? "Continue" : "Pause"}</button>
+            <button onClick={finish} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>Finish</button>
+          </div>
+          {err && <Warn>{err}</Warn>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* A single tappable creation-method card in the New route chooser. */
 function MethodOption({ title, desc, onClick, disabled }) {
   return (
@@ -1820,7 +1926,8 @@ function MethodOption({ title, desc, onClick, disabled }) {
 function Setup({ controller, onDone, onCancel }) {
   const [method, setMethod] = useState(null); // null=chooser, "gpx", "reverse"
   const [gpxText, setGpxText] = useState(null);
-  const [processed, setProcessed] = useState(null); // reverse path: pre-built geometry
+  const [processed, setProcessed] = useState(null); // reverse/record path: pre-built geometry
+  const [recording, setRecording] = useState(null); // record path: the raw traversal (for first-ride logging)
   const [preview, setPreview] = useState(null);
   const [err, setErr] = useState(null);
   const [routeList, setRouteList] = useState(null); // for the reverse picker
@@ -1880,8 +1987,14 @@ function Setup({ controller, onDone, onCancel }) {
       targetArrival: form.arrival, timeMode: form.timeMode, activeDays: form.days,
     };
     try {
-      if (processed) await controller.createRouteFromProcessed(processed, setup);
-      else await controller.createRoute(gpxText, setup);
+      if (recording) {
+        const res = await controller.finalizeRecordedRoute(recording, setup);
+        if (!res.ok) { setErr(res.reason || "Recording couldn't be used."); setSaving(false); return; }
+      } else if (processed) {
+        await controller.createRouteFromProcessed(processed, setup);
+      } else {
+        await controller.createRoute(gpxText, setup);
+      }
       onDone();
     } catch (e) {
       setErr(e.message || "Couldn't save the route.");
@@ -1892,7 +2005,7 @@ function Setup({ controller, onDone, onCancel }) {
 
   const back = () => {
     // Back steps: preview → method's picker; picker → chooser; chooser → cancel.
-    if (preview) { setPreview(null); setProcessed(null); setGpxText(null); return; }
+    if (preview) { setPreview(null); setProcessed(null); setGpxText(null); setRecording(null); return; }
     if (method) { setMethod(null); setErr(null); return; }
     onCancel && onCancel();
   };
@@ -1908,8 +2021,8 @@ function Setup({ controller, onDone, onCancel }) {
       {/* Step 1: method chooser */}
       {method === null && (
         <div style={{ padding: "0 22px" }}>
-          <MethodOption title="Record with GPS" desc="Ride the route once and let your phone trace it. (Coming soon.)"
-            disabled onClick={() => {}} />
+          <MethodOption title="Record with GPS" desc="Ride the route once and let your phone trace it."
+            onClick={() => { setMethod("record"); setErr(null); }} />
           <MethodOption title="Reverse an existing route" desc="Create the return trip from a route you already have."
             onClick={chooseReverse} />
           <MethodOption title="Import a GPX file" desc="Load a route exported from another app or a mapping site."
@@ -1941,6 +2054,21 @@ function Setup({ controller, onDone, onCancel }) {
           )}
           {err && <Warn>{err}</Warn>}
         </div>
+      )}
+
+      {/* Step 2c: record by GPS */}
+      {method === "record" && !preview && (
+        <RouteRecorder controller={controller}
+          onCancel={() => { setMethod(null); setErr(null); }}
+          onRecorded={(rec) => {
+            const res = controller.previewTrace(rec.trace);
+            if (!res.ok) { setErr(res.reason); return; } // stay in recorder; show why
+            setRecording(rec);
+            setProcessed(res.processed);
+            setPreview(res.preview);
+            if (!form.name) set("name", "");
+          }}
+          err={err} />
       )}
 
       {/* Step 2b: GPX loader (reached via the chooser) */}

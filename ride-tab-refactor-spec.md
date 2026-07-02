@@ -430,8 +430,16 @@ No changes to the learning model, storage schema (beyond a possibly-reused
    (GPX). The route editor's "Create return trip" button remains as a convenience
    shortcut (direct `createReverseRoute`). Back navigation steps preview→picker→
    chooser→cancel. (3A record-by-GPS still to do.)
-6. **Item 3A** (record by GPS) — largest new piece; build last on top of the
-   method chooser and the shared details form.
+6. **Item 3A** (record by GPS) — largest new piece; built last on top of the
+   method chooser and the shared details form. **[DONE]** `recordRoute()`
+   collects a raw trace (no end detection, pause support); on finish the trace is
+   denoised + quality-gated (`denoiseTrace`/`gpsQualityGate`/`processTrace` in
+   gpxRoute.js, sharing `processPoints` with GPX import) and, if it passes,
+   flows into the shared details form via `previewTrace`; save calls
+   `finalizeRecordedRoute`, which creates the route and logs the traversal as its
+   first ride. UI: `RouteRecorder` (elapsed/distance/speed, pause, Finish; no
+   progress bar or map) with Wake Lock + silent-audio keep-alive. Block-or-
+   re-record on a marginal trace (too short / too few fixes / dominant gap).
 
 ---
 

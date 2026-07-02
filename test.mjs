@@ -1,4 +1,6 @@
-import { haversine, bearing, resample, processGpx, parseGpx, reverseRoute } from './src/lib/gpxRoute.js';
+import { haversine, bearing, resample, processGpx, parseGpx, reverseRoute,
+  processPoints, processTrace, denoiseTrace, gpsQualityGate,
+  REC_MIN_DISTANCE_M, REC_MIN_FIXES } from './src/lib/gpxRoute.js';
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail='') {
@@ -78,6 +80,51 @@ console.log('\nreverseRoute:');
   // empty route → swaps regions, no segments
   const empty = reverseRoute({ segments: [], start: {lat:1,lon:2}, end: {lat:3,lon:4} });
   ok('empty reverse swaps regions', empty.segments.length === 0 && empty.start.lat === 3 && empty.end.lat === 1);
+}
+
+console.log('\nGPS recording: denoise + quality gate + processTrace:');
+{
+  // Build a straight ~east trace at the equator: N fixes 1s apart, ~5 m/s.
+  // 5 m ≈ 0.0000449 deg lon at the equator.
+  const dLon = 5 / 111320;
+  const mkTrace = (n, startT = 0) => {
+    const t = [];
+    for (let i = 0; i < n; i++) t.push({ lat: 0, lon: i * dLon, t: startT + i * 1000 });
+    return t;
+  };
+
+  // denoiseTrace drops an impossible-speed spike but keeps clean fixes.
+  const spiked = mkTrace(12);
+  spiked.splice(6, 0, { lat: 0.5, lon: 6 * dLon, t: 5500 }); // ~55 km north in 0.5s → impossible
+  const cleaned = denoiseTrace(spiked);
+  ok('denoise drops the impossible spike', cleaned.length === 12, `${cleaned.length}`);
+  ok('denoise keeps clean fixes', denoiseTrace(mkTrace(12)).length === 12);
+
+  // gpsQualityGate: too few fixes → block
+  ok('gate blocks too-few fixes', gpsQualityGate(mkTrace(5)).ok === false);
+  // long enough & dense → ok (60 fixes × 5 m ≈ 295 m > 200 m)
+  const good = gpsQualityGate(mkTrace(60));
+  ok('gate passes a good trace', good.ok === true, JSON.stringify(good.reason));
+  // too short in distance → block (12 fixes × 5 m = 55 m < 200)
+  ok('gate blocks too-short distance', gpsQualityGate(mkTrace(12)).ok === false);
+  // dominant gap → block: 60 fixes then one with a huge time gap covering >25%
+  const gappy = mkTrace(60);
+  gappy[30].t += 10 * 60 * 1000; for (let i = 31; i < gappy.length; i++) gappy[i].t += 10 * 60 * 1000;
+  ok('gate blocks a dominant time gap', gpsQualityGate(gappy).ok === false);
+
+  // processTrace end-to-end → processed route shape like GPX
+  const pt = processTrace(mkTrace(120)); // ~595 m
+  ok('processTrace ok on a good trace', pt.ok === true);
+  ok('processTrace yields segments', pt.ok && pt.processed.segments.length > 0);
+  ok('processTrace has start/end', pt.ok && pt.processed.start && pt.processed.end);
+  ok('processTrace reports plausible distance', pt.ok && pt.processed.totalDistance > 400);
+  // blocked trace returns a reason, no processed
+  const blocked = processTrace(mkTrace(5));
+  ok('processTrace blocks with a reason', blocked.ok === false && typeof blocked.reason === 'string');
+
+  // processPoints matches the GPX path shape (start/end/segments/warnings)
+  const pp = processPoints([{lat:0,lon:0},{lat:0,lon:dLon*100}]);
+  ok('processPoints returns route shape', !!pp.segments && !!pp.start && !!pp.end && Array.isArray(pp.warnings));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

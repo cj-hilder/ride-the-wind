@@ -14,7 +14,7 @@
  * tests) so this whole layer is exercisable headlessly.
  */
 
-import { processGpx, reverseRoute } from "./gpxRoute.js";
+import { processGpx, processTrace, reverseRoute } from "./gpxRoute.js";
 import {
   seedKSplit as computeSeedKSplit,
   fetchForecast as realFetchForecast,
@@ -1029,6 +1029,114 @@ export function createAppController(deps = {}) {
    * slider, so the editor can show the manual/learn switches and their status
    * text.
    */
+  /**
+   * Record a NEW route by GPS: like startRide but with no end-region detection
+   * (there is no route yet). Collects a raw {lat,lon,t} trace; the user ends it
+   * with manualFinish(). Pause is supported (excluded from actualSec). The trace
+   * is kept RAW here; denoising/gating happens at route construction.
+   */
+  async function recordRoute({ onTick, geo } = {}) {
+    const geoApi = geo || (typeof navigator !== "undefined" ? navigator.geolocation : null);
+    if (!geoApi) throw new Error("Geolocation unavailable.");
+    const startedAt = now();
+    const trace = [];
+    let prev = null, paused = false, pauseStartedAt = null, totalPausedMs = 0;
+
+    const watchId = geoApi.watchPosition(
+      (pos) => {
+        const fix = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: now(),
+          accuracyM: (typeof pos.coords.accuracy === "number" && pos.coords.accuracy >= 0) ? pos.coords.accuracy : null };
+        if (paused) { prev = fix; return; }
+        trace.push(fix);
+        if (prev && onTick) {
+          const moved = haversineLocal(prev.lat, prev.lon, fix.lat, fix.lon);
+          const dt = (fix.t - prev.t) / 1000;
+          onTick({
+            elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000,
+            distanceM: traceDistance(trace),
+            speedMps: dt > 0 ? moved / dt : 0,
+            accuracyM: fix.accuracyM,
+          });
+        }
+        prev = fix;
+      },
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+    );
+
+    function buildResult(endedAt) {
+      const pausedMs = totalPausedMs + (paused && pauseStartedAt ? (endedAt - pauseStartedAt) : 0);
+      return {
+        trace, startedAt, endedAt,
+        actualSec: (endedAt - startedAt - pausedMs) / 1000,
+        pausedSec: pausedMs / 1000,
+      };
+    }
+    function stop() { geoApi.clearWatch(watchId); }
+    let onFinishCb = null;
+    return {
+      stop,
+      pause: () => { if (!paused) { paused = true; pauseStartedAt = Date.now(); } },
+      resume: () => { if (paused) { totalPausedMs += Date.now() - pauseStartedAt; paused = false; pauseStartedAt = null; } },
+      isPaused: () => paused,
+      onFinish: (cb) => { onFinishCb = cb; },
+      manualFinish: () => { stop(); if (onFinishCb) onFinishCb(buildResult(now())); },
+    };
+  }
+
+  /**
+   * Finalize a recorded route: gate + process the raw trace into geometry, create
+   * the route, and log the recording traversal as the route's FIRST ride (normal
+   * classification/curation). Returns { ok:true, route } or { ok:false, reason }
+   * when the quality gate blocks it.
+   */
+  /**
+   * Preview a recorded GPS trace for the New route form: run the quality gate +
+   * processing WITHOUT creating anything. Returns { ok:true, processed, preview }
+   * or { ok:false, reason } (re-record message). The caller keeps the raw
+   * `recording` to pass to finalizeRecordedRoute at save (for first-ride logging).
+   */
+  function previewTrace(trace) {
+    const result = processTrace(trace);
+    if (!result.ok) return result;
+    const p = result.processed;
+    let climb = 0;
+    if (p.hasElevation) for (const s of p.segments) if (s.eleDelta > 0) climb += s.eleDelta;
+    return {
+      ok: true,
+      processed: p,
+      preview: {
+        totalDistance: p.totalDistance,
+        hasElevation: p.hasElevation,
+        climb: p.hasElevation ? climb : null,
+        pointCount: p.segments.length + 1,
+        warnings: p.warnings || [],
+        example: exampleFor(p.segments),
+        polyline: routePolyline(p.segments, p.end),
+      },
+    };
+  }
+
+  async function finalizeRecordedRoute(recording, setup) {
+    const result = processTrace(recording.trace);
+    if (!result.ok) return result;
+    const route = await createRouteFromProcessed(result.processed, setup);
+    try {
+      const forecastWind = await stationSeriesFor(route).catch(() => []);
+      if (forecastWind.length) {
+        await recordRide({
+          routeId: route.id,
+          actualTimeSec: Math.round(recording.actualSec),
+          startedAt: recording.startedAt,
+          endedAt: recording.endedAt,
+          distanceM: route.totalDistance,
+          forecastWind,
+        });
+      }
+    } catch { /* first-ride logging is best-effort; the route still stands */ }
+    return { ok: true, route };
+  }
+
   async function routeTuning(routeId) {
     const route = isExampleId(routeId) ? exampleRoute() : await store.getRoute(routeId);
     if (!route) return null;
@@ -1255,7 +1363,7 @@ export function createAppController(deps = {}) {
     store,
     createRoute, createRouteFromProcessed, createReverseRoute, previewReverse, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
     getHomeVerdict, listRoutesWithVerdict,
-    recordRide, recordManualRide, listRides, startRide, distanceToStart, distanceToEnd, rideExpectation, routeTuning, updateExampleSeeds,
+    recordRide, recordManualRide, listRides, startRide, recordRoute, previewTrace, finalizeRecordedRoute, distanceToStart, distanceToEnd, rideExpectation, routeTuning, updateExampleSeeds,
     updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,
     start,
     exportAll, importAll, requestPersistence,

@@ -223,6 +223,53 @@ console.log('\nReverse route (createReverseRoute):');
   ok('built route has the reversed distance', Math.abs(built.totalDistance - src.totalDistance) < 1);
 }
 
+console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRecordedRoute):');
+{
+  const gApp = mkApp(stubForecast(90, 20));
+  // Synchronous geo stub: emits a straight ~east trace of N fixes when watched.
+  const dLon = 5 / 111320; // ~5 m spacing at the equator
+  const makeGeo = (n) => {
+    let cb = null;
+    return {
+      watchPosition: (success) => { cb = success; return 1; },
+      clearWatch: () => {},
+      _emitAll: () => { for (let i = 0; i < n; i++) { clock += 1000; cb({ coords: { latitude: 0, longitude: i * dLon, accuracy: 5 } }); } },
+    };
+  };
+  const geo = makeGeo(150); // ~745 m
+  const handle = await gApp.recordRoute({ geo });
+  let recorded = null;
+  handle.onFinish((rec) => { recorded = rec; });
+  geo._emitAll();
+  handle.manualFinish();
+  ok('recordRoute produced a trace', recorded && recorded.trace.length === 150, `${recorded && recorded.trace.length}`);
+
+  // previewTrace: gate + process without creating
+  const pv = gApp.previewTrace(recorded.trace);
+  ok('previewTrace ok', pv.ok === true, JSON.stringify(pv.reason));
+  ok('previewTrace has geometry', pv.ok && pv.preview.totalDistance > 500);
+
+  const before = (await gApp.listRoutes()).length;
+  const res = await gApp.finalizeRecordedRoute(recorded, {
+    name: 'Recorded Loop', seedStillAirSec: 200, seedHeadwind20Sec: 260, seedTailwind20Sec: 150,
+    baselineMode: 'learn', kMode: 'learn', targetArrival: '08:45', activeDays: ['MO'],
+  });
+  ok('finalize creates the route', res.ok && res.route && res.route.name === 'Recorded Loop');
+  ok('one new route exists', (await gApp.listRoutes()).length === before + 1);
+  // First traversal logged as the route's first ride
+  const rides = await gApp.listRides(res.route.id);
+  ok('route arrives with exactly one ride', rides.length === 1, `${rides.length}`);
+  ok('first ride has a windFactor', rides[0].windFactor != null);
+
+  // A too-short recording is blocked with a reason (no route created)
+  const geo2 = makeGeo(4);
+  const h2 = await gApp.recordRoute({ geo: geo2 });
+  let rec2 = null; h2.onFinish((r) => { rec2 = r; }); geo2._emitAll(); h2.manualFinish();
+  const blocked = await gApp.finalizeRecordedRoute(rec2, { name: 'Too Short', seedStillAirSec: 100, targetArrival: '08:45', activeDays: ['MO'] });
+  ok('too-short recording blocked', blocked.ok === false && typeof blocked.reason === 'string');
+}
+clock = new Date(2026,4,31,21,30).getTime(); // restore after geo stub advanced it
+
 console.log('\nExcluded ride is ignored by the resolver:');
 {
   const t=await app.routeTuning(route.id);
