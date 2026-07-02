@@ -310,14 +310,36 @@ the end-of-ride sanity check above.
 
 **2e. Progress — bottom.**
 - **Existing-route ride:** a graphical **progress bar**, **no numbers**, amber
-  fill left→right = `estimated-distance / route-total`. **Estimated distance** =
-  `min(GPS distance travelled, route-total − line-of-sight-to-end)` — the
-  geometric cap means progress can never exceed 100%, so there is **no red
-  overage component** (a detour or GPS over-count is silently clamped rather than
-  shown as >100%). The line-of-sight term only ever *reduces* the estimate
-  (early on a curvy/looping route, GPS wins via the `min`).
-- **New-route recording:** no known total, so the bar is **replaced by a numeric
-  distance covered so far** (raw GPS distance).
+  fill left→right = `along-route-distance / route-total`. The along-route
+  distance comes from **projecting each GPS fix onto the route polyline**
+  (`projectToRoute`): nearest point on the route, read as cumulative along-route
+  distance. This is **gap-immune** — if GPS was suspended (phone off/pocketed)
+  and resumes mid-ride, the next fix snaps to the route and progress is
+  immediately correct, no accumulated trace needed. It never exceeds 100%, so
+  there is **no red overage** and the old line-of-sight *estimated-distance
+  clamp is retired* in favour of this projection.
+  - **Continuity preference:** among route points within `OFF_ROUTE_M` (150 m)
+    perpendicular, the projection nearest the last known along-route position is
+    chosen, so a route passing near itself doesn't cause jumps. After a gap the
+    hint is stale, so a self-crossing route *may snap to the wrong arm* — an
+    accepted limitation (most commutes don't self-cross).
+  - **Off-route (detour):** if no route point is within 150 m, progress
+    **freezes** at the last along-route position (you make no route progress
+    while off it).
+- **New-route recording:** no route to project onto, so the bar is **replaced by
+  a numeric distance covered so far** (raw GPS distance).
+
+**Expected arrival** (2b) = `now + (route_total − along-route-distance) / pace`.
+Remaining comes from the same gap-immune projection. **Pace** is a 45-min EMA fed
+from **along-route** distance deltas between fixes (not straight-line trace
+deltas): over a long GPS gap the straight-line distance between the pre-gap and
+resume fixes would badly understate the real path and crater pace — along-route
+delta is correct regardless of gap length or route curvature. Pace updates are
+**skipped while off-route** (a detour makes no route progress; the EMA holds its
+last value). If off-route from the very start, pace never seeds and arrival
+falls back to the forecast estimate naturally. The **speedometer needle** is
+unaffected — it keeps showing real instantaneous speed from raw trace deltas
+(a speedo should read true speed, including on a detour).
 
 **Average speed** (used for the dynamic arrival, and a candidate small readout) =
 `distance-so-far ÷ elapsed-moving-time`, excluding paused time (consistent with

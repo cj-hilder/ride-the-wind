@@ -1,6 +1,6 @@
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
-  averageSpeedKmh, emaStep, estimatedDistanceM,
+  averageSpeedKmh, emaStep, routePolyline, projectToRoute, OFF_ROUTE_M,
   SPEEDO_START_DEG, SPEEDO_SWEEP_DEG, SPEEDO_MAX_KMH, ARRIVAL_LIVE_AFTER_M,
 } from './src/lib/rideReadout.js';
 
@@ -93,21 +93,51 @@ console.log('\naverageSpeedKmh:');
 ok('5000 m / 1000 s = 18 km/h', near(averageSpeedKmh(5000, 1000), 18));
 ok('zero time → 0', averageSpeedKmh(100, 0) === 0);
 
-console.log('\nestimatedDistanceM (GPS clamped by route − line-of-sight):');
+console.log('\nroutePolyline + projectToRoute (along-route projection):');
 {
-  const total = 10000;
-  // straight-line 2km from end → can have covered at most 8km
-  ok('detour: GPS 9km but 2km from end → capped 8km', estimatedDistanceM(9000, total, 2000) === 8000);
-  // GPS less than geometric cap → GPS wins (early on a looping route)
-  ok('GPS 3km, 2km from end (cap 8km) → 3km', estimatedDistanceM(3000, total, 2000) === 3000);
-  // at the end → full route
-  ok('at end (los 0) → full route', estimatedDistanceM(12000, total, 0) === total);
-  // line-of-sight to end exceeds route length (you're behind the start / early
-  // GPS noise) → geometric term is negative → estimate clamps to 0.
-  ok('los > route → clamps to 0', estimatedDistanceM(50, total, 12000) === 0);
-  // missing inputs → GPS unchanged
-  ok('no total → GPS unchanged', estimatedDistanceM(1234, null, 500) === 1234);
-  ok('never exceeds route', estimatedDistanceM(99999, total, 100) <= total);
+  // A simple ~east-west route near the equator for easy geometry. Two segments
+  // of ~1 km each along a line of latitude (lon increases). At the equator,
+  // 1 deg lon ≈ 111320 m, so ~0.008983 deg ≈ 1000 m.
+  const dLon = 1000 / 111320;
+  const route = {
+    segments: [
+      { lat: 0, lon: 0, distance: 1000 },
+      { lat: 0, lon: dLon, distance: 1000 },
+    ],
+    endRegion: { lat: 0, lon: 2 * dLon },
+    totalDistance: 2000,
+  };
+  const poly = routePolyline(route);
+  ok('polyline has 3 points', poly.length === 3);
+  ok('cumulative distances 0/1000/2000', poly[0].cumM === 0 && Math.abs(poly[1].cumM - 1000) < 1 && Math.abs(poly[2].cumM - 2000) < 1);
+
+  // A fix exactly at the midpoint of segment 1 → alongM ≈ 500
+  const mid = projectToRoute({ lat: 0, lon: dLon / 2 }, poly, null);
+  ok('midpoint of seg1 → ~500 m along', !mid.offRoute && Math.abs(mid.alongM - 500) < 5, `${mid.alongM}`);
+
+  // A fix at the start → ~0
+  const startP = projectToRoute({ lat: 0, lon: 0 }, poly, null);
+  ok('start → ~0 along', Math.abs(startP.alongM) < 5 && !startP.offRoute);
+
+  // A fix near the end → ~2000
+  const endP = projectToRoute({ lat: 0, lon: 2 * dLon }, poly, null);
+  ok('end → ~2000 along', Math.abs(endP.alongM - 2000) < 5, `${endP.alongM}`);
+
+  // A fix far off the route (well beyond OFF_ROUTE_M perpendicular) → offRoute,
+  // alongM held at the supplied lastAlongM.
+  const off = projectToRoute({ lat: 0.01, lon: dLon / 2 }, poly, 500); // ~1.1 km north
+  ok('far off route → offRoute, holds lastAlong', off.offRoute && off.alongM === 500, `${JSON.stringify(off)}`);
+
+  // Continuity: a fix equidistant-ish is disambiguated by lastAlongM. Place a
+  // fix at seg-boundary area and check it prefers near the hint.
+  const cont = projectToRoute({ lat: 0, lon: dLon }, poly, 950);
+  ok('continuity picks near hint (~1000)', Math.abs(cont.alongM - 1000) < 5, `${cont.alongM}`);
+
+  // Gap self-heal: no hint (null), fix halfway along seg2 → ~1500, no stale bias
+  const heal = projectToRoute({ lat: 0, lon: 1.5 * dLon }, poly, null);
+  ok('post-gap (no hint) snaps to nearest ~1500', Math.abs(heal.alongM - 1500) < 5, `${heal.alongM}`);
+
+  ok('empty route → offRoute', projectToRoute({ lat: 0, lon: 0 }, [], null).offRoute === true);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
