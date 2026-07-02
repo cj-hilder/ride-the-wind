@@ -174,10 +174,14 @@ Create the return trip from an existing route's geometry.
 - **Geometry:** reverse the segment order, swap start/end regions, and reverse
   each segment bearing (bearing + 180°, normalised). Distance/elevation per
   segment carry over (elevation deltas negate). Total distance unchanged.
-- **Tuning seed:** the reversed route **inherits the original's speed and k
-  slider values** as a sensible starting seed (the bike is the same), but starts
-  with **no rides** — the return trip has different wind exposure and gradient,
-  so its learned k will diverge. Modes default to learn/learn like any new route.
+- **Tuning seed:** the reversed route **inherits the source's configuration** —
+  its modes (baseline/k manual-or-learn, split) and its manual/slider seed values
+  (speed and k). It starts with **no rides**, so in learn mode it shows the
+  inherited manual seed with the "using your setting until enough rides" note
+  (which may differ from what the source currently *displays* if the source has
+  learned a value — but the underlying config is identical; the reverse simply
+  hasn't learned yet). The return trip then learns its own k, which will diverge
+  (different wind exposure and gradient).
 - **Name:** auto-suggest **"Reverse ‹original route name›"** (editable — the
   user can accept or change it).
 - The user lands on the standard details form to set name/schedule/confirm.

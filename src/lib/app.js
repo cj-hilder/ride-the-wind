@@ -365,21 +365,27 @@ export function createAppController(deps = {}) {
       start: rev.start,
       end: rev.end,
     };
-    // Inherit the source's seeds/config as the new route's starting point.
+    // Inherit the source's CONFIGURATION (not its rendered appearance): same
+    // modes and the same manual/slider seed values (which, when the source is in
+    // learn mode, are its hidden manual fallback). The reverse has zero rides, so
+    // in learn mode it will display that manual seed with the "using your setting
+    // until enough rides" note — different from what the source may currently show
+    // (a learned value), but carrying the identical underlying config. That's
+    // honest: the reverse genuinely hasn't learned anything yet.
     const fullSetup = {
       name: setup.name != null ? setup.name : `Reverse ${src.name}`,
       seedStillAirSec: src.seedStillAirSec,
       seedHeadwind20Sec: src.seedHeadwind20Sec,
       seedTailwind20Sec: src.seedTailwind20Sec,
       split: src.split ?? false,
-      baselineMode: "learn", kMode: "learn", // new route: learn from its own rides
+      baselineMode: src.baselineMode ?? "learn",
+      kMode: src.kMode ?? "learn",
       targetArrival: setup.targetArrival ?? src.targetArrival,
       timeMode: setup.timeMode ?? src.timeMode,
       activeDays: setup.activeDays ?? [],
       startRadius: src.startRegion?.radius, endRadius: src.endRegion?.radius,
     };
-    // Inherit k sliders directly (not re-derived from seed times), so the return
-    // trip starts from the same hand/learned k the rider settled on.
+    // Inherit k sliders verbatim (the source's manual/slider k), not re-derived.
     const seededK = { kHead: src.sliderKHead ?? 1.0, kTail: src.sliderKTail ?? 1.0 };
     return store.createRoute(processed, fullSetup, seededK);
   }

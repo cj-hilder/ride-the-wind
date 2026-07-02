@@ -197,6 +197,15 @@ console.log('\nReverse route (createReverseRoute):');
   // custom name honoured
   const rev2 = await rApp.createReverseRoute(src.id, { name:'Evening ride home' });
   ok('custom name honoured', rev2.name === 'Evening ride home');
+
+  // Modes are INHERITED, not forced: a source in manual baseline yields a
+  // manual-baseline reverse carrying the same manual seed value.
+  const srcM = await rApp.createRoute(gpx, { name:'ManualBaseline', seedStillAirSec:1000,
+    seedHeadwind20Sec:1300, seedTailwind20Sec:800, baselineMode:'manual', kMode:'learn',
+    targetArrival:'08:45', activeDays:[] }, {kHead:1,kTail:1});
+  const revM = await rApp.createReverseRoute(srcM.id, {});
+  ok('reverse inherits manual baseline mode', revM.baselineMode === 'manual' && revM.kMode === 'learn');
+  ok('reverse inherits the manual seed value', revM.seedStillAirSec === 1000);
 }
 
 console.log('\nExcluded ride is ignored by the resolver:');
