@@ -165,23 +165,26 @@ function nearestOnSegment(pLat, pLon, aLat, aLon, bLat, bLon) {
  */
 export function projectToRoute(fix, polyline, lastAlongM = null) {
   if (!fix || !polyline || polyline.length < 2) {
-    return { alongM: lastAlongM || 0, offRoute: true };
+    return { alongM: lastAlongM || 0, offRoute: true, offRouteM: null };
   }
-  let best = null; // { along, perp }
+  let best = null;         // within-threshold winner: { along, perp }
+  let nearestPerp = Infinity; // nearest perpendicular over the whole route
   for (let i = 0; i < polyline.length - 1; i++) {
     const a = polyline[i], b = polyline[i + 1];
     const legLen = b.cumM - a.cumM;
     const { t, perp } = nearestOnSegment(fix.lat, fix.lon, a.lat, a.lon, b.lat, b.lon);
     const along = a.cumM + t * legLen;
+    if (perp < nearestPerp) nearestPerp = perp;
     if (perp > OFF_ROUTE_M) continue;
     if (best == null) { best = { along, perp }; continue; }
     if (lastAlongM != null) {
-      // prefer continuity: closer to last known along-route position
       if (Math.abs(along - lastAlongM) < Math.abs(best.along - lastAlongM)) best = { along, perp };
     } else if (perp < best.perp) {
       best = { along, perp };
     }
   }
-  if (best == null) return { alongM: lastAlongM == null ? 0 : lastAlongM, offRoute: true };
-  return { alongM: best.along, offRoute: false };
+  if (best == null) {
+    return { alongM: lastAlongM == null ? 0 : lastAlongM, offRoute: true, offRouteM: nearestPerp };
+  }
+  return { alongM: best.along, offRoute: false, offRouteM: best.perp };
 }

@@ -124,9 +124,13 @@ console.log('\nroutePolyline + projectToRoute (along-route projection):');
   ok('end → ~2000 along', Math.abs(endP.alongM - 2000) < 5, `${endP.alongM}`);
 
   // A fix far off the route (well beyond OFF_ROUTE_M perpendicular) → offRoute,
-  // alongM held at the supplied lastAlongM.
+  // alongM held at the supplied lastAlongM, and offRouteM ≈ the stray distance.
   const off = projectToRoute({ lat: 0.01, lon: dLon / 2 }, poly, 500); // ~1.1 km north
   ok('far off route → offRoute, holds lastAlong', off.offRoute && off.alongM === 500, `${JSON.stringify(off)}`);
+  ok('far off route → offRouteM ≈ 1.1 km', off.offRouteM > 1000 && off.offRouteM < 1200, `${off.offRouteM}`);
+  // on-route fix reports a small offRouteM
+  const onr = projectToRoute({ lat: 0, lon: dLon / 2 }, poly, null);
+  ok('on route → small offRouteM', onr.offRouteM < 5, `${onr.offRouteM}`);
 
   // Continuity: a fix equidistant-ish is disambiguated by lastAlongM. Place a
   // fix at seg-boundary area and check it prefers near the hint.

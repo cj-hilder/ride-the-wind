@@ -1057,6 +1057,7 @@ export function createAppController(deps = {}) {
               speedMps,                 // this-fix derived speed; UI smooths
               gpsSpeedMps: fix.gpsSpeedMps, // device GPS speed if available (m/s)
               accuracyM: fix.accuracyM, // device GPS accuracy estimate (m), or null
+              lat: fix.lat, lon: fix.lon,  // fix position, for route projection
               distanceToEndM: dEnd,     // straight-line metres to the end region
             });
           }

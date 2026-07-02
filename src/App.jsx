@@ -2027,24 +2027,23 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         if (em.lastT != null && goodFix) {
           const dt = t - em.lastT;
           if (dt > 0) {
-            // Needle: raw trace-distance delta → 5s EMA (real speed, incl. detour).
+            // Speed from raw trace-distance delta (real movement, on- or
+            // off-route). The needle uses a fast 5s EMA; the arrival pace uses a
+            // slow 45min EMA of the SAME real movement, so pace is always live —
+            // it reflects how fast the rider is going regardless of whether they
+            // are on the route. (Off-route it's *remaining distance* that's
+            // unknown, not pace.) Time-aware EMAs absorb gaps correctly.
             let instMps = Math.max(0, (distanceM - em.lastDistM) / (dt / 1000));
             if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
             em.speedMps = emaStep(em.speedMps, instMps, dt, SPEED_EMA_TAU_MS);
-
-            // Pace: ALONG-ROUTE delta → 45min EMA. Skip while off-route (hold the
-            // last pace; a detour makes no route progress). Seed at 1 km along.
-            if (!proj.offRoute && em.lastAlongM != null) {
-              const alongDelta = proj.alongM - em.lastAlongM;
-              if (alongDelta >= 0) {
-                const paceSample = alongDelta / (dt / 1000);
-                if (!em.paceSeeded && proj.alongM >= ARRIVAL_LIVE_AFTER_M && elapsedSec > 0) {
-                  em.paceMps = proj.alongM / elapsedSec; // average so far, along-route
-                  em.paceSeeded = true;
-                } else if (em.paceSeeded && paceSample <= SPEED_SANE_MAX_MPS) {
-                  em.paceMps = emaStep(em.paceMps, paceSample, dt, PACE_EMA_TAU_MS);
-                }
-              }
+            // Seed pace at 1 km of real distance with the average so far, then
+            // refine per-fix. Seeding uses real distance/time so it works even if
+            // the opening kilometre included off-route portions.
+            if (!em.paceSeeded && distanceM >= ARRIVAL_LIVE_AFTER_M && elapsedSec > 0) {
+              em.paceMps = distanceM / elapsedSec;
+              em.paceSeeded = true;
+            } else if (em.paceSeeded) {
+              em.paceMps = emaStep(em.paceMps, instMps, dt, PACE_EMA_TAU_MS);
             }
           }
         }
@@ -2053,7 +2052,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           em.lastT = t; em.lastDistM = distanceM;
           if (!proj.offRoute) em.lastAlongM = proj.alongM;
         }
-        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, speedKmh: (em.speedMps || 0) * 3.6 });
+        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6 });
       },
       onFinish: (r) => {
         releaseWake();
@@ -2186,7 +2185,10 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         // clamp is needed. `gpsDistanceM` (real trace) still gates the 1 km
         // forecast→live arrival switch.
         const alongM = live.alongM || 0;
-        const arrivalMs = expectedArrivalMs({
+        // Arrival is only meaningful on-route (off-route we have a pace but no
+        // defined remaining distance, so arrival is genuinely unknown → no
+        // marker; an "Off route" message explains the frozen progress instead).
+        const arrivalMs = live.offRoute ? null : expectedArrivalMs({
           nowMs, estDistanceM: alongM, gpsDistanceM: live.distanceM, routeTotalM: totalM,
           paceMps: emaRef.current.paceMps, forecastRemainingSec: route.baselineTimeSec ?? null,
         });
@@ -2204,6 +2206,13 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
                 <AnalogClock nowMs={nowMs} arrivalMs={arrivalMs} />
               </div>
             </div>
+            {/* off-route status: explains frozen progress + unknown arrival,
+                and reassures the rider that movement is still tracked */}
+            {live.offRoute && live.offRouteM != null && (
+              <div style={{ textAlign: "center", paddingTop: 8, color: "#e0a45e", fontSize: 15, fontWeight: 600, fontFamily: "'Fraunces',serif" }}>
+                Off route by {(live.offRouteM / 1000).toFixed(1)} km
+              </div>
+            )}
             {/* speedometer */}
             <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0 }}>
               <div style={{ width: "96%", maxWidth: 380 }}>

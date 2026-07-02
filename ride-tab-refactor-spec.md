@@ -329,17 +329,23 @@ the end-of-ride sanity check above.
 - **New-route recording:** no route to project onto, so the bar is **replaced by
   a numeric distance covered so far** (raw GPS distance).
 
-**Expected arrival** (2b) = `now + (route_total − along-route-distance) / pace`.
-Remaining comes from the same gap-immune projection. **Pace** is a 45-min EMA fed
-from **along-route** distance deltas between fixes (not straight-line trace
-deltas): over a long GPS gap the straight-line distance between the pre-gap and
-resume fixes would badly understate the real path and crater pace — along-route
-delta is correct regardless of gap length or route curvature. Pace updates are
-**skipped while off-route** (a detour makes no route progress; the EMA holds its
-last value). If off-route from the very start, pace never seeds and arrival
-falls back to the forecast estimate naturally. The **speedometer needle** is
-unaffected — it keeps showing real instantaneous speed from raw trace deltas
-(a speedo should read true speed, including on a detour).
+**Expected arrival** (2b) = `now + (route_total − along-route-distance) / pace`,
+shown **only when on-route**. **Pace** is a 45-min EMA fed from **real
+trace-distance** deltas between fixes every good fix — pace reflects how fast the
+rider is moving and is therefore always live, on- or off-route (the time-aware
+EMA absorbs GPS gaps correctly). Off-route it is *remaining distance* that is
+undefined, not pace: since we can't know where an off-route rider will go next,
+arrival is genuinely unknown, so the **bezel marker is hidden while off-route**
+(deliberately, not as a side effect). The **speedometer needle** uses the same
+trace-distance movement via a fast 5s EMA.
+
+**Off-route status message.** While off-route, the frozen progress bar and absent
+arrival marker would otherwise look like the app has died. To explain them and
+reassure the rider that movement is still tracked, a message **"Off route by
+x.x km"** is shown in the space between the clock and the speedometer (their
+placement unchanged), using the nearest perpendicular distance to the route
+(`projectToRoute` returns `offRouteM`), rounded to 1 dp — coarse enough not to
+jitter, live enough to show tracking is active.
 
 **Average speed** (used for the dynamic arrival, and a candidate small readout) =
 `distance-so-far ÷ elapsed-moving-time`, excluding paused time (consistent with

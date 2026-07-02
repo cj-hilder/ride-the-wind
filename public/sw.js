@@ -24,8 +24,8 @@ const SHELL_CACHE = "rtw-shell-" + VERSION;
 const DATA_CACHE = "rtw-data-v1";
 
 // Paths are relative to the SW's scope (registered under the Pages subpath),
-// so the same SW works whether served from / or /ride-the-wind/.
-const BASE = new URL("./", self.location).pathname; // e.g. "/ride-the-wind/"
+// BASE is derived dynamically so the SW works at any path (/ for ridethewind.nz).
+const BASE = new URL("./", self.location).pathname; // e.g. "/" or "/ride-the-wind/"
 // Only pre-cache things whose URL never changes. NOT index.html — that is
 // fetched network-first so new deploys are picked up immediately.
 const SHELL_ASSETS = [
