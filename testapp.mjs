@@ -144,6 +144,36 @@ console.log('\nCapture path sets used/not-used from classification (no forced us
   await app.deleteRoute(r2.id); // clean up so later export-count assertions hold
 }
 
+console.log('\nManual ride entry (recordManualRide):');
+{
+  const mApp = mkApp(stubForecast(90, 30)); // strong headwind along route → windy
+  // clock = today at 09:00 on 2026-06-01 (within the stub forecast window)
+  clock = new Date(2026,5,1,9,0).getTime();
+  const mRoute = await mApp.createRoute(gpx, { name:'ManualRoute', seedStillAirSec:1000,
+    targetArrival:'08:45', activeDays:['MO','TU','WE','TH','FR'] }, {kHead:1,kTail:1});
+  const startMs = new Date(2026,5,1,8,0).getTime();
+  const endMs = new Date(2026,5,1,8,20).getTime(); // 20 min ride, both before 09:00
+  const { ride } = await mApp.recordManualRide(mRoute.id, { startMs, endMs });
+  ok('manual ride recorded with windFactor', ride.windFactor != null, `${ride.windFactor}`);
+  ok('actualTimeSec = finish − start (1200s)', ride.actualTimeSec === 1200, `${ride.actualTimeSec}`);
+  ok('windy manual ride → used', ride.included === true, `wf=${ride.windFactor}`);
+  ok('startedAt preserved', ride.startedAt === startMs);
+
+  // Validation: finish before start → throws
+  let threw = false;
+  try { await mApp.recordManualRide(mRoute.id, { startMs: endMs, endMs: startMs }); } catch { threw = true; }
+  ok('finish ≤ start rejected', threw);
+  // Validation: finish in the future → throws
+  threw = false;
+  try { await mApp.recordManualRide(mRoute.id, { startMs: clock, endMs: clock + 600000 }); } catch { threw = true; }
+  ok('finish in the future rejected', threw);
+
+  // It appears in the manager list
+  const list = await mApp.ridesForManager(mRoute.id);
+  ok('manual ride appears in the manager list', list.length === 1);
+}
+clock = new Date(2026,4,31,21,30).getTime(); // restore for later tests
+
 console.log('\nExcluded ride is ignored by the resolver:');
 {
   const t=await app.routeTuning(route.id);

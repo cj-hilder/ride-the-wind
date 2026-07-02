@@ -1220,6 +1220,7 @@ function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
   const [rides, setRides] = useState(null);
   const [editing, setEditing] = useState(null); // a ride object
   const [bulkAsk, setBulkAsk] = useState(null);  // { rideId, count }
+  const [manualOpen, setManualOpen] = useState(false); // "add ride manually" form
   const pressTimer = useRef(null);
 
   const load = useCallback(() => {
@@ -1303,6 +1304,20 @@ function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
           </>
         )}
 
+      {!route.isExample && (
+        <button onClick={() => setManualOpen(true)} style={{
+          marginTop: 14, width: "100%", padding: "11px 16px", borderRadius: 12, cursor: "pointer",
+          fontFamily: "inherit", fontSize: 13.5, fontWeight: 600,
+          background: "rgba(255,255,255,0.08)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)",
+        }}>+ Enter a ride from earlier today</button>
+      )}
+
+      {manualOpen && (
+        <ManualRideEntry route={route} controller={controller}
+          onClose={() => setManualOpen(false)}
+          onAdded={async () => { setManualOpen(false); await reloadAfterMutation(); }} />
+      )}
+
       {editing && (
         <RideEditor ride={editing} controller={controller}
           onClose={async () => { setEditing(null); await reloadAfterMutation(); }} />
@@ -1326,10 +1341,81 @@ function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
 }
 
 /* ============================================================================
- * RideEditor — full-screen editor for one ride. Edit duration, toggle
- * include/exclude, flip the current/historic baseline switch (locked historic
- * at 14 days), bulk "exclude this and earlier", or delete the ride.
+ * ManualRideEntry — log a ride from earlier today by entering start/finish
+ * times. Today-only (so today's forecast is always fetchable for wind
+ * reconstruction). Delegates to controller.recordManualRide, which treats it
+ * identically to a GPS-recorded ride (same wind_factor reconstruction and
+ * classification).
  * ========================================================================== */
+function ManualRideEntry({ route, controller, onClose, onAdded }) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const nowHM = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const [start, setStart] = useState("");
+  const [finish, setFinish] = useState(nowHM());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Combine an HH:MM (today, local) into an epoch ms.
+  const toMsToday = (hm) => {
+    const [h, m] = hm.split(":").map(Number);
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    return d.getTime();
+  };
+
+  const valid = /^\d{1,2}:\d{2}$/.test(start) && /^\d{1,2}:\d{2}$/.test(finish);
+  const submit = async () => {
+    setError(null);
+    const startMs = toMsToday(start), endMs = toMsToday(finish);
+    if (!(endMs > startMs)) { setError("Finish time must be after the start time."); return; }
+    if (endMs > Date.now()) { setError("Finish time can't be in the future."); return; }
+    setBusy(true);
+    try {
+      await controller.recordManualRide(route.id, { startMs, endMs });
+      onAdded();
+    } catch (e) {
+      setError(e.message || "Couldn't add the ride.");
+      setBusy(false);
+    }
+  };
+
+  const dur = (() => {
+    if (!valid) return null;
+    const mins = Math.round((toMsToday(finish) - toMsToday(start)) / 60000);
+    return mins > 0 ? mins : null;
+  })();
+
+  const field = { width: "100%", padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: 16, fontFamily: "inherit" };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "grid", placeItems: "center", background: "rgba(8,10,22,0.7)", padding: 24 }}>
+      <div style={{ maxWidth: 340, width: "100%", padding: "20px 20px", borderRadius: 16, background: "#1d1b38", border: "1px solid rgba(255,255,255,0.18)" }}>
+        <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 6 }}>Enter a ride from earlier today</div>
+        <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", lineHeight: 1.45, marginBottom: 16 }}>
+          Enter when you started and finished. We'll work out the wind from today's forecast, just as if you'd recorded it.
+        </div>
+        <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
+          <label style={{ flex: 1, fontSize: 12, color: "rgba(255,255,255,0.55)" }}>Start
+            <input type="time" value={start} onChange={(e) => setStart(e.target.value)} style={{ ...field, marginTop: 4 }} />
+          </label>
+          <label style={{ flex: 1, fontSize: 12, color: "rgba(255,255,255,0.55)" }}>Finish
+            <input type="time" value={finish} onChange={(e) => setFinish(e.target.value)} style={{ ...field, marginTop: 4 }} />
+          </label>
+        </div>
+        {dur != null && <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", marginBottom: 12 }}>Ride length: {dur} min</div>}
+        {error && <div style={{ fontSize: 13, color: "#e8927c", marginBottom: 12, lineHeight: 1.4 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onClose} disabled={busy} style={backupBtn}>Cancel</button>
+          <button onClick={submit} disabled={!valid || busy} style={{ ...backupBtn, background: valid && !busy ? "#e0a45e" : "rgba(224,164,94,0.4)", color: "#1a1f3a", border: "none", cursor: valid && !busy ? "pointer" : "default" }}>
+            {busy ? "Adding…" : "Add ride"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function RideEditor({ ride, controller, onClose }) {
   const [durMin, setDurMin] = useState(Math.round(ride.actualTimeSec / 60));
   const [included, setIncluded] = useState(ride.included);

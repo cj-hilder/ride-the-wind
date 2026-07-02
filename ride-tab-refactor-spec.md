@@ -409,6 +409,12 @@ No changes to the learning model, storage schema (beyond a possibly-reused
    controller method; Wake Lock acquired on start / released on finish & pause /
    re-acquired on visibility.
 4. **Item 4** (manual ride entry) — moderate; reuses wind reconstruction.
+   **[DONE]** `controller.recordManualRide(routeId, {startMs, endMs})` fetches
+   today's forecast and delegates to `recordRide`, so wind_factor reconstruction,
+   classification and used/unused are identical to a GPS-recorded ride;
+   `actualTimeSec = finish − start`. UI: an "Enter a ride from earlier today"
+   button in the Rides Manager opens `ManualRideEntry` (two time inputs, today-
+   only, finish ≤ now and > start).
 5. **Item 3C / 3B** (GPX demotion + reverse) — the method chooser plus the
    reverse transform.
 6. **Item 3A** (record by GPS) — largest new piece; build last on top of the

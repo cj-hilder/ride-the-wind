@@ -840,6 +840,32 @@ export function createAppController(deps = {}) {
 
   const listRides = (routeId) => store.listRides(routeId);
 
+  /**
+   * Manually log a ride from earlier today by entered start/finish times. Builds
+   * a capture equivalent to a GPS-recorded ride (fetches today's forecast so
+   * wind_factor is reconstructed the SAME way — predictForArrival(endMs) inside
+   * recordRide) and delegates to recordRide, so classification, used/unused and
+   * curation are all identical to a recorded ride. `actualSec` = finish − start.
+   * Times are ms epoch; caller enforces today-only, finish ≤ now, finish > start.
+   */
+  async function recordManualRide(routeId, { startMs, endMs }) {
+    if (isExampleId(routeId)) return { skipped: true, isExample: true };
+    if (!(endMs > startMs)) throw new Error("Finish time must be after the start time.");
+    if (endMs > now()) throw new Error("Finish time can't be in the future.");
+    const route = await store.getRoute(routeId);
+    if (!route) throw new Error("Route not found.");
+    const forecastWind = await stationSeriesFor(route).catch(() => []);
+    if (!forecastWind.length) throw new Error("Couldn't fetch the forecast to work out the wind for this ride. Check your connection and try again.");
+    return recordRide({
+      routeId,
+      actualTimeSec: Math.round((endMs - startMs) / 1000),
+      startedAt: startMs,
+      endedAt: endMs,
+      distanceM: route.totalDistance,
+      forecastWind,
+    });
+  }
+
   /* ---------------------------------------------------------------- *
    * Rides Manager
    * ---------------------------------------------------------------- */
@@ -1122,7 +1148,7 @@ export function createAppController(deps = {}) {
     store,
     createRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
     getHomeVerdict, listRoutesWithVerdict,
-    recordRide, listRides, startRide, distanceToStart, distanceToEnd, rideExpectation, routeTuning, updateExampleSeeds,
+    recordRide, recordManualRide, listRides, startRide, distanceToStart, distanceToEnd, rideExpectation, routeTuning, updateExampleSeeds,
     updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,
     start,
     exportAll, importAll, requestPersistence,
