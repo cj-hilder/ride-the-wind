@@ -2084,7 +2084,7 @@ function Setup({ controller, onDone, onCancel }) {
             <div style={{ color: "rgba(255,255,255,0.5)" }}>Loading…</div>
           ) : routeList.filter((r) => !r.isExample).length === 0 ? (
             <div style={{ padding: "18px 14px", textAlign: "center", color: "rgba(255,255,255,0.55)", border: "1px dashed rgba(255,255,255,0.16)", borderRadius: 12, lineHeight: 1.5 }}>
-              No routes to reverse yet. Import a GPX file first, then you can create its return trip.
+              No routes to reverse yet. Record a route or import a GPX file first, then you can create its return trip.
             </div>
           ) : (
             routeList.filter((r) => !r.isExample).map((r) => (
@@ -2424,9 +2424,9 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
       polyline: routePolyline(route),
     };
     setExpectLine(null);
-    if (!route.isExample) {
-      controller.rideExpectation(route).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
-    }
+    // Show the what-to-expect line for every route, including the example — on
+    // the example it showcases the feature during a demo ride.
+    controller.rideExpectation(route).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
     acquireWake();
     const handle = await controller.startRide(route, {
       onTick: ({ elapsedSec, distanceM, accuracyM, lat, lon }) => {

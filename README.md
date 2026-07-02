@@ -18,15 +18,21 @@ Three tabs:
   (or when you'll arrive). A live countdown appears as the time approaches.
   *Explore* checks a different time on that day; *Go now* shows the ride if you
   left this minute.
-- **Ride** — records an actual ride by GPS, with pause for stops. At the end you
-  can nudge the time or discard it; accepted rides tune the model.
+- **Ride** — records an actual ride by GPS on a live instrument panel (elapsed,
+  speed, a clock showing your predicted arrival, and progress along the route),
+  with pause for stops. At the end you can nudge the time or discard it; accepted
+  rides tune the model. You can also enter a ride you did earlier from the route's
+  ride list.
 - **Routes** — add and tune routes, and set the uncertainty allowance.
 
-You add a route from a GPX file (plan one in a route planner, or export a ride
-you've already recorded). Each route is tuned from two things you set: your
-**still-air speed** and a **ground effect** — how sheltered or exposed the
-route is, which sets how much wind slows or speeds you. That's enough to use it
-from day one. Each destination needs two routes, one each way.
+You add a route in one of three ways: **record it by GPS** as you ride (the
+simplest — the first traversal also becomes the route's first ride), **import a
+GPX file** (plan one in a route planner, or reuse one from another app), or
+**reverse an existing route** to make its return trip. Each route is tuned from
+two things you set: your **still-air speed** and a **ground effect** — how
+sheltered or exposed the route is, which sets how much wind slows or speeds you.
+That's enough to use it from day one. Each destination needs two routes, one
+each way.
 
 ## How it works
 
