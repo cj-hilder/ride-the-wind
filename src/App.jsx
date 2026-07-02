@@ -1812,13 +1812,32 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
 const backupBtn = { flex: 1, padding: "11px 14px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, background: "rgba(255,255,255,0.08)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" };
 const lbl = { display: "block", fontSize: 12.5, color: "rgba(255,255,255,0.6)", margin: "0 0 6px" };
 
+/* A single tappable creation-method card in the New route chooser. */
+function MethodOption({ title, desc, onClick, disabled }) {
+  return (
+    <button onClick={disabled ? undefined : onClick} disabled={disabled} style={{
+      display: "block", width: "100%", textAlign: "left", marginBottom: 10, padding: "15px 16px", borderRadius: 14,
+      cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1,
+      fontFamily: "inherit", color: "#fff",
+      background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.16)",
+    }}>
+      <div style={{ fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600 }}>{title}</div>
+      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginTop: 4, lineHeight: 1.4 }}>{desc}</div>
+    </button>
+  );
+}
+
 /* ============================================================================
- * Setup — create a route from a GPX file (real controller.createRoute)
+ * Setup — create a route: choose a method (record / reverse / GPX), then the
+ * shared details form (name, tuning, schedule).
  * ========================================================================== */
 function Setup({ controller, onDone, onCancel }) {
+  const [method, setMethod] = useState(null); // null=chooser, "gpx", "reverse"
   const [gpxText, setGpxText] = useState(null);
+  const [processed, setProcessed] = useState(null); // reverse path: pre-built geometry
   const [preview, setPreview] = useState(null);
   const [err, setErr] = useState(null);
+  const [routeList, setRouteList] = useState(null); // for the reverse picker
   const [form, setForm] = useState({ name: "", speedKmh: 16, kHead: 0.35, kTail: 0.35, split: false, arrival: "08:45", timeMode: "arrive", days: ["MO", "TU", "WE", "TH", "FR"] });
   // Tuning modes default to learn/learn (the new-route default), toggleable here
   // for consistency with the route editor. At setup there are no rides, so learn
@@ -1835,8 +1854,29 @@ function Setup({ controller, onDone, onCancel }) {
     try {
       const text = await file.text();
       const p = await controller.previewGpx(text);
-      setGpxText(text); setPreview(p);
+      setGpxText(text); setProcessed(null); setPreview(p);
       if (!form.name) set("name", file.name.replace(/\.gpx$/i, "").replace(/[_-]/g, " "));
+    } catch (e) { setErr(e.message); }
+  };
+
+  // Reverse path: pick a source route → preview reversed geometry + pre-fill the
+  // details form from the source's inherited config.
+  const chooseReverse = async () => {
+    setErr(null); setMethod("reverse");
+    try { setRouteList(await controller.listRoutes()); }
+    catch (e) { setErr(e.message); }
+  };
+  const pickSource = async (sourceId) => {
+    setErr(null);
+    try {
+      const r = await controller.previewReverse(sourceId);
+      setProcessed({ ...r.processed, sourceId });
+      setGpxText(null);
+      setPreview(r.preview);
+      const d = r.defaults;
+      setForm((f) => ({ ...f, name: d.name, speedKmh: d.speedKmh, kHead: d.kHead, kTail: d.kTail, split: d.split,
+        arrival: d.targetArrival ?? f.arrival, timeMode: d.timeMode ?? f.timeMode }));
+      setModes({ baselineMode: d.baselineMode, kMode: d.kMode });
     } catch (e) { setErr(e.message); }
   };
 
@@ -1844,30 +1884,76 @@ function Setup({ controller, onDone, onCancel }) {
   const save = async () => {
     setSaving(true);
     const baselineSec = preview.totalDistance / (form.speedKmh / 3.6);
-    await controller.createRoute(gpxText, {
+    const setup = {
       name: form.name.trim(),
       seedStillAirSec: Math.round(baselineSec),
       seedHeadwind20Sec: Math.round(baselineSec * (1 + form.kHead)),
       seedTailwind20Sec: Math.round(baselineSec * (1 - form.kTail)),
       baselineMode: modes.baselineMode, kMode: modes.kMode, split: form.split,
       targetArrival: form.arrival, timeMode: form.timeMode, activeDays: form.days,
-    });
+    };
+    if (processed) await controller.createRouteFromProcessed(processed, setup);
+    else await controller.createRoute(gpxText, setup);
     onDone();
   };
   const toggleDay = (d) => set("days", form.days.includes(d) ? form.days.filter((x) => x !== d) : [...form.days, d]);
 
+  const back = () => {
+    // Back steps: preview → method's picker; picker → chooser; chooser → cancel.
+    if (preview) { setPreview(null); setProcessed(null); setGpxText(null); return; }
+    if (method) { setMethod(null); setErr(null); return; }
+    onCancel && onCancel();
+  };
+
   return (
     <div style={{ height: "100%", overflowY: "auto", background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff", paddingBottom: 30 }}>
       <div style={{ padding: "26px 22px 8px", display: "flex", alignItems: "center", gap: 12 }}>
-        {onCancel && (
-          <button onClick={onCancel} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.6)", fontSize: 22, padding: 0, lineHeight: 1 }} aria-label="Back">‹</button>
-        )}
+        <button onClick={back} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.6)", fontSize: 22, padding: 0, lineHeight: 1 }} aria-label="Back">‹</button>
         <span style={{ fontFamily: "'Fraunces',serif", fontSize: 26, fontWeight: 600 }}>New route</span>
       </div>
       <div style={{ padding: "0 22px 16px", fontSize: 13.5, color: "rgba(255,255,255,0.55)" }}>Each destination needs two routes, one going and one returning.</div>
 
-      <Block n="1" title="Load GPX">
-        {!preview ? (
+      {/* Step 1: method chooser */}
+      {method === null && (
+        <div style={{ padding: "0 22px" }}>
+          <MethodOption title="Record with GPS" desc="Ride the route once and let your phone trace it. (Coming soon.)"
+            disabled onClick={() => {}} />
+          <MethodOption title="Reverse an existing route" desc="Create the return trip from a route you already have."
+            onClick={chooseReverse} />
+          <MethodOption title="Import a GPX file" desc="Load a route exported from another app or a mapping site."
+            onClick={() => { setMethod("gpx"); setErr(null); }} />
+          {err && <Warn>{err}</Warn>}
+        </div>
+      )}
+
+      {/* Step 2a: reverse — pick which route to reverse */}
+      {method === "reverse" && !preview && (
+        <div style={{ padding: "0 22px" }}>
+          <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 12 }}>Which route do you want to reverse?</div>
+          {routeList == null ? (
+            <div style={{ color: "rgba(255,255,255,0.5)" }}>Loading…</div>
+          ) : routeList.filter((r) => !r.isExample).length === 0 ? (
+            <div style={{ padding: "18px 14px", textAlign: "center", color: "rgba(255,255,255,0.55)", border: "1px dashed rgba(255,255,255,0.16)", borderRadius: 12, lineHeight: 1.5 }}>
+              No routes to reverse yet. Import a GPX file first, then you can create its return trip.
+            </div>
+          ) : (
+            routeList.filter((r) => !r.isExample).map((r) => (
+              <button key={r.id} onClick={() => pickSource(r.id)} style={{
+                display: "block", width: "100%", textAlign: "left", marginBottom: 8, padding: "13px 15px", borderRadius: 12, cursor: "pointer",
+                fontFamily: "inherit", fontSize: 14.5, fontWeight: 600, color: "#fff",
+                background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.16)",
+              }}>{r.name}
+                <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: "rgba(255,255,255,0.5)", marginTop: 3 }}>{(r.totalDistance / 1000).toFixed(1)} km</span>
+              </button>
+            ))
+          )}
+          {err && <Warn>{err}</Warn>}
+        </div>
+      )}
+
+      {/* Step 2b: GPX loader (reached via the chooser) */}
+      {method === "gpx" && !preview && (
+        <Block n="1" title="Load GPX">
           <div onClick={() => fileRef.current.click()} style={{
             padding: "28px 18px", borderRadius: 16, textAlign: "center", cursor: "pointer",
             border: "1.5px dashed rgba(255,255,255,0.28)", background: "rgba(255,255,255,0.04)",
@@ -1875,22 +1961,24 @@ function Setup({ controller, onDone, onCancel }) {
             <div style={{ fontSize: 15, fontWeight: 500 }}>Tap to choose a .gpx file</div>
             <input ref={fileRef} type="file" accept=".gpx" hidden onChange={(e) => e.target.files[0] && onFile(e.target.files[0])} />
           </div>
-        ) : (
-          <div style={{ borderRadius: 16, padding: 16, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)" }}>
-            <RouteMap polyline={preview.polyline} />
-            <div style={{ display: "flex", gap: 18 }}>
-              <Stat label="Distance" value={`${(preview.totalDistance / 1000).toFixed(2)} km`} />
-              <Stat label="Elevation" value={preview.hasElevation ? `${Math.round(preview.climb)} m` : "—"} />
-              <Stat label="Points" value={preview.pointCount} />
-            </div>
-            {preview.warnings?.map((w, i) => <Warn key={i}>{w}</Warn>)}
-          </div>
-        )}
-        {err && <Warn>{err}</Warn>}
-      </Block>
+          {err && <Warn>{err}</Warn>}
+        </Block>
+      )}
 
+      {/* Step 3: shared details form (both GPX and reverse land here) */}
       {preview && (
         <>
+          <Block n="1" title="Route">
+            <div style={{ borderRadius: 16, padding: 16, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)" }}>
+              <RouteMap polyline={preview.polyline} />
+              <div style={{ display: "flex", gap: 18 }}>
+                <Stat label="Distance" value={`${(preview.totalDistance / 1000).toFixed(2)} km`} />
+                <Stat label="Elevation" value={preview.hasElevation ? `${Math.round(preview.climb)} m` : "—"} />
+                <Stat label="Points" value={preview.pointCount} />
+              </div>
+              {preview.warnings?.map((w, i) => <Warn key={i}>{w}</Warn>)}
+            </div>
+          </Block>
           <Block n="2" title="Name">
             <input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Home → Office" style={INP} />
           </Block>

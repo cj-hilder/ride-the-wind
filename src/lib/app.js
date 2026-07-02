@@ -343,6 +343,18 @@ export function createAppController(deps = {}) {
   }
 
   /**
+   * Create a route from already-processed geometry (e.g. the reverse-route flow,
+   * which supplies reversed segments rather than GPX). Same seeding/creation as
+   * createRoute, just skipping the GPX parse.
+   */
+  async function createRouteFromProcessed(processed, setup) {
+    const seededK = computeSeedKSplit(
+      setup.seedStillAirSec, setup.seedHeadwind20Sec, setup.seedTailwind20Sec
+    );
+    return store.createRoute(processed, setup, seededK);
+  }
+
+  /**
    * Create the return-trip route from an existing route: reversed geometry
    * (via reverseRoute), inheriting the source's speed/k slider seeds and split
    * (same bike), but with NO rides (the return trip has different wind/gradient,
@@ -388,6 +400,53 @@ export function createAppController(deps = {}) {
     // Inherit k sliders verbatim (the source's manual/slider k), not re-derived.
     const seededK = { kHead: src.sliderKHead ?? 1.0, kTail: src.sliderKTail ?? 1.0 };
     return store.createRoute(processed, fullSetup, seededK);
+  }
+
+  /**
+   * Preview the reversed geometry of an existing route (for the New route →
+   * reverse flow), plus the inherited config defaults, WITHOUT creating anything.
+   * Mirrors previewGpx's shape so the same details form can render it, and
+   * carries the inherited seed/mode/name defaults for the form to pre-fill.
+   */
+  async function previewReverse(sourceId) {
+    const src = await store.getRoute(sourceId);
+    if (!src) throw new Error("Source route not found.");
+    const rev = reverseRoute({
+      segments: src.segments, totalDistance: src.totalDistance,
+      hasElevation: src.hasElevation, start: src.startRegion, end: src.endRegion,
+    });
+    let climb = 0;
+    if (rev.hasElevation) for (const s of rev.segments) if (s.eleDelta > 0) climb += s.eleDelta;
+    // Effective speed the source's slider represents (its manual seed).
+    const seedSpeedKmh = src.seedStillAirSec > 0
+      ? Math.round((src.totalDistance / src.seedStillAirSec) * 3.6 * 2) / 2 : 16;
+    return {
+      sourceId,
+      processed: {
+        segments: rev.segments, totalDistance: rev.totalDistance,
+        hasElevation: rev.hasElevation, start: rev.start, end: rev.end,
+      },
+      preview: {
+        totalDistance: rev.totalDistance,
+        hasElevation: rev.hasElevation,
+        climb: rev.hasElevation ? climb : null,
+        pointCount: rev.segments.length + 1,
+        warnings: [],
+        example: exampleFor(rev.segments),
+        polyline: routePolyline(rev.segments, rev.end),
+      },
+      defaults: {
+        name: `Reverse ${src.name}`,
+        speedKmh: seedSpeedKmh,
+        kHead: src.sliderKHead ?? 0.35,
+        kTail: src.sliderKTail ?? 0.35,
+        split: src.split ?? false,
+        baselineMode: src.baselineMode ?? "learn",
+        kMode: src.kMode ?? "learn",
+        targetArrival: src.targetArrival,
+        timeMode: src.timeMode,
+      },
+    };
   }
 
   const listRoutes = () => store.listRoutes();
@@ -1194,7 +1253,7 @@ export function createAppController(deps = {}) {
 
   return {
     store,
-    createRoute, createReverseRoute, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
+    createRoute, createRouteFromProcessed, createReverseRoute, previewReverse, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
     getHomeVerdict, listRoutesWithVerdict,
     recordRide, recordManualRide, listRides, startRide, distanceToStart, distanceToEnd, rideExpectation, routeTuning, updateExampleSeeds,
     updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,

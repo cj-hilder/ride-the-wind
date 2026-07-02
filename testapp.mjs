@@ -206,6 +206,21 @@ console.log('\nReverse route (createReverseRoute):');
   const revM = await rApp.createReverseRoute(srcM.id, {});
   ok('reverse inherits manual baseline mode', revM.baselineMode === 'manual' && revM.kMode === 'learn');
   ok('reverse inherits the manual seed value', revM.seedStillAirSec === 1000);
+
+  // previewReverse: geometry preview + inherited defaults, WITHOUT creating.
+  const beforeCount = (await rApp.listRoutes()).length;
+  const pv = await rApp.previewReverse(src.id);
+  ok('previewReverse does not create a route', (await rApp.listRoutes()).length === beforeCount);
+  ok('previewReverse gives reversed geometry', Math.abs(pv.preview.totalDistance - src.totalDistance) < 1);
+  ok('previewReverse default name', pv.defaults.name === 'Reverse Morning Commute');
+  ok('previewReverse carries processed segments', pv.processed.segments.length > 0);
+  // createRouteFromProcessed: build a route from the previewed geometry.
+  const built = await rApp.createRouteFromProcessed(pv.processed, {
+    name: 'From Processed', seedStillAirSec: 1000, seedHeadwind20Sec: 1300, seedTailwind20Sec: 800,
+    baselineMode: 'learn', kMode: 'learn', targetArrival: '08:45', activeDays: ['MO'],
+  });
+  ok('createRouteFromProcessed makes a route', built.id && built.name === 'From Processed');
+  ok('built route has the reversed distance', Math.abs(built.totalDistance - src.totalDistance) < 1);
 }
 
 console.log('\nExcluded ride is ignored by the resolver:');
