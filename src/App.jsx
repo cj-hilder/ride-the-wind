@@ -1805,8 +1805,9 @@ const lbl = { display: "block", fontSize: 12.5, color: "rgba(255,255,255,0.6)", 
  * browser doesn't suspend watchPosition when the screen locks / app backgrounds.
  * On Finish, hands the raw traversal up via onRecorded (the parent gates it).
  * ========================================================================== */
-function RouteRecorder({ controller, onCancel, onRecorded, err }) {
-  const [state, setState] = useState("armed"); // armed | recording
+function RouteRecorder({ controller, onCancel, onRecorded }) {
+  const [state, setState] = useState("armed"); // armed | recording | blocked
+  const [blocked, setBlocked] = useState(null); // gate-failure message
   const [elapsed, setElapsed] = useState(0);
   const [paused, setPaused] = useState(false);
   const [live, setLive] = useState({ distanceM: 0, speedKmh: 0 });
@@ -1886,7 +1887,15 @@ function RouteRecorder({ controller, onCancel, onRecorded, err }) {
         setLive({ distanceM, speedKmh: (em.speedMps || 0) * 3.6 });
       },
     }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); stopAudio(); });
-    handle?.onFinish?.((rec) => { releaseWake(); stopAudio(); onRecorded(rec); });
+    handle?.onFinish?.((rec) => {
+      releaseWake(); stopAudio();
+      // Gate the trace here so we own the blocked UI (with a Cancel path). On a
+      // good recording, hand it up; on a blocked one, show why + let the user
+      // record again or cancel out entirely.
+      const res = controller.previewTrace(rec.trace);
+      if (res.ok) { onRecorded(rec, res); }
+      else { setBlocked(res.reason); setState("blocked"); }
+    });
     ref.current = { handle };
   };
   const togglePause = () => {
@@ -1897,21 +1906,35 @@ function RouteRecorder({ controller, onCancel, onRecorded, err }) {
   const finish = () => ref.current.handle?.manualFinish?.();
   const avg = elapsed > 0 ? Math.round((live.distanceM / elapsed) * 3.6 * 2) / 2 : 0;
 
+  if (state === "blocked") {
+    // Recording couldn't form a usable route — offer re-record or cancel.
+    return (
+      <div style={{ padding: "0 22px" }}>
+        <div style={{ padding: "16px 16px", borderRadius: 14, background: "rgba(217,83,79,0.12)", border: "1px solid rgba(217,83,79,0.4)", color: "#f0b9b2", fontSize: 14, lineHeight: 1.5, marginBottom: 16 }}>
+          {blocked}
+        </div>
+        <div style={{ display: "flex", gap: 12 }}>
+          <button onClick={onCancel} style={backupBtn}>Cancel</button>
+          <button onClick={begin} style={{ ...backupBtn, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Record again</button>
+        </div>
+      </div>
+    );
+  }
+
   if (state === "recording") {
     // Full black instrument screen, identical to ride capture. Differences per
-    // spec: center line reads "Recording" (red) in place of the off-route
-    // message; the bottom slot shows km recorded (no progress bar); no arrival
-    // marker (arrivalMs null); no what-to-expect caption.
+    // spec: center line reads "Recording new route" (red) in place of the
+    // off-route message; the bottom slot shows km recorded (no progress bar); no
+    // arrival marker (arrivalMs null); no what-to-expect caption.
     return (
       <div style={{ position: "fixed", inset: 0, zIndex: 50, background: "#000", color: "#fff", display: "flex", flexDirection: "column", padding: "16px 14px 20px" }}>
         <InstrumentPanel
           elapsed={elapsed} paused={paused} avg={avg}
           nowMs={nowMs} arrivalMs={null} speedKmh={live.speedKmh}
-          centerMessage={{ text: "Recording", color: "#d9534f" }}
+          centerMessage={{ text: "Recording new route", color: "#d9534f" }}
           onPause={togglePause} onFinish={finish} finishLabel="Finish"
           bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
         />
-        {err && <div style={{ padding: "0 8px" }}><Warn>{err}</Warn></div>}
       </div>
     );
   }
@@ -1921,7 +1944,6 @@ function RouteRecorder({ controller, onCancel, onRecorded, err }) {
       <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", lineHeight: 1.5, marginBottom: 18 }}>
         Start at the beginning of your route, then ride it once. Keep the app open — tap Finish when you arrive.
       </div>
-      {err && <Warn>{err}</Warn>}
       <button onClick={begin} style={{ width: "100%", padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Start recording</button>
     </div>
   );
@@ -2083,15 +2105,13 @@ function Setup({ controller, onDone, onCancel }) {
       {method === "record" && !preview && (
         <RouteRecorder controller={controller}
           onCancel={() => { setMethod(null); setErr(null); }}
-          onRecorded={(rec) => {
-            const res = controller.previewTrace(rec.trace);
-            if (!res.ok) { setErr(res.reason); return; } // stay in recorder; show why
+          onRecorded={(rec, res) => {
+            // res = { ok:true, processed, preview } from the recorder's gate.
             setRecording(rec);
             setProcessed(res.processed);
             setPreview(res.preview);
             if (!form.name) set("name", "");
-          }}
-          err={err} />
+          }} />
       )}
 
       {/* Step 2b: GPX loader (reached via the chooser) */}
