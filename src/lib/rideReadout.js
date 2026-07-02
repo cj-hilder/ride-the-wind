@@ -1,9 +1,12 @@
 /* ============================================================================
  * rideReadout — pure math for the live ride instrument panel (clock bezel,
- * speedometer gauge, progress bar, derived/smoothed speed, dynamic arrival).
- * No DOM, no React: everything here is unit-testable. The SVG components in
- * App.jsx consume these.
+ * speedometer gauge, progress bar, derived/smoothed speed, dynamic arrival,
+ * and route projection for gap-immune progress/pace).
+ * No DOM, no React: everything here is unit-testable.
  * ========================================================================== */
+import { haversine } from "./gpxRoute.js";
+
+export const OFF_ROUTE_M = 150; // beyond this perpendicular distance = off-route
 
 export const SPEEDO_MAX_KMH = 40;        // gauge full-scale; needle pegs here
 export const SPEEDO_START_DEG = 225;     // 0 km/h at the 7:30 position
@@ -104,25 +107,81 @@ export function expectedArrivalMs({
   return nowMs + (remaining / paceMps) * 1000;
 }
 
-/**
- * Estimated distance travelled along the route:
- *   min( GPS distance travelled, routeTotal − lineOfSightToEnd )
- * The second term is the most you can geometrically have covered given you are
- * still `lineOfSightToEnd` (straight-line) from the destination — so a detour or
- * GPS over-count can't push the estimate past the route length. The min means
- * the geometric term only ever *reduces* the estimate (early on a curvy/looping
- * route, GPS wins). Clamped to [0, routeTotal]; arrival/progress derived from
- * this never overshoot. Returns gpsDistanceM unchanged if inputs are missing.
- */
-export function estimatedDistanceM(gpsDistanceM, routeTotalM, lineOfSightToEndM) {
-  const gps = Math.max(0, gpsDistanceM || 0);
-  if (routeTotalM == null || lineOfSightToEndM == null) return gps;
-  const geom = routeTotalM - lineOfSightToEndM; // most you can have covered
-  return Math.max(0, Math.min(routeTotalM, Math.min(gps, geom)));
-}
-
 /** Average speed (km/h) so far = distance / moving-time (pauses excluded). */
 export function averageSpeedKmh(distanceM, movingSec) {
   if (!movingSec || movingSec <= 0) return 0;
   return (distanceM / movingSec) * 3.6;
+}
+
+/**
+ * Build a projection-ready polyline from a route: an ordered list of points
+ * { lat, lon, cumM } where cumM is the cumulative along-route distance to that
+ * point. Uses each segment's start (lat,lon)+distance and appends the final
+ * end-region point so the last leg is represented.
+ */
+export function routePolyline(route) {
+  if (!route || !route.segments || !route.segments.length) return [];
+  const pts = [];
+  let cum = 0;
+  for (const s of route.segments) {
+    pts.push({ lat: s.lat, lon: s.lon, cumM: cum });
+    cum += s.distance || 0;
+  }
+  const end = route.endRegion;
+  if (end) pts.push({ lat: end.lat, lon: end.lon, cumM: cum });
+  return pts;
+}
+
+/**
+ * Nearest point on segment AB to point P, all in lat/lon, using a local
+ * equirectangular projection (accurate at segment scale). Returns the fraction
+ * t∈[0,1] along AB of the nearest point and the perpendicular distance (m).
+ */
+function nearestOnSegment(pLat, pLon, aLat, aLon, bLat, bLon) {
+  const latRef = (aLat + bLat) / 2 * Math.PI / 180;
+  const mPerDegLat = 111320;
+  const mPerDegLon = 111320 * Math.cos(latRef);
+  const ax = 0, ay = 0;
+  const bx = (bLon - aLon) * mPerDegLon, by = (bLat - aLat) * mPerDegLat;
+  const px = (pLon - aLon) * mPerDegLon, py = (pLat - aLat) * mPerDegLat;
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  const perp = Math.hypot(px - cx, py - cy);
+  return { t, perp };
+}
+
+/**
+ * Project a GPS fix onto the route polyline. Returns { alongM, offRoute }:
+ *   - alongM: cumulative along-route distance (m) of the nearest point.
+ *   - offRoute: true when no point on the route is within OFF_ROUTE_M — in that
+ *     case alongM is held at `lastAlongM` (progress freezes off-route).
+ * Continuity preference: among candidates within OFF_ROUTE_M, pick the one whose
+ * alongM is closest to `lastAlongM` (so we don't jump to a far part of a route
+ * that passes near itself); when `lastAlongM` is null (start, or after a gap),
+ * pick the globally nearest by perpendicular distance.
+ */
+export function projectToRoute(fix, polyline, lastAlongM = null) {
+  if (!fix || !polyline || polyline.length < 2) {
+    return { alongM: lastAlongM || 0, offRoute: true };
+  }
+  let best = null; // { along, perp }
+  for (let i = 0; i < polyline.length - 1; i++) {
+    const a = polyline[i], b = polyline[i + 1];
+    const legLen = b.cumM - a.cumM;
+    const { t, perp } = nearestOnSegment(fix.lat, fix.lon, a.lat, a.lon, b.lat, b.lon);
+    const along = a.cumM + t * legLen;
+    if (perp > OFF_ROUTE_M) continue;
+    if (best == null) { best = { along, perp }; continue; }
+    if (lastAlongM != null) {
+      // prefer continuity: closer to last known along-route position
+      if (Math.abs(along - lastAlongM) < Math.abs(best.along - lastAlongM)) best = { along, perp };
+    } else if (perp < best.perp) {
+      best = { along, perp };
+    }
+  }
+  if (best == null) return { alongM: lastAlongM == null ? 0 : lastAlongM, offRoute: true };
+  return { alongM: best.along, offRoute: false };
 }
