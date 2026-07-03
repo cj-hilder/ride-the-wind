@@ -28,6 +28,8 @@ export const NEEDLE_ACC_REF_M = 4;           // accuracy at which a sample is ba
 export const NEEDLE_TAU_MIN_MS = 1200;       // floor τ for an excellent fix (not a 1-sample snap: accuracy can lie)
 export const NEEDLE_TAU_MAX_MS = 40000;      // ceiling τ for a poor fix (≈ dozens of samples to converge)
 export const GPS_ACCURACY_HARD_M = 50;       // above this a fix is still dropped for the needle (garbage)
+export const NEEDLE_MAX_ACCEL_MPS2 = 2.5;    // (A) sane cycling accel; per-sample speed change is clamped to this × dt
+export const NEEDLE_MAX_DT_MS = 6000;        // (B) cap the dt used for α so one sample after a gap can't seize the needle
 
 /**
  * Adaptive needle EMA time constant (ms) from the two fixes' reported accuracies.

@@ -1055,6 +1055,7 @@ export function createAppController(deps = {}) {
             elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000,
             distanceM: traceDistance(trace),
             speedMps: dt > 0 ? moved / dt : 0,
+            fixT: fix.t,
             accuracyM: fix.accuracyM,
           });
         }
@@ -1295,7 +1296,8 @@ export function createAppController(deps = {}) {
             onTick({
               elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000,
               distanceM: traceDistance(trace),
-              speedMps,                 // this-fix derived speed; UI smooths
+              speedMps,                 // this-fix derived speed over the GPS interval; UI smooths
+              fixT: fix.t,              // GPS fix timestamp — use for EMA dt, NOT Date.now()
               gpsSpeedMps: fix.gpsSpeedMps, // device GPS speed if available (m/s)
               accuracyM: fix.accuracyM, // device GPS accuracy estimate (m), or null
               lat: fix.lat, lon: fix.lon,  // fix position, for route projection
