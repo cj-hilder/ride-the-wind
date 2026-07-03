@@ -245,6 +245,16 @@ export class Store {
    * @param {number} seededK
    */
   async createRoute(processed, setup, seededK) {
+    // Reject a duplicate name (case-insensitive, trimmed) so routes stay
+    // distinguishable in lists/pickers. All creation paths (GPX, reverse, and
+    // future record-by-GPS) funnel through here, so one guard covers them.
+    const wanted = (setup.name ?? "").trim().toLowerCase();
+    if (wanted) {
+      const existing = await this.listRoutes();
+      if (existing.some((r) => (r.name ?? "").trim().toLowerCase() === wanted)) {
+        throw new Error(`A route named "${setup.name.trim()}" already exists. Please choose a different name.`);
+      }
+    }
     const now = Date.now();
     const id = this.uuid();
     const route = {
@@ -332,6 +342,17 @@ export class Store {
   async updateRoute(id, patch) {
     const route = await this.getRoute(id);
     if (!route) throw new Error(`No route ${id}`);
+    // If this patch changes the name, reject a collision with a DIFFERENT route
+    // (case-insensitive, trimmed). Re-saving the same name (or unchanged) is fine.
+    if (patch.name != null) {
+      const wanted = patch.name.trim().toLowerCase();
+      if (wanted) {
+        const others = await this.listRoutes();
+        if (others.some((r) => r.id !== id && (r.name ?? "").trim().toLowerCase() === wanted)) {
+          throw new Error(`A route named "${patch.name.trim()}" already exists. Please choose a different name.`);
+        }
+      }
+    }
     const updated = { ...route, ...patch, id, updatedAt: Date.now() };
     await this.b.put(STORES.ROUTES, updated);
     return updated;

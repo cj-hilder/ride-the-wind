@@ -144,6 +144,145 @@ console.log('\nCapture path sets used/not-used from classification (no forced us
   await app.deleteRoute(r2.id); // clean up so later export-count assertions hold
 }
 
+console.log('\nManual ride entry (recordManualRide):');
+{
+  const mApp = mkApp(stubForecast(90, 30)); // strong headwind along route → windy
+  // clock = today at 09:00 on 2026-06-01 (within the stub forecast window)
+  clock = new Date(2026,5,1,9,0).getTime();
+  const mRoute = await mApp.createRoute(gpx, { name:'ManualRoute', seedStillAirSec:1000,
+    targetArrival:'08:45', activeDays:['MO','TU','WE','TH','FR'] }, {kHead:1,kTail:1});
+  const startMs = new Date(2026,5,1,8,0).getTime();
+  const endMs = new Date(2026,5,1,8,20).getTime(); // 20 min ride, both before 09:00
+  const { ride } = await mApp.recordManualRide(mRoute.id, { startMs, endMs });
+  ok('manual ride recorded with windFactor', ride.windFactor != null, `${ride.windFactor}`);
+  ok('actualTimeSec = finish − start (1200s)', ride.actualTimeSec === 1200, `${ride.actualTimeSec}`);
+  ok('windy manual ride → used', ride.included === true, `wf=${ride.windFactor}`);
+  ok('startedAt preserved', ride.startedAt === startMs);
+
+  // Validation: finish before start → throws
+  let threw = false;
+  try { await mApp.recordManualRide(mRoute.id, { startMs: endMs, endMs: startMs }); } catch { threw = true; }
+  ok('finish ≤ start rejected', threw);
+  // Validation: finish in the future → throws
+  threw = false;
+  try { await mApp.recordManualRide(mRoute.id, { startMs: clock, endMs: clock + 600000 }); } catch { threw = true; }
+  ok('finish in the future rejected', threw);
+
+  // It appears in the manager list
+  const list = await mApp.ridesForManager(mRoute.id);
+  ok('manual ride appears in the manager list', list.length === 1);
+}
+clock = new Date(2026,4,31,21,30).getTime(); // restore for later tests
+
+console.log('\nReverse route (createReverseRoute):');
+{
+  const rApp = mkApp(stubForecast(90, 20));
+  const src = await rApp.createRoute(gpx, { name:'Morning Commute', seedStillAirSec:1200,
+    seedHeadwind20Sec:1560, seedTailwind20Sec:900, targetArrival:'08:45',
+    activeDays:['MO','TU','WE','TH','FR'] }, {kHead:0.6,kTail:0.3});
+  const rev = await rApp.createReverseRoute(src.id, {});
+  ok('reverse gets a new id', rev.id !== src.id);
+  ok('auto name "Reverse <src>"', rev.name === 'Reverse Morning Commute', rev.name);
+  ok('total distance preserved', Math.abs(rev.totalDistance - src.totalDistance) < 1);
+  ok('inherits baseline seed', rev.seedStillAirSec === 1200);
+  // createRoute derives sliders from seed times (0.3 head, 0.25 tail here), and
+  // the reverse inherits those stored sliders verbatim.
+  ok('inherits k sliders', Math.abs(rev.sliderKHead - 0.3) < 1e-6 && Math.abs(rev.sliderKTail - 0.25) < 1e-6, `${rev.sliderKHead}/${rev.sliderKTail}`);
+  ok('modes learn/learn', rev.baselineMode === 'learn' && rev.kMode === 'learn');
+  const revRides = await rApp.listRides(rev.id);
+  ok('reverse starts with no rides', revRides.length === 0);
+  // start/end swapped vs source
+  ok('start = source end', Math.abs(rev.startRegion.lat - src.endRegion.lat) < 1e-9 && Math.abs(rev.startRegion.lon - src.endRegion.lon) < 1e-9);
+  ok('end = source start', Math.abs(rev.endRegion.lat - src.startRegion.lat) < 1e-9);
+  // custom name honoured
+  const rev2 = await rApp.createReverseRoute(src.id, { name:'Evening ride home' });
+  ok('custom name honoured', rev2.name === 'Evening ride home');
+
+  // Modes are INHERITED, not forced: a source in manual baseline yields a
+  // manual-baseline reverse carrying the same manual seed value.
+  const srcM = await rApp.createRoute(gpx, { name:'ManualBaseline', seedStillAirSec:1000,
+    seedHeadwind20Sec:1300, seedTailwind20Sec:800, baselineMode:'manual', kMode:'learn',
+    targetArrival:'08:45', activeDays:[] }, {kHead:1,kTail:1});
+  const revM = await rApp.createReverseRoute(srcM.id, {});
+  ok('reverse inherits manual baseline mode', revM.baselineMode === 'manual' && revM.kMode === 'learn');
+  ok('reverse inherits the manual seed value', revM.seedStillAirSec === 1000);
+
+  // previewReverse: geometry preview + inherited defaults, WITHOUT creating.
+  const beforeCount = (await rApp.listRoutes()).length;
+  const pv = await rApp.previewReverse(src.id);
+  ok('previewReverse does not create a route', (await rApp.listRoutes()).length === beforeCount);
+  ok('previewReverse gives reversed geometry', Math.abs(pv.preview.totalDistance - src.totalDistance) < 1);
+  ok('previewReverse default name', pv.defaults.name === 'Reverse Morning Commute');
+  ok('previewReverse carries processed segments', pv.processed.segments.length > 0);
+  // createRouteFromProcessed: build a route from the previewed geometry.
+  const built = await rApp.createRouteFromProcessed(pv.processed, {
+    name: 'From Processed', seedStillAirSec: 1000, seedHeadwind20Sec: 1300, seedTailwind20Sec: 800,
+    baselineMode: 'learn', kMode: 'learn', targetArrival: '08:45', activeDays: ['MO'],
+  });
+  ok('createRouteFromProcessed makes a route', built.id && built.name === 'From Processed');
+  ok('built route has the reversed distance', Math.abs(built.totalDistance - src.totalDistance) < 1);
+}
+
+console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRecordedRoute):');
+{
+  const gApp = mkApp(stubForecast(90, 20));
+  // Synchronous geo stub: emits a straight ~east trace of N fixes when watched.
+  const dLon = 5 / 111320; // ~5 m spacing at the equator
+  const makeGeo = (n) => {
+    let cb = null;
+    return {
+      watchPosition: (success) => { cb = success; return 1; },
+      clearWatch: () => {},
+      _emitAll: () => { for (let i = 0; i < n; i++) { clock += 1000; cb({ coords: { latitude: 0, longitude: i * dLon, accuracy: 5 } }); } },
+    };
+  };
+  const geo = makeGeo(150); // ~745 m
+  const handle = await gApp.recordRoute({ geo });
+  let recorded = null;
+  handle.onFinish((rec) => { recorded = rec; });
+  geo._emitAll();
+  handle.manualFinish();
+  ok('recordRoute produced a trace', recorded && recorded.trace.length === 150, `${recorded && recorded.trace.length}`);
+
+  // previewTrace: gate + process without creating
+  const pv = gApp.previewTrace(recorded.trace);
+  ok('previewTrace ok', pv.ok === true, JSON.stringify(pv.reason));
+  ok('previewTrace has geometry', pv.ok && pv.preview.totalDistance > 500);
+
+  const before = (await gApp.listRoutes()).length;
+  const res = await gApp.finalizeRecordedRoute(recorded, {
+    name: 'Recorded Loop', seedStillAirSec: 200, seedHeadwind20Sec: 260, seedTailwind20Sec: 150,
+    baselineMode: 'learn', kMode: 'learn', targetArrival: '08:45', activeDays: ['MO'],
+  });
+  ok('finalize creates the route', res.ok && res.route && res.route.name === 'Recorded Loop');
+  ok('one new route exists', (await gApp.listRoutes()).length === before + 1);
+  // First traversal logged as the route's first ride
+  const rides = await gApp.listRides(res.route.id);
+  ok('route arrives with exactly one ride', rides.length === 1, `${rides.length}`);
+  ok('first ride has a windFactor', rides[0].windFactor != null);
+
+  // A too-short recording is blocked with a reason (no route created)
+  const geo2 = makeGeo(4);
+  const h2 = await gApp.recordRoute({ geo: geo2 });
+  let rec2 = null; h2.onFinish((r) => { rec2 = r; }); geo2._emitAll(); h2.manualFinish();
+  const blocked = await gApp.finalizeRecordedRoute(rec2, { name: 'Too Short', seedStillAirSec: 100, targetArrival: '08:45', activeDays: ['MO'] });
+  ok('too-short recording blocked', blocked.ok === false && typeof blocked.reason === 'string');
+}
+clock = new Date(2026,4,31,21,30).getTime(); // restore after geo stub advanced it
+
+console.log('\nRide prediction (leaving-now duration for arrival seeding):');
+{
+  const pApp = mkApp(stubForecast(90, 25)); // headwind
+  const pr = await pApp.createRoute(gpx, { name:'PredRoute', seedStillAirSec:1000,
+    seedHeadwind20Sec:1300, seedTailwind20Sec:760, targetArrival:'08:45', activeDays:['MO'] });
+  clock = new Date(2026,5,1,8,0).getTime();
+  const pred = await pApp.ridePrediction(pr);
+  ok('ridePrediction returns a positive duration', pred && pred.predictedSec > 0, JSON.stringify(pred));
+  // headwind should make it no faster than still-air baseline
+  ok('headwind prediction ≥ baseline', pred.predictedSec >= 1000 * 0.99, `${pred.predictedSec}`);
+  clock = new Date(2026,4,31,21,30).getTime();
+}
+
 console.log('\nExcluded ride is ignored by the resolver:');
 {
   const t=await app.routeTuning(route.id);

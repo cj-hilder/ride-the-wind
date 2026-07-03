@@ -19,6 +19,11 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
  * ========================================================================== */
 
 import { createAppController } from "./lib/app.js";
+import {
+  speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
+  emaStep, routePolyline, projectToRoute,
+  needleTauMs, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
+} from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
 /* Error boundary around the active screen. A render error in one screen (e.g. a
@@ -172,6 +177,7 @@ export default function App() {
   const controller = controllerRef.current;
 
   const [screen, setScreen] = useState("home"); // home | setup | capture
+  const [recording, setRecording] = useState(false); // ride in progress → lock nav
   const [routes, setRoutes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -298,12 +304,13 @@ export default function App() {
             onCancel={() => setScreen("routes")} />
         ) : (
           <Capture controller={controller} route={active?.route}
+            onRecordingChange={setRecording}
             onDone={async () => { await refresh(); setScreen("home"); }} />
         )}
         </ScreenBoundary>
       </div>
 
-      <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} />
+      {!recording && <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} />}
 
       {showHelp && <HelpPanel onClose={acceptHelp} />}
     </div>
@@ -1213,6 +1220,7 @@ function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
   const [rides, setRides] = useState(null);
   const [editing, setEditing] = useState(null); // a ride object
   const [bulkAsk, setBulkAsk] = useState(null);  // { rideId, count }
+  const [manualOpen, setManualOpen] = useState(false); // "add ride manually" form
   const pressTimer = useRef(null);
 
   const load = useCallback(() => {
@@ -1296,6 +1304,20 @@ function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
           </>
         )}
 
+      {!route.isExample && (
+        <button onClick={() => setManualOpen(true)} style={{
+          marginTop: 14, width: "100%", padding: "11px 16px", borderRadius: 12, cursor: "pointer",
+          fontFamily: "inherit", fontSize: 13.5, fontWeight: 600,
+          background: "rgba(255,255,255,0.08)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)",
+        }}>+ Enter a ride from earlier today</button>
+      )}
+
+      {manualOpen && (
+        <ManualRideEntry route={route} controller={controller}
+          onClose={() => setManualOpen(false)}
+          onAdded={async () => { setManualOpen(false); await reloadAfterMutation(); }} />
+      )}
+
       {editing && (
         <RideEditor ride={editing} controller={controller}
           onClose={async () => { setEditing(null); await reloadAfterMutation(); }} />
@@ -1319,10 +1341,81 @@ function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
 }
 
 /* ============================================================================
- * RideEditor — full-screen editor for one ride. Edit duration, toggle
- * include/exclude, flip the current/historic baseline switch (locked historic
- * at 14 days), bulk "exclude this and earlier", or delete the ride.
+ * ManualRideEntry — log a ride from earlier today by entering start/finish
+ * times. Today-only (so today's forecast is always fetchable for wind
+ * reconstruction). Delegates to controller.recordManualRide, which treats it
+ * identically to a GPS-recorded ride (same wind_factor reconstruction and
+ * classification).
  * ========================================================================== */
+function ManualRideEntry({ route, controller, onClose, onAdded }) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const nowHM = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const [start, setStart] = useState("");
+  const [finish, setFinish] = useState(nowHM());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Combine an HH:MM (today, local) into an epoch ms.
+  const toMsToday = (hm) => {
+    const [h, m] = hm.split(":").map(Number);
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    return d.getTime();
+  };
+
+  const valid = /^\d{1,2}:\d{2}$/.test(start) && /^\d{1,2}:\d{2}$/.test(finish);
+  const submit = async () => {
+    setError(null);
+    const startMs = toMsToday(start), endMs = toMsToday(finish);
+    if (!(endMs > startMs)) { setError("Finish time must be after the start time."); return; }
+    if (endMs > Date.now()) { setError("Finish time can't be in the future."); return; }
+    setBusy(true);
+    try {
+      await controller.recordManualRide(route.id, { startMs, endMs });
+      onAdded();
+    } catch (e) {
+      setError(e.message || "Couldn't add the ride.");
+      setBusy(false);
+    }
+  };
+
+  const dur = (() => {
+    if (!valid) return null;
+    const mins = Math.round((toMsToday(finish) - toMsToday(start)) / 60000);
+    return mins > 0 ? mins : null;
+  })();
+
+  const field = { width: "100%", padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: 16, fontFamily: "inherit" };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "grid", placeItems: "center", background: "rgba(8,10,22,0.7)", padding: 24 }}>
+      <div style={{ maxWidth: 340, width: "100%", padding: "20px 20px", borderRadius: 16, background: "#1d1b38", border: "1px solid rgba(255,255,255,0.18)" }}>
+        <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 6 }}>Enter a ride from earlier today</div>
+        <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", lineHeight: 1.45, marginBottom: 16 }}>
+          Enter when you started and finished. We'll work out the wind from today's forecast, just as if you'd recorded it.
+        </div>
+        <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
+          <label style={{ flex: 1, fontSize: 12, color: "rgba(255,255,255,0.55)" }}>Start
+            <input type="time" value={start} onChange={(e) => setStart(e.target.value)} style={{ ...field, marginTop: 4 }} />
+          </label>
+          <label style={{ flex: 1, fontSize: 12, color: "rgba(255,255,255,0.55)" }}>Finish
+            <input type="time" value={finish} onChange={(e) => setFinish(e.target.value)} style={{ ...field, marginTop: 4 }} />
+          </label>
+        </div>
+        {dur != null && <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", marginBottom: 12 }}>Ride length: {dur} min</div>}
+        {error && <div style={{ fontSize: 13, color: "#e8927c", marginBottom: 12, lineHeight: 1.4 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onClose} disabled={busy} style={backupBtn}>Cancel</button>
+          <button onClick={submit} disabled={!valid || busy} style={{ ...backupBtn, background: valid && !busy ? "#e0a45e" : "rgba(224,164,94,0.4)", color: "#1a1f3a", border: "none", cursor: valid && !busy ? "pointer" : "default" }}>
+            {busy ? "Adding…" : "Add ride"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function RideEditor({ ride, controller, onClose }) {
   const [durMin, setDurMin] = useState(Math.round(ride.actualTimeSec / 60));
   const [included, setIncluded] = useState(ride.included);
@@ -1447,6 +1540,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
   const [days, setDays] = useState(route.activeDays);
   const [timeMode, setTimeMode] = useState(route.timeMode === "depart" ? "depart" : "arrive");
   const [confirmDel, setConfirmDel] = useState(false);
+  const [nameErr, setNameErr] = useState(null); // rename collision message
   const toggleDay = (d) => setDays(days.includes(d) ? days.filter((x) => x !== d) : [...days, d]);
 
   // Tuning: load the manual sliders, learned view (with per-quantity sources),
@@ -1535,16 +1629,22 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
       // Persist slider values, modes, split, and schedule. Editing a slider NEVER
       // wipes rides — manual/learn is a per-quantity switch and ride history is
       // curated separately in View rides.
-      await controller.updateRoute(route.id, {
-        ...valToConfig(val),
-        baselineMode: modes.baselineMode,
-        kMode: modes.kMode,
-        name: name.trim() || route.name,
-        targetArrival: arrival,
-        activeDays: days,
-        timeMode,
-      });
+      try {
+        await controller.updateRoute(route.id, {
+          ...valToConfig(val),
+          baselineMode: modes.baselineMode,
+          kMode: modes.kMode,
+          name: name.trim() || route.name,
+          targetArrival: arrival,
+          activeDays: days,
+          timeMode,
+        });
+      } catch (e) {
+        setNameErr(e.message || "Couldn't save changes.");
+        return; // abort: don't snapshot/close on a rejected save (e.g. name clash)
+      }
     }
+    setNameErr(null);
     snapshot();
     // Refresh the editor's own learned view / dots from the just-applied state,
     // and quietly recompute the verdict beneath — without closing or collapsing
@@ -1589,8 +1689,9 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
   return (
     <div style={{ padding: "4px 16px 16px", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
       <label style={lbl}>Route name</label>
-      <input value={name} onChange={(e) => setName(e.target.value)} disabled={route.isExample}
-        style={{ ...INP, ...(route.isExample ? { opacity: 0.5, cursor: "not-allowed" } : {}) }} />
+      <input value={name} onChange={(e) => { setName(e.target.value); if (nameErr) setNameErr(null); }} disabled={route.isExample}
+        style={{ ...INP, ...(route.isExample ? { opacity: 0.5, cursor: "not-allowed" } : {}), ...(nameErr ? { borderColor: "#e8927c" } : {}) }} />
+      {nameErr && <div style={{ fontSize: 12.5, color: "#e8927c", marginTop: 6, lineHeight: 1.4 }}>{nameErr}</div>}
 
       <label style={{ ...lbl, marginTop: 12 }}>{timeMode === "depart" ? "Departure time" : "Target arrival"}</label>
       <input type="time" value={arrival} onChange={(e) => setArrival(e.target.value)} style={INP} />
@@ -1698,12 +1799,187 @@ const backupBtn = { flex: 1, padding: "11px 14px", borderRadius: 12, cursor: "po
 const lbl = { display: "block", fontSize: 12.5, color: "rgba(255,255,255,0.6)", margin: "0 0 6px" };
 
 /* ============================================================================
- * Setup — create a route from a GPX file (real controller.createRoute)
+ * RouteRecorder — record a new route by GPS. Mirrors ride capture (elapsed,
+ * live distance/speed, pause) but with NO end detection and NO progress/map.
+ * Keep-alive: screen Wake Lock + a near-silent looping audio element so the
+ * browser doesn't suspend watchPosition when the screen locks / app backgrounds.
+ * On Finish, hands the raw traversal up via onRecorded (the parent gates it).
+ * ========================================================================== */
+function RouteRecorder({ controller, onCancel, onRecorded }) {
+  const [state, setState] = useState("armed"); // armed | recording | blocked
+  const [blocked, setBlocked] = useState(null); // gate-failure message
+  const [elapsed, setElapsed] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const [live, setLive] = useState({ distanceM: 0, speedKmh: 0 });
+  const [nowMs, setNowMs] = useState(Date.now());
+  const ref = useRef({});
+  const emaRef = useRef({ speedMps: 0, lastT: null, lastDistM: 0 });
+  const wakeRef = useRef(null);
+  const audioRef = useRef(null);
+
+  const acquireWake = async () => {
+    try { if (navigator.wakeLock && !wakeRef.current) {
+      wakeRef.current = await navigator.wakeLock.request("screen");
+      wakeRef.current.addEventListener?.("release", () => { wakeRef.current = null; });
+    } } catch { /* unavailable */ }
+  };
+  const releaseWake = () => { try { wakeRef.current?.release?.(); } catch {} wakeRef.current = null; };
+
+  // Silent-audio keep-alive: a looping, effectively-inaudible tone via WebAudio,
+  // started on the Start gesture (autoplay needs a gesture) and stopped on finish.
+  const startAudio = () => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      gain.gain.value = 0.0001; // inaudible but non-zero → media session stays live
+      osc.frequency.value = 440;
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      audioRef.current = { ctx, osc };
+    } catch { /* audio keep-alive unavailable; wake lock still helps */ }
+  };
+  const stopAudio = () => {
+    try { audioRef.current?.osc?.stop(); audioRef.current?.ctx?.close(); } catch {}
+    audioRef.current = null;
+  };
+
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible" && state === "recording" && !paused) acquireWake(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [state, paused]);
+  useEffect(() => () => { releaseWake(); stopAudio(); ref.current.handle?.stop?.(); }, []);
+  useEffect(() => {
+    if (state !== "recording" || paused) return;
+    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(id);
+  }, [state, paused]);
+  useEffect(() => {
+    if (state !== "recording") return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [state]);
+
+  const begin = async () => {
+    setState("recording"); setElapsed(0); setPaused(false); setLive({ distanceM: 0, speedKmh: 0 });
+    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, warmed: false };
+    acquireWake(); startAudio();
+    const handle = await controller.recordRoute({
+      onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM }) => {
+        setElapsed(elapsedSec);
+        // Needle smoothing identical to ride capture: smooth the controller's
+        // per-fix speed with the variance-weighted EMA, dt measured between GPS
+        // fix timestamps (not Date.now()), warm-up gate, accel jump-limiter (A)
+        // and dt cap (B). See the ride-capture tick for the rationale.
+        const em = emaRef.current;
+        const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
+        if (em.lastFixT != null && needleUsable) {
+          const dt = fixT - em.lastFixT;
+          if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) em.warmed = true;
+          if (dt > 0 && em.warmed) {
+            let instMps = Math.max(0, speedMps || 0);
+            if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
+            const maxDelta = NEEDLE_MAX_ACCEL_MPS2 * (dt / 1000);
+            instMps = Math.max(em.speedMps - maxDelta, Math.min(em.speedMps + maxDelta, instMps));
+            em.speedMps = emaStep(em.speedMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), needleTauMs(em.lastAccM, accuracyM));
+          }
+        }
+        if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; }
+        setLive({ distanceM, speedKmh: (em.speedMps || 0) * 3.6 });
+      },
+    }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); stopAudio(); });
+    handle?.onFinish?.((rec) => {
+      releaseWake(); stopAudio();
+      // Gate the trace here so we own the blocked UI (with a Cancel path). On a
+      // good recording, hand it up; on a blocked one, show why + let the user
+      // record again or cancel out entirely.
+      const res = controller.previewTrace(rec.trace);
+      if (res.ok) { onRecorded(rec, res); }
+      else { setBlocked(res.reason); setState("blocked"); }
+    });
+    ref.current = { handle };
+  };
+  const togglePause = () => {
+    const h = ref.current.handle; if (!h) return;
+    if (paused) { h.resume?.(); setPaused(false); acquireWake(); }
+    else { h.pause?.(); setPaused(true); releaseWake(); }
+  };
+  const finish = () => ref.current.handle?.manualFinish?.();
+  const avg = elapsed > 0 ? Math.round((live.distanceM / elapsed) * 3.6 * 2) / 2 : 0;
+
+  if (state === "blocked") {
+    // Recording couldn't form a usable route — offer re-record or cancel.
+    return (
+      <div style={{ padding: "0 22px" }}>
+        <div style={{ padding: "16px 16px", borderRadius: 14, background: "rgba(217,83,79,0.12)", border: "1px solid rgba(217,83,79,0.4)", color: "#f0b9b2", fontSize: 14, lineHeight: 1.5, marginBottom: 16 }}>
+          {blocked}
+        </div>
+        <div style={{ display: "flex", gap: 12 }}>
+          <button onClick={onCancel} style={backupBtn}>Cancel</button>
+          <button onClick={begin} style={{ ...backupBtn, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Record again</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (state === "recording") {
+    // Full black instrument screen, identical to ride capture. Differences per
+    // spec: center line reads "Recording new route" (red) in place of the
+    // off-route message; the bottom slot shows km recorded (no progress bar); no
+    // arrival marker (arrivalMs null); no what-to-expect caption.
+    return (
+      <div style={{ position: "fixed", inset: 0, zIndex: 50, background: "#000", color: "#fff", display: "flex", flexDirection: "column", padding: "16px 14px 20px" }}>
+        <InstrumentPanel
+          elapsed={elapsed} paused={paused} avg={avg}
+          nowMs={nowMs} arrivalMs={null} speedKmh={live.speedKmh}
+          centerMessage={{ text: "Recording new route", color: "#d9534f" }}
+          onPause={togglePause} onFinish={finish} finishLabel="Finish"
+          bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "0 22px" }}>
+      <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", lineHeight: 1.5, marginBottom: 18 }}>
+        Start at the beginning of your route, then ride it once. Keep the app open — tap Finish when you arrive.
+      </div>
+      <button onClick={begin} style={{ width: "100%", padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Start recording</button>
+    </div>
+  );
+}
+
+/* A single tappable creation-method card in the New route chooser. */
+function MethodOption({ title, desc, onClick, disabled }) {
+  return (
+    <button onClick={disabled ? undefined : onClick} disabled={disabled} style={{
+      display: "block", width: "100%", textAlign: "left", marginBottom: 10, padding: "15px 16px", borderRadius: 14,
+      cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1,
+      fontFamily: "inherit", color: "#fff",
+      background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.16)",
+    }}>
+      <div style={{ fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600 }}>{title}</div>
+      <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginTop: 4, lineHeight: 1.4 }}>{desc}</div>
+    </button>
+  );
+}
+
+/* ============================================================================
+ * Setup — create a route: choose a method (record / reverse / GPX), then the
+ * shared details form (name, tuning, schedule).
  * ========================================================================== */
 function Setup({ controller, onDone, onCancel }) {
+  const [method, setMethod] = useState(null); // null=chooser, "gpx", "reverse"
   const [gpxText, setGpxText] = useState(null);
+  const [processed, setProcessed] = useState(null); // reverse/record path: pre-built geometry
+  const [recording, setRecording] = useState(null); // record path: the raw traversal (for first-ride logging)
   const [preview, setPreview] = useState(null);
   const [err, setErr] = useState(null);
+  const [routeList, setRouteList] = useState(null); // for the reverse picker
   const [form, setForm] = useState({ name: "", speedKmh: 16, kHead: 0.35, kTail: 0.35, split: false, arrival: "08:45", timeMode: "arrive", days: ["MO", "TU", "WE", "TH", "FR"] });
   // Tuning modes default to learn/learn (the new-route default), toggleable here
   // for consistency with the route editor. At setup there are no rides, so learn
@@ -1720,39 +1996,131 @@ function Setup({ controller, onDone, onCancel }) {
     try {
       const text = await file.text();
       const p = await controller.previewGpx(text);
-      setGpxText(text); setPreview(p);
+      setGpxText(text); setProcessed(null); setPreview(p);
       if (!form.name) set("name", file.name.replace(/\.gpx$/i, "").replace(/[_-]/g, " "));
+    } catch (e) { setErr(e.message); }
+  };
+
+  // Reverse path: pick a source route → preview reversed geometry + pre-fill the
+  // details form from the source's inherited config.
+  const chooseReverse = async () => {
+    setErr(null); setMethod("reverse");
+    try { setRouteList(await controller.listRoutes()); }
+    catch (e) { setErr(e.message); }
+  };
+  const pickSource = async (sourceId) => {
+    setErr(null);
+    try {
+      const r = await controller.previewReverse(sourceId);
+      setProcessed({ ...r.processed, sourceId });
+      setGpxText(null);
+      setPreview(r.preview);
+      const d = r.defaults;
+      setForm((f) => ({ ...f, name: d.name, speedKmh: d.speedKmh, kHead: d.kHead, kTail: d.kTail, split: d.split,
+        arrival: d.targetArrival ?? f.arrival, timeMode: d.timeMode ?? f.timeMode }));
+      setModes({ baselineMode: d.baselineMode, kMode: d.kMode });
     } catch (e) { setErr(e.message); }
   };
 
   const valid = preview && form.name.trim() && form.speedKmh > 0 && form.days.length;
   const save = async () => {
+    setErr(null);
     setSaving(true);
     const baselineSec = preview.totalDistance / (form.speedKmh / 3.6);
-    await controller.createRoute(gpxText, {
+    const setup = {
       name: form.name.trim(),
       seedStillAirSec: Math.round(baselineSec),
       seedHeadwind20Sec: Math.round(baselineSec * (1 + form.kHead)),
       seedTailwind20Sec: Math.round(baselineSec * (1 - form.kTail)),
       baselineMode: modes.baselineMode, kMode: modes.kMode, split: form.split,
       targetArrival: form.arrival, timeMode: form.timeMode, activeDays: form.days,
-    });
-    onDone();
+    };
+    try {
+      if (recording) {
+        const res = await controller.finalizeRecordedRoute(recording, setup);
+        if (!res.ok) { setErr(res.reason || "Recording couldn't be used."); setSaving(false); return; }
+      } else if (processed) {
+        await controller.createRouteFromProcessed(processed, setup);
+      } else {
+        await controller.createRoute(gpxText, setup);
+      }
+      onDone();
+    } catch (e) {
+      setErr(e.message || "Couldn't save the route.");
+      setSaving(false);
+    }
   };
   const toggleDay = (d) => set("days", form.days.includes(d) ? form.days.filter((x) => x !== d) : [...form.days, d]);
+
+  const back = () => {
+    // Back steps: preview → method's picker; picker → chooser; chooser → cancel.
+    if (preview) { setPreview(null); setProcessed(null); setGpxText(null); setRecording(null); return; }
+    if (method) { setMethod(null); setErr(null); return; }
+    onCancel && onCancel();
+  };
 
   return (
     <div style={{ height: "100%", overflowY: "auto", background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff", paddingBottom: 30 }}>
       <div style={{ padding: "26px 22px 8px", display: "flex", alignItems: "center", gap: 12 }}>
-        {onCancel && (
-          <button onClick={onCancel} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.6)", fontSize: 22, padding: 0, lineHeight: 1 }} aria-label="Back">‹</button>
-        )}
+        <button onClick={back} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.6)", fontSize: 22, padding: 0, lineHeight: 1 }} aria-label="Back">‹</button>
         <span style={{ fontFamily: "'Fraunces',serif", fontSize: 26, fontWeight: 600 }}>New route</span>
       </div>
       <div style={{ padding: "0 22px 16px", fontSize: 13.5, color: "rgba(255,255,255,0.55)" }}>Each destination needs two routes, one going and one returning.</div>
 
-      <Block n="1" title="Load GPX">
-        {!preview ? (
+      {/* Step 1: method chooser */}
+      {method === null && (
+        <div style={{ padding: "0 22px" }}>
+          <MethodOption title="Record with GPS" desc="Ride the route once and let your phone trace it."
+            onClick={() => { setMethod("record"); setErr(null); }} />
+          <MethodOption title="Reverse an existing route" desc="Create the return trip from a route you already have."
+            onClick={chooseReverse} />
+          <MethodOption title="Import a GPX file" desc="Load a route exported from another app or a mapping site."
+            onClick={() => { setMethod("gpx"); setErr(null); }} />
+          {err && <Warn>{err}</Warn>}
+        </div>
+      )}
+
+      {/* Step 2a: reverse — pick which route to reverse */}
+      {method === "reverse" && !preview && (
+        <div style={{ padding: "0 22px" }}>
+          <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 12 }}>Which route do you want to reverse?</div>
+          {routeList == null ? (
+            <div style={{ color: "rgba(255,255,255,0.5)" }}>Loading…</div>
+          ) : routeList.filter((r) => !r.isExample).length === 0 ? (
+            <div style={{ padding: "18px 14px", textAlign: "center", color: "rgba(255,255,255,0.55)", border: "1px dashed rgba(255,255,255,0.16)", borderRadius: 12, lineHeight: 1.5 }}>
+              No routes to reverse yet. Record a route or import a GPX file first, then you can create its return trip.
+            </div>
+          ) : (
+            routeList.filter((r) => !r.isExample).map((r) => (
+              <button key={r.id} onClick={() => pickSource(r.id)} style={{
+                display: "block", width: "100%", textAlign: "left", marginBottom: 8, padding: "13px 15px", borderRadius: 12, cursor: "pointer",
+                fontFamily: "inherit", fontSize: 14.5, fontWeight: 600, color: "#fff",
+                background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.16)",
+              }}>{r.name}
+                <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: "rgba(255,255,255,0.5)", marginTop: 3 }}>{(r.totalDistance / 1000).toFixed(1)} km</span>
+              </button>
+            ))
+          )}
+          {err && <Warn>{err}</Warn>}
+        </div>
+      )}
+
+      {/* Step 2c: record by GPS */}
+      {method === "record" && !preview && (
+        <RouteRecorder controller={controller}
+          onCancel={() => { setMethod(null); setErr(null); }}
+          onRecorded={(rec, res) => {
+            // res = { ok:true, processed, preview } from the recorder's gate.
+            setRecording(rec);
+            setProcessed(res.processed);
+            setPreview(res.preview);
+            if (!form.name) set("name", "");
+          }} />
+      )}
+
+      {/* Step 2b: GPX loader (reached via the chooser) */}
+      {method === "gpx" && !preview && (
+        <Block n="1" title="Load GPX">
           <div onClick={() => fileRef.current.click()} style={{
             padding: "28px 18px", borderRadius: 16, textAlign: "center", cursor: "pointer",
             border: "1.5px dashed rgba(255,255,255,0.28)", background: "rgba(255,255,255,0.04)",
@@ -1760,22 +2128,24 @@ function Setup({ controller, onDone, onCancel }) {
             <div style={{ fontSize: 15, fontWeight: 500 }}>Tap to choose a .gpx file</div>
             <input ref={fileRef} type="file" accept=".gpx" hidden onChange={(e) => e.target.files[0] && onFile(e.target.files[0])} />
           </div>
-        ) : (
-          <div style={{ borderRadius: 16, padding: 16, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)" }}>
-            <RouteMap polyline={preview.polyline} />
-            <div style={{ display: "flex", gap: 18 }}>
-              <Stat label="Distance" value={`${(preview.totalDistance / 1000).toFixed(2)} km`} />
-              <Stat label="Elevation" value={preview.hasElevation ? `${Math.round(preview.climb)} m` : "—"} />
-              <Stat label="Points" value={preview.pointCount} />
-            </div>
-            {preview.warnings?.map((w, i) => <Warn key={i}>{w}</Warn>)}
-          </div>
-        )}
-        {err && <Warn>{err}</Warn>}
-      </Block>
+          {err && <Warn>{err}</Warn>}
+        </Block>
+      )}
 
+      {/* Step 3: shared details form (both GPX and reverse land here) */}
       {preview && (
         <>
+          <Block n="1" title="Route">
+            <div style={{ borderRadius: 16, padding: 16, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)" }}>
+              <RouteMap polyline={preview.polyline} />
+              <div style={{ display: "flex", gap: 18 }}>
+                <Stat label="Distance" value={`${(preview.totalDistance / 1000).toFixed(2)} km`} />
+                <Stat label="Elevation" value={preview.hasElevation ? `${Math.round(preview.climb)} m` : "—"} />
+                <Stat label="Points" value={preview.pointCount} />
+              </div>
+              {preview.warnings?.map((w, i) => <Warn key={i}>{w}</Warn>)}
+            </div>
+          </Block>
           <Block n="2" title="Name">
             <input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Home → Office" style={INP} />
           </Block>
@@ -1822,6 +2192,7 @@ function Setup({ controller, onDone, onCancel }) {
             </div>
           </Block>
           <div style={{ padding: "8px 22px 0" }}>
+            {err && <Warn>{err}</Warn>}
             <button onClick={save} disabled={!valid || saving} style={{
               width: "100%", padding: 16, borderRadius: 16, border: "none", cursor: valid ? "pointer" : "default",
               fontFamily: "'Fraunces',serif", fontSize: 17, fontWeight: 600,
@@ -1835,32 +2206,328 @@ function Setup({ controller, onDone, onCancel }) {
 }
 
 /* ============================================================================
+ * Live ride instruments (SVG). White-on-black; amber for active indicators.
+ * Pure-math helpers live in lib/rideReadout.js.
+ * ========================================================================== */
+function AnalogClock({ nowMs, arrivalMs, size = 150 }) {
+  const c = size / 2, r = c - 6;
+  const a = clockAngles(nowMs);
+  const hand = (angle, len, w, color) => {
+    const p = polarPoint(c, c, len, angle);
+    return <line x1={c} y1={c} x2={p.x} y2={p.y} stroke={color} strokeWidth={w} strokeLinecap="round" />;
+  };
+  const ticks = [];
+  for (let i = 0; i < 12; i++) {
+    const ang = i * 30;
+    const heavy = i % 3 === 0;
+    const o = polarPoint(c, c, r, ang);
+    const inr = polarPoint(c, c, r - (heavy ? 11 : 7), ang);
+    ticks.push(<line key={i} x1={o.x} y1={o.y} x2={inr.x} y2={inr.y} stroke="#fff" strokeWidth={heavy ? 2.4 : 1.2} strokeLinecap="round" opacity={heavy ? 0.95 : 0.78} />);
+  }
+  const bz = arrivalBezel(nowMs, arrivalMs);
+  let marker = null;
+  if (bz != null) {
+    const col = bz.imminent ? "#e0a45e" : "rgba(255,255,255,0.45)";
+    const tip = polarPoint(c, c, r + 3, bz.angle);
+    const baseL = polarPoint(c, c, r + 15, bz.angle - 6);
+    const baseR = polarPoint(c, c, r + 15, bz.angle + 6);
+    marker = <polygon points={`${tip.x},${tip.y} ${baseL.x},${baseL.y} ${baseR.x},${baseR.y}`} fill={col} />;
+  }
+  return (
+    <svg viewBox={`-18 -18 ${size + 36} ${size + 36}`} width="100%" style={{ display: "block" }}>
+      <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth={1.5} />
+      {ticks}
+      {marker}
+      {hand(a.hour, r * 0.5, 3.2, "#fff")}
+      {hand(a.minute, r * 0.78, 2.2, "#fff")}
+      <circle cx={c} cy={c} r={3} fill="#e0a45e" />
+    </svg>
+  );
+}
+
+function Speedometer({ kmh, size = 230 }) {
+  const c = size / 2, r = c - 14;
+  const labels = [0, 10, 20, 30, 40];
+  const ticks = [];
+  for (let v = 0; v <= SPEEDO_MAX_KMH; v += 1) {
+    const ang = speedToAngle(v);
+    const major = v % 10 === 0;
+    if (!major) {
+      // minor dots: one per 1 km/h, set just inside the circle, separated from
+      // it. The "5" dots (5,15,25,35) are white and a touch larger.
+      const five = v % 5 === 0;
+      const p = polarPoint(c, c, r - 9, ang);
+      ticks.push(<circle key={`d${v}`} cx={p.x} cy={p.y} r={five ? 2.1 : 1.3} fill={five ? "#fff" : "rgba(255,255,255,0.5)"} />);
+    } else {
+      const o = polarPoint(c, c, r, ang);
+      const inr = polarPoint(c, c, r - 14, ang);
+      ticks.push(<line key={`t${v}`} x1={o.x} y1={o.y} x2={inr.x} y2={inr.y} stroke="#fff" strokeWidth={2.4} strokeLinecap="round" />);
+    }
+  }
+  const nums = labels.map((v) => {
+    const ang = speedToAngle(v);
+    // Classic radial speedo: every number sits inside the rim at a uniform
+    // radius, rotated to its gauge angle. Numbers whose angle falls in the lower
+    // half (would read upside-down) get an extra 180° so they stay readable —
+    // here that's 0 (225°) and 40 (135°).
+    const norm = ((ang % 360) + 360) % 360;
+    const upsideDown = norm > 90 && norm < 270;
+    const rot = ang + (upsideDown ? 180 : 0);
+    const p = polarPoint(c, c, r - 21.5, ang);
+    return (
+      <text key={`n${v}`} x={p.x} y={p.y} fill="#fff" fontSize={15} fontWeight={600}
+        textAnchor="middle" dominantBaseline="central" fontFamily="'Fraunces',serif"
+        transform={`rotate(${rot} ${p.x} ${p.y})`}>{v}</text>
+    );
+  });
+  // Needle angle straight from the (EMA-smoothed) speed — no rounding. The EMA
+  // itself supplies the easing: each new target is an asymptotic approach to the
+  // true speed, so the *sequence* of targets already decelerates. A LINEAR CSS
+  // transition slightly longer than the ~1 s fix cadence then connects
+  // consecutive fixes into one continuous glide (the needle is always still
+  // moving when the next value arrives and retargets it). Ease-out here would
+  // brake to a stop at every fix — the sweep-stop-sweep we don't want — and
+  // rounding would throw away the sub-km/h asymptotic approach that makes the
+  // glide smooth near a stop.
+  const needleAng = speedToAngle(kmh || 0);
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ display: "block" }}>
+      <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth={1.5} />
+      {ticks}{nums}
+      {/* Needle drawn pointing straight up, rotated to the speed angle; linear
+          1.1 s transition connects fixes into one continuous sweep (easing comes
+          from the EMA, not the CSS curve). */}
+      <g style={{ transform: `rotate(${needleAng}deg)`, transformOrigin: `${c}px ${c}px`, transition: "transform 1.1s linear" }}>
+        <line x1={c} y1={c + 12} x2={c} y2={c - (r - 6)} stroke="#e0a45e" strokeWidth={3.2} strokeLinecap="round" />
+      </g>
+      <circle cx={c} cy={c} r={6} fill="#e0a45e" />
+      <text x={c} y={c + r * 0.5} fill="rgba(255,255,255,0.55)" fontSize={12} textAnchor="middle">km/h</text>
+    </svg>
+  );
+}
+
+/* ============================================================================
+ * InstrumentPanel — the shared black instrument screen used by BOTH ride capture
+ * and route recording. Layout: elapsed+avg top-left, analog clock top-right,
+ * a center status line, the speedometer hero, Pause/Finish buttons, then a
+ * bottom slot (progress bar / distance) and an optional caption line. All the
+ * variable content is passed in so the two modes stay pixel-identical.
+ * ========================================================================== */
+function InstrumentPanel({
+  elapsed, paused, avg, nowMs, arrivalMs, speedKmh,
+  centerMessage, onPause, onFinish, finishLabel = "Finish now",
+  bottom, caption, label = "Elapsed",
+}) {
+  const fmtC = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "6px 4px 0" }}>
+      {/* top row: elapsed left, clock right */}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ flex: 1, textAlign: "left", paddingTop: 6, minWidth: 0 }}>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", letterSpacing: "0.04em", textTransform: "uppercase", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{paused ? "Paused" : label}</div>
+          <div style={{ fontFamily: "'Fraunces',serif", fontSize: 40, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.55 : 1, lineHeight: 1.1 }}>{fmtC(elapsed)}</div>
+          <div style={{ fontSize: 23, color: "#fff", marginTop: 6 }}>avg {avg.toFixed(1)} km/h</div>
+        </div>
+        <div style={{ width: "48%" }}>
+          <AnalogClock nowMs={nowMs} arrivalMs={arrivalMs} />
+        </div>
+      </div>
+      {/* center status line (off-route message, or "Recording") */}
+      {centerMessage && (
+        <div style={{ textAlign: "center", paddingTop: 8, fontSize: 15, fontWeight: 600, fontFamily: "'Fraunces',serif", color: centerMessage.color || "#e0a45e" }}>
+          {centerMessage.text}
+        </div>
+      )}
+      {/* speedometer */}
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0 }}>
+        <div style={{ width: "96%", maxWidth: 380 }}>
+          <Speedometer kmh={speedKmh} />
+        </div>
+      </div>
+      {/* buttons */}
+      <div style={{ display: "flex", gap: 12 }}>
+        <button onClick={onPause} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: paused ? "#6fd49a" : "rgba(255,255,255,0.12)", color: paused ? "#0f2a1c" : "#fff", border: paused ? "none" : "1px solid rgba(255,255,255,0.25)" }}>
+          {paused ? "Continue" : "Pause"}
+        </button>
+        <button onClick={onFinish} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>{finishLabel}</button>
+      </div>
+      {/* bottom slot: progress bar (ride, known total) or distance number */}
+      <div style={{ margin: "18px 0 6px" }}>{bottom}</div>
+      {/* optional caption (what-to-expect on a ride) */}
+      {caption && (
+        <div style={{ textAlign: "center", fontSize: 13, color: "rgba(255,255,255,0.7)", lineHeight: 1.4, minHeight: 18 }}>
+          {caption}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProgressBar({ travelledM, totalM }) {
+  const frac = totalM > 0 ? Math.max(0, Math.min(1, travelledM / totalM)) : 0;
+  return (
+    <div style={{ width: "100%", height: 20, borderRadius: 10, background: "rgba(255,255,255,0.12)", position: "relative", overflow: "hidden" }}
+      aria-label={`progress ${Math.round(frac * 100)}%`}>
+      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${frac * 100}%`, background: "#e0a45e" }} />
+    </div>
+  );
+}
+
+/* ============================================================================
  * Capture — tap to start, auto-finish, confirm (real controller.recordRide)
  * ========================================================================== */
-function Capture({ controller, route, onDone }) {
+function Capture({ controller, route, onDone, onRecordingChange }) {
   const [state, setState] = useState("armed");
   const [elapsed, setElapsed] = useState(0);
   const [paused, setPaused] = useState(false);
   const [result, setResult] = useState(null);
   const [confirm, setConfirm] = useState(null);
   const [adjustMin, setAdjustMin] = useState(0); // minutes added/removed at review
-  const ref = useRef({});
-
-  if (!route) return <Empty />;
-
+  const [nowMs, setNowMs] = useState(Date.now());   // ticking clock for the dial
+  const [live, setLive] = useState({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0, avgKmh: 0 });
+  const [endConfirm, setEndConfirm] = useState(null); // {metres} when far from end on finish
+  const [expectLine, setExpectLine] = useState(null); // what-to-expect for the ride
+  const [forecastSec, setForecastSec] = useState(null); // wind+learning-aware duration (leaving now), for first-km arrival
   const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
+  const ref = useRef({});
+  const wakeRef = useRef(null);
+  // EMA state (persist across ticks). `emaRef` holds the smoothed needle speed
+  // (~5s) and the smoothed arrival pace (~45min), plus the last tick's distance
+  // and timestamp so we can derive per-interval pace and elapsed Δt.
+  const emaRef = useRef({ speedMps: null, paceMps: null, lastT: null, lastDistM: 0 });
+
+  // Report recording state up so App can lock navigation (hide the tab bar)
+  // while a ride is in progress — including while paused. On unmount, clear it.
+  useEffect(() => {
+    onRecordingChange?.(state === "riding");
+  }, [state, onRecordingChange]);
+  useEffect(() => () => onRecordingChange?.(false), [onRecordingChange]);
+
+  // Screen Wake Lock: keep the screen on while recording so the live readouts
+  // can be watched. Re-acquire when the page becomes visible again.
+  const acquireWake = async () => {
+    try {
+      if (navigator.wakeLock && !wakeRef.current) {
+        wakeRef.current = await navigator.wakeLock.request("screen");
+        wakeRef.current.addEventListener?.("release", () => { wakeRef.current = null; });
+      }
+    } catch { /* wake lock unavailable or denied; harmless */ }
+  };
+  const releaseWake = () => { try { wakeRef.current?.release?.(); } catch {} wakeRef.current = null; };
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible" && state === "riding" && !paused) acquireWake(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [state, paused]);
+  useEffect(() => () => releaseWake(), []);
 
   // Begin recording. If GPS says we're well away from the route's start, ask
   // first — guards against accidentally recording from the wrong place.
   const beginRecording = async () => {
     setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0);
+    setLive({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0 });
+    // Needle speed seeds at 0 (rider stationary). Arrival pace is dormant (null)
+    // and seeded at the 1 km along-route mark with the average speed so far, then
+    // refined by the 45-min EMA. Pace samples use ALONG-ROUTE distance (gap- and
+    // curve-immune); the needle uses raw trace distance (real instantaneous
+    // speed, including off-route). Progress/remaining come from along-route
+    // projection, so they self-heal after a GPS gap and never need the clamp.
+    emaRef.current = {
+      speedMps: 0, paceMps: null, paceSeeded: false, warmed: false, warmDistM: 0, warmSec: null,
+      lastFixT: null, lastAlongM: null, lastAccM: null,
+      polyline: routePolyline(route),
+    };
+    setExpectLine(null);
+    setForecastSec(null);
+    // Show the what-to-expect line for every route, including the example — on
+    // the example it showcases the feature during a demo ride. Also fetch the
+    // wind/learning-aware predicted duration for leaving now, which seeds the
+    // first-km arrival estimate before live pace is available.
+    controller.rideExpectation(route).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
+    controller.ridePrediction(route).then((p) => setForecastSec(p && p.predictedSec ? p.predictedSec : null)).catch(() => {});
+    acquireWake();
     const handle = await controller.startRide(route, {
-      onTick: ({ elapsedSec }) => setElapsed(elapsedSec),
+      onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM, lat, lon }) => {
+        setElapsed(elapsedSec);
+        const em = emaRef.current;
+        const goodFix = accuracyM == null || accuracyM <= GPS_ACCURACY_GATE_M;
+
+        // Project the fix onto the route for progress + pace (gap-immune).
+        let proj = { alongM: em.lastAlongM || 0, offRoute: true };
+        if (goodFix && lat != null && em.polyline.length >= 2) {
+          proj = projectToRoute({ lat, lon }, em.polyline, em.lastAlongM);
+        }
+
+        if (em.lastFixT != null) {
+          // dt is measured between GPS FIX timestamps (not Date.now() at callback
+          // time). This matters: fixes are sometimes delivered late or batched, so
+          // Date.now() at the tick can span a different interval than the distance
+          // covered — mixing the two produced a spike (fast jump out, slow drift
+          // back) whenever delivery was bunched. Using fix time keeps distance and
+          // dt over the SAME interval.
+          const dt = fixT - em.lastFixT;
+          // Warm-up: GPS is very inaccurate for the first few seconds, so hold the
+          // needle at 0 until the first genuinely-good fix arrives — otherwise the
+          // acquisition garbage seeds a visible startup jump. A stationary start at
+          // 0 is the honest prior.
+          if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) {
+            em.warmed = true;
+            // Anchor the average here: distance/time accumulated during GPS
+            // acquisition (before the first good fix) is noise, and dividing a few
+            // spurious metres by a near-zero elapsed reads as tens of km/h. Measure
+            // the average from the warm-up moment instead of ride start.
+            em.warmDistM = distanceM;
+            em.warmSec = elapsedSec;
+          }
+          // Needle: the controller already derived this fix's speed over its own
+          // GPS interval (speedMps); we just smooth it with the variance-weighted
+          // EMA. τ adapts to accuracy so tight fixes are snappy, loose ones calm.
+          const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
+          if (dt > 0 && needleUsable && em.warmed) {
+            let instMps = Math.max(0, speedMps || 0);
+            if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
+            // A (jump limiter): reject a physically impossible change in speed
+            // between fixes — clamp the sample to a sane acceleration bound so a
+            // stray reading can't fling the needle; a real accel still gets there
+            // over a couple of samples.
+            const maxDelta = NEEDLE_MAX_ACCEL_MPS2 * (dt / 1000);
+            instMps = Math.max(em.speedMps - maxDelta, Math.min(em.speedMps + maxDelta, instMps));
+            // B: cap the dt used for α so one sample after a long gap can't seize
+            // the needle.
+            const dtForAlpha = Math.min(dt, NEEDLE_MAX_DT_MS);
+            em.speedMps = emaStep(em.speedMps, instMps, dtForAlpha, needleTauMs(em.lastAccM, accuracyM));
+          }
+          // Pace (arrival): fed from the same per-fix speed on any good fix.
+          if (dt > 0 && goodFix) {
+            const instMps = Math.max(0, Math.min(SPEED_SANE_MAX_MPS, speedMps || 0));
+            if (!em.paceSeeded && distanceM >= ARRIVAL_LIVE_AFTER_M && elapsedSec > 0) {
+              em.paceMps = distanceM / elapsedSec;
+              em.paceSeeded = true;
+            } else if (em.paceSeeded) {
+              em.paceMps = emaStep(em.paceMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), PACE_EMA_TAU_MS);
+            }
+          }
+        }
+
+        const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
+        if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; }
+        if (goodFix && !proj.offRoute) em.lastAlongM = proj.alongM;
+        // Average speed measured from the warm-up anchor (0 until warmed), so
+        // acquisition-noise distance over a near-zero time can't read as ~40 km/h.
+        let avgKmh = 0;
+        if (em.warmed && em.warmSec != null) {
+          const dSec = elapsedSec - em.warmSec;
+          const dDist = distanceM - em.warmDistM;
+          if (dSec > 0 && dDist > 0) avgKmh = (dDist / dSec) * 3.6;
+        }
+        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh });
+      },
       onFinish: (r) => {
+        releaseWake();
         setResult({ actualSec: r.actualSec, distance: r.distanceM, startedAt: r.startedAt, endedAt: r.endedAt, pausedSec: r.pausedSec || 0, forecastWind: r.forecastWind });
         setState("done");
       },
-    }).catch((e) => { alert(e.message); setState("armed"); });
+    }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); });
     ref.current = { handle };
   };
 
@@ -1885,13 +2552,35 @@ function Capture({ controller, route, onDone }) {
     return () => clearInterval(id);
   }, [state, paused]);
 
+  // Wall-clock tick for the analogue dial (once per second while riding).
+  useEffect(() => {
+    if (state !== "riding") return;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [state]);
+
   useEffect(() => () => ref.current.handle?.stop?.(), []);
+
+  // All hooks above run unconditionally; safe to bail on a missing route here.
+  if (!route) return <Empty />;
 
   const togglePause = () => {
     const h = ref.current.handle;
     if (!h) return;
-    if (paused) { h.resume?.(); setPaused(false); }
-    else { h.pause?.(); setPaused(true); }
+    if (paused) { h.resume?.(); setPaused(false); acquireWake(); }
+    else { h.pause?.(); setPaused(true); releaseWake(); }
+  };
+
+  // Manual finish with an end-of-ride sanity check mirroring the start check:
+  // if GPS says we're well away from the route end, confirm before stopping.
+  const doFinish = () => ref.current.handle?.manualFinish?.();
+  const finishNow = async () => {
+    if (!route.isExample) {
+      const metres = await controller.distanceToEnd(route).catch(() => null);
+      if (metres != null && metres > 100) { setEndConfirm({ metres }); return; }
+    }
+    doFinish();
   };
 
   const fmtC = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -1914,8 +2603,8 @@ function Capture({ controller, route, onDone }) {
   return (
     <div style={{
       height: "100%", color: "#fff", padding: 24, position: "relative",
-      background: state === "riding" ? (paused ? "linear-gradient(165deg,#2a2438,#3a3048 55%,#473c52)" : "linear-gradient(165deg,#16324a,#1d4258 55%,#2a5a6e)") : "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)",
-      transition: "background 1s", display: "flex", flexDirection: "column",
+      background: state === "riding" ? "#000" : "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)",
+      transition: "background 0.6s", display: "flex", flexDirection: "column",
     }}>
       {state === "armed" && (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 26 }}>
@@ -1956,18 +2645,53 @@ function Capture({ controller, route, onDone }) {
           </div>
         </div>
       )}
-      {state === "riding" && (
-        <div style={{ flex: 1, paddingTop: 40 }}>
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.55)" }}>{paused ? "Paused · time not counting" : "Elapsed · GPS active"}</div>
-          <div style={{ fontFamily: "'Fraunces',serif", fontSize: 76, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.6 : 1 }}>{fmtC(elapsed)}</div>
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", marginTop: 20 }}>
-            {paused ? "Resume when you're moving again." : "Finish detected automatically near your destination."}
-          </div>
-          <div style={{ display: "flex", gap: 12, marginTop: 28 }}>
-            <button onClick={togglePause} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: paused ? "#6fd49a" : "rgba(255,255,255,0.12)", color: paused ? "#0f2a1c" : "#fff", border: paused ? "none" : "1px solid rgba(255,255,255,0.18)" }}>
-              {paused ? "Continue" : "Pause"}
-            </button>
-            <button onClick={() => ref.current.handle?.manualFinish?.()} style={{ flex: 1, padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 500, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Finish now</button>
+      {state === "riding" && (() => {
+        const totalM = route.totalDistance ?? null;
+        // Along-route position from projection drives progress + remaining. It's
+        // gap-immune (self-heals on any fix) and never exceeds the route, so no
+        // clamp is needed. `gpsDistanceM` (real trace) still gates the 1 km
+        // forecast→live arrival switch.
+        const alongM = live.alongM || 0;
+        // Arrival is only meaningful on-route (off-route we have a pace but no
+        // defined remaining distance, so arrival is genuinely unknown → no
+        // marker; an "Off route" message explains the frozen progress instead).
+        const arrivalMs = live.offRoute ? null : expectedArrivalMs({
+          nowMs, estDistanceM: alongM, gpsDistanceM: live.distanceM, routeTotalM: totalM,
+          paceMps: emaRef.current.paceMps,
+          // Wind + learning-aware predicted duration for leaving now (the same
+          // prediction the home screen shows) when the forecast was fetchable;
+          // the still-air baseline is the fallback. The first-km estimate is
+          // progress-scaled from whichever is used.
+          forecastRemainingSec: forecastSec,
+          baselineRemainingSec: route.baselineTimeSec ?? null,
+        });
+        const avg = Math.round((live.avgKmh || 0) * 2) / 2;
+        return (
+          <InstrumentPanel
+            elapsed={elapsed} paused={paused} avg={avg} label={route.name}
+            nowMs={nowMs} arrivalMs={arrivalMs} speedKmh={live.speedKmh}
+            centerMessage={live.offRoute && live.offRouteM != null
+              ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
+              : null}
+            onPause={togglePause} onFinish={finishNow}
+            bottom={totalM
+              ? <ProgressBar travelledM={alongM} totalM={totalM} />
+              : <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
+            caption={expectLine}
+          />
+        );
+      })()}
+      {endConfirm && (
+        <div style={{ position: "absolute", inset: 0, zIndex: 20, display: "grid", placeItems: "center", background: "rgba(0,0,0,0.6)", padding: 28 }}>
+          <div style={{ maxWidth: 320, background: "#1d1b38", borderRadius: 18, padding: "22px 22px", border: "1px solid rgba(255,255,255,0.14)", textAlign: "center" }}>
+            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 8 }}>Away from the end</div>
+            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 18 }}>
+              You are {endConfirm.metres >= 1000 ? `${(endConfirm.metres / 1000).toFixed(1)} km` : `${endConfirm.metres} metres`} from the end of this route. Really stop?
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setEndConfirm(null)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Keep riding</button>
+              <button onClick={() => { setEndConfirm(null); doFinish(); }} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 14, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Stop now</button>
+            </div>
           </div>
         </div>
       )}

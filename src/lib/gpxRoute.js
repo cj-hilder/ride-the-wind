@@ -243,6 +243,50 @@ export function buildSegments(points) {
   return { segments, totalDistance: total, maxGap, hasElevation };
 }
 
+/**
+ * Reverse a processed route into the return-trip geometry. Rather than hand-
+ * transform segment indices/bearings (error-prone, because each segment stores
+ * its START point), we reconstruct the ordered point list from the route, reverse
+ * it, and re-run buildSegments — so bearings, distances and elevation deltas are
+ * all recomputed by the same trusted path, guaranteeing consistency.
+ *
+ * Elevation: segments carry eleDelta (not absolute ele), so we integrate the
+ * deltas into a cumulative elevation to rebuild each point's `ele`, letting
+ * buildSegments recompute reversed (negated) deltas naturally. If the route has
+ * no elevation, points carry no `ele` and deltas stay null.
+ *
+ * @param {{segments:Object[], totalDistance:number, hasElevation:boolean, start:{lat:number,lon:number}, end:{lat:number,lon:number}}} route
+ * @returns {{segments:Object[], totalDistance:number, hasElevation:boolean, maxGap:number, start:Object, end:Object}}
+ */
+export function reverseRoute(route) {
+  const segs = route.segments || [];
+  if (!segs.length) {
+    return { segments: [], totalDistance: 0, hasElevation: false, maxGap: 0,
+      start: route.end, end: route.start };
+  }
+  const hasEle = route.hasElevation;
+  const pts = [];
+  let cumEle = 0;
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    pts.push({ lat: s.lat, lon: s.lon, ele: hasEle ? cumEle : undefined });
+    if (hasEle && s.eleDelta != null) cumEle += s.eleDelta;
+  }
+  const end = route.end || { lat: segs[segs.length - 1].lat, lon: segs[segs.length - 1].lon };
+  pts.push({ lat: end.lat, lon: end.lon, ele: hasEle ? cumEle : undefined });
+
+  pts.reverse();
+  const built = buildSegments(pts);
+  return {
+    segments: built.segments,
+    totalDistance: built.totalDistance,
+    hasElevation: built.hasElevation,
+    maxGap: built.maxGap,
+    start: { lat: pts[0].lat, lon: pts[0].lon },
+    end: { lat: pts[pts.length - 1].lat, lon: pts[pts.length - 1].lon },
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * Orchestration
  * ------------------------------------------------------------------ */
@@ -261,42 +305,97 @@ export function buildSegments(points) {
  * @returns {ProcessedRoute & {warnings: string[]}}
  */
 export function processGpx(gpxText, options = {}) {
-  const {
-    spacing = 75,
-    minDistance = 200,
-    maxGapWarn = 500,
-    domParser,
-  } = options;
-
+  const { domParser } = options;
   const raw = parseGpx(gpxText, { domParser });
+  return processPoints(raw, options);
+}
+
+/**
+ * Shared core: turn an ordered point list ({lat,lon,ele?}) into a processed
+ * route (resample → segments), with the same short/gap warnings as GPX import.
+ * Used by both processGpx (after parsing) and processTrace (recorded GPS).
+ */
+export function processPoints(raw, options = {}) {
+  const { spacing = 75, minDistance = 200, maxGapWarn = 500 } = options;
   const sampled = resample(raw, spacing);
-  const { segments, totalDistance, maxGap, hasElevation } =
-    buildSegments(sampled);
-
+  const { segments, totalDistance, maxGap, hasElevation } = buildSegments(sampled);
   const warnings = [];
-  if (totalDistance < minDistance) {
-    warnings.push(
-      `Track is very short (${Math.round(totalDistance)} m).`
-    );
-  }
-  if (maxGap > maxGapWarn) {
-    warnings.push(
-      `Track has a large gap (${Math.round(maxGap)} m) — recording may have paused.`
-    );
-  }
-
+  if (totalDistance < minDistance) warnings.push(`Track is very short (${Math.round(totalDistance)} m).`);
+  if (maxGap > maxGapWarn) warnings.push(`Track has a large gap (${Math.round(maxGap)} m) — recording may have paused.`);
   return {
     segments,
     totalDistance,
     start: { lat: sampled[0].lat, lon: sampled[0].lon },
-    end: {
-      lat: sampled[sampled.length - 1].lat,
-      lon: sampled[sampled.length - 1].lon,
-    },
+    end: { lat: sampled[sampled.length - 1].lat, lon: sampled[sampled.length - 1].lon },
     hasElevation,
     diagnostics: { maxGap, pointCount: sampled.length },
     warnings,
   };
+}
+
+// GPS-recording quality thresholds (route geometry only — see spec "trace
+// treatment differs by purpose"). Tunable.
+export const REC_MIN_DISTANCE_M = 200;   // shorter → probably an accidental start
+export const REC_MIN_FIXES = 10;         // fewer usable fixes → can't form a route
+export const REC_MAX_GAP_FRACTION = 0.25; // one gap covering >25% of elapsed → incomplete
+export const REC_MAX_SPEED_MPS = 22;     // ~80 km/h: a fix implying more is a GPS spike
+
+/**
+ * Denoise a recorded GPS trace for ROUTE geometry: drop fixes implying an
+ * impossible cycling speed from the previous kept fix (GPS spikes), so a bad fix
+ * can't bake a permanent zigzag into the route. Returns the filtered points.
+ * (Only for route construction — ride measurement keeps every fix.)
+ */
+export function denoiseTrace(trace) {
+  if (!trace || trace.length < 2) return (trace || []).slice();
+  const out = [trace[0]];
+  for (let i = 1; i < trace.length; i++) {
+    const a = out[out.length - 1], b = trace[i];
+    const dt = (b.t - a.t) / 1000;
+    if (dt <= 0) continue; // out-of-order / duplicate timestamp
+    const d = haversine(a.lat, a.lon, b.lat, b.lon);
+    if (d / dt > REC_MAX_SPEED_MPS) continue; // impossible jump → drop
+    out.push(b);
+  }
+  return out;
+}
+
+/**
+ * Assess a recorded trace for route construction. Returns
+ *   { ok:true, points } when it can form a coherent route (denoised points), or
+ *   { ok:false, reason } with a user-facing re-record message otherwise.
+ * Block-or-re-record: there is no route editor to salvage a marginal recording.
+ */
+export function gpsQualityGate(trace) {
+  const pts = denoiseTrace(trace || []);
+  if (pts.length < REC_MIN_FIXES) {
+    return { ok: false, reason: "Not enough GPS fixes to form a route. Try recording again with a clear view of the sky." };
+  }
+  let dist = 0, maxGap = 0, span = 0;
+  for (let i = 1; i < pts.length; i++) {
+    dist += haversine(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
+    const gap = pts[i].t - pts[i - 1].t;
+    if (gap > maxGap) maxGap = gap;
+  }
+  span = pts[pts.length - 1].t - pts[0].t;
+  if (dist < REC_MIN_DISTANCE_M) {
+    return { ok: false, reason: `That recording was very short (${Math.round(dist)} m). Please record the whole route.` };
+  }
+  if (span > 0 && maxGap / span > REC_MAX_GAP_FRACTION) {
+    return { ok: false, reason: "The recording has a large gap where GPS dropped out. Please record it again." };
+  }
+  return { ok: true, points: pts };
+}
+
+/**
+ * Turn a recorded GPS trace into a processed route: denoise + gate, then run the
+ * same resample/segment path as GPX import. Returns { ok, processed } or
+ * { ok:false, reason }.
+ */
+export function processTrace(trace, options = {}) {
+  const gate = gpsQualityGate(trace);
+  if (!gate.ok) return gate;
+  return { ok: true, processed: processPoints(gate.points, options) };
 }
 
 /* ------------------------------------------------------------------ *

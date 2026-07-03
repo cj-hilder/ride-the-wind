@@ -69,9 +69,13 @@ track.
   end region yet.)
 - **Manual finish.** The user ends recording with a **Finish** button. There is
   no automatic end detection (no end region exists during creation).
-- **UX during recording** mirrors normal ride recording (elapsed time, live
-  distance, GPS-active state, pause support if cheap to reuse) **without** the
-  progress bar and **without** a map.
+- **UX during recording** reuses the **same instrument panel as ride capture**
+  (elapsed + avg top-left, analog clock top-right, speedometer centre, Pause/
+  Finish below) via a shared `InstrumentPanel` component, with four differences:
+  the centre status line reads **"Recording"** in red (where the off-route
+  message sits on a ride); the bottom slot shows **km recorded so far** (in place
+  of the progress bar); there is **no what-to-expect caption**; and **no expected
+  arrival marker** on the clock (arrivalMs null). No map.
 - **On finish**, the collected trace is converted to the same internal route
   representation as an imported GPX: feed the trace through the **same
   processing path as `processGpx`/`previewGpx`** (resample to ~50 m spacing,
@@ -148,6 +152,25 @@ nothing to salvage a marginal route with.
     elapsed recording, e.g. **> 25%**).
 - Thresholds above are **tunable named constants**; firm values TBD.
 
+**Trace treatment differs by purpose (design principle).** A recorded trace serves
+two different jobs that want opposite handling, so filtering is applied per
+purpose, never universally:
+- **Route geometry (recording a new route, this section):** *filter* implausible
+  fixes before resampling into segments. A bad fix baked into route geometry is a
+  permanent zigzag (wrong bearings/distances forever), whereas a gap is bridged
+  by a locally-straight line and is usually recoverable — so here **bad data is
+  worse than a gap**, and since the trace is resampled anyway, filtering costs
+  nothing.
+- **Ride measurement (recording a ride on an existing route, item 4 / live
+  capture):** **keep every fix** — do not filter the recorded trace. The ride's
+  `actualSec` comes from the clock (start/finish), not the trace, and distance is
+  a secondary input to wind_factor, so trace imperfections barely matter;
+  filtering would add the risk of dropping real early movement for negligible
+  benefit. Cleverness (accuracy gate, sane-speed clamp) is applied only at the
+  **display** layer (the live speedometer needle) and at **route construction**,
+  never by silently editing recorded ride ground truth. Principle: *record
+  faithfully, interpret carefully.*
+
 ### 3B. Reverse an existing route (secondary)
 
 Create the return trip from an existing route's geometry.
@@ -155,10 +178,14 @@ Create the return trip from an existing route's geometry.
 - **Geometry:** reverse the segment order, swap start/end regions, and reverse
   each segment bearing (bearing + 180°, normalised). Distance/elevation per
   segment carry over (elevation deltas negate). Total distance unchanged.
-- **Tuning seed:** the reversed route **inherits the original's speed and k
-  slider values** as a sensible starting seed (the bike is the same), but starts
-  with **no rides** — the return trip has different wind exposure and gradient,
-  so its learned k will diverge. Modes default to learn/learn like any new route.
+- **Tuning seed:** the reversed route **inherits the source's configuration** —
+  its modes (baseline/k manual-or-learn, split) and its manual/slider seed values
+  (speed and k). It starts with **no rides**, so in learn mode it shows the
+  inherited manual seed with the "using your setting until enough rides" note
+  (which may differ from what the source currently *displays* if the source has
+  learned a value — but the underlying config is identical; the reverse simply
+  hasn't learned yet). The return trip then learns its own k, which will diverge
+  (different wind exposure and gradient).
 - **Name:** auto-suggest **"Reverse ‹original route name›"** (editable — the
   user can accept or change it).
 - The user lands on the standard details form to set name/schedule/confirm.
@@ -197,30 +224,166 @@ explicitly out of scope.)
 
 ---
 
-## 5. Ride tab live readouts
+## 5. Ride tab live readouts (detailed design)
 
-Add to the recording screen (additive; existing elapsed/distance/pause stay):
+The recording screen is redesigned as a mostly-graphical instrument panel,
+**white-on-black** for sunlight legibility and battery saving (true black
+background), with the app's **amber (#e0a45e)** reserved for *active indicators*
+(clock hands, speedometer needle, bezel marker, progress fill). Red is used only
+for progress overage. SVG throughout for sharpness.
 
-- **Clock time** — current wall-clock time (phone timezone), updated each second.
-- **Current speed** — **derived** from successive GPS fixes (not
-  `coords.speed`, for cross-device reliability), lightly **smoothed** over the
-  last few seconds / couple of fixes so it isn't jumpy. km/h.
-- **Average speed so far** — `distance-so-far ÷ elapsed-moving-time`, where
-  elapsed-moving-time **excludes paused time** (consistent with how the ride
-  time itself excludes pauses). km/h.
-- **Progress bar** — fill = `distance-travelled / total-route-length`, **not
-  capped**: if the rider detours or overshoots, the value legitimately exceeds
-  100% (e.g. 120%), which honestly signals they've ridden further than the route
-  length. The **numeric percentage shown is uncapped**; the **visual bar fill is
-  capped at 100%** so layout doesn't break, while the text reads the true value.
-  Shown during recording with **no gating** (no on-route check, no geometry).
-  **Deliberately naive:** it measures distance ridden against route length
-  regardless of where the rider actually went, so a detour makes it inaccurate.
-  This is an accepted simplification — a rough "how far through am I" indicator,
-  not a positional one.
+### Navigation lock while recording
+- While a ride is actively recording (including while **paused**), the **tab bar
+  is hidden** and navigation is locked to the ride screen. The only way off is
+  **Finish** (manual — with the end-of-ride sanity check — or automatic at the
+  end region). This prevents accidental taps navigating away mid-ride on a moving
+  bike, and (deliberately) sidesteps lifting the ride session above the tab
+  switch: since you can't leave the ride screen, the session never has to survive
+  a tab change. Implemented by `Capture` reporting recording state up
+  (`onRecordingChange`); `App` hides the `TabBar` while true.
 
-All four are display-only; none affect the recorded ride, its `actualSec`, or
-wind reconstruction.
+### What-to-expect line (this ride)
+- The recording screen shows a **what-to-expect line** — the same hazard/
+  temperature summary as the Plan tab, computed for the **actual ride start
+  time** (departing now) via `controller.rideExpectation(route)`. Below the
+  progress bar; hidden for the example route.
+
+### Keep-awake (this turn)
+- **Screen Wake Lock** (`navigator.wakeLock.request('screen')`) acquired when
+  recording starts, released on finish, re-acquired on `visibilitychange` back
+  to visible. Keeps the screen on so the live readouts can be watched
+  uninterrupted. (Silent-audio background keep-alive is NOT in this turn — it
+  matters only for pocketed/backgrounded recording, addressed in turn 5.)
+
+### End-of-ride sanity check
+- Mirroring the existing start-of-ride check ("you're N km from the start —
+  continue?"), the **manual Finish** triggers an end check: if GPS says the
+  rider is more than the same threshold from the route's **end region**, confirm
+  "You're N km from the end of the route — really stop?" before finishing.
+  Reuses the `distanceToStart` machinery against `endRegion`. Same threshold as
+  the start check, for symmetry.
+
+### Layout (top → bottom)
+The speedometer is the hero element; the clock is secondary. Proportions below
+are starting points to tune on-device.
+
+**2a. Elapsed time — top-right.** Essentially unchanged from the current display
+(running elapsed, paused state). Plain white text.
+
+**2b. Analogue clock — top-left (~40–50% width).** Minimalist SVG watch face:
+- A simple circle, 12 hour markers (ticks), with **12 / 3 / 6 / 9 heavier** than
+  the other eight; **no numerals**. Plain hour + minute hands (white) showing the
+  current wall-clock time, updated each second (second hand optional/omitted for
+  minimalism — TBD visually).
+- **Bezel ring** around the face carrying a **single diver's-style arrival
+  marker**: a pip at the clock-angle of the **expected arrival time** (e.g.
+  arrive 8:47 → marker at the 47-minute angle, 282°). Mental model = the marker
+  sits at the arrival o'clock-position and the real minute hand sweeps toward it.
+  - Shown **always** (whenever an arrival estimate exists), coloured **grey when
+    arrival is ≥ 60 min away** and **amber when < 60 min** (imminent). Beyond
+    60 min the hour is ambiguous on a 12-h dial — understood as the approximate
+    minute-of-arrival.
+  - The marker **stays in place once arrival is reached**.
+- **Expected arrival** is dynamic: `now + (route_total − estimated_distance) /
+  speed`, where **estimated_distance** is the clamped value from 2e (so remaining
+  is never negative and arrival is never in the past until actually arrived). The
+  speed used is the **forecast ride-duration estimate until ≥ 1 km** of estimated
+  distance, then the **average speed so far**. For a new-route recording (no
+  total) the bezel marker does not show.
+
+**2c. Speedometer — centre (hero element).** Classic-car-style SVG gauge,
+stylistically matching the clock:
+- A complete circle. **0 at the 7:30 position (225°)**, sweeping **clockwise**
+  through **20 straight up (12 o'clock)** to **40 at the 4:30 position (315°)** —
+  a **270° sweep** for 0–40 km/h.
+- Numbers shown at **0, 10, 20, 30, 40**; intermediate values marked with small
+  dots. White markings.
+- **Amber needle** at the current **derived, smoothed** speed (see 2c-data).
+  Needle **pegs at 40** if exceeded (cycling rarely sustains more; a pegged
+  needle reads fine).
+
+**2c-data. Speed derivation.** Current speed is **derived from successive GPS
+fixes** (not `coords.speed`, which proved jumpier). Each fix's speed sample is
+only as trustworthy as its reported **accuracy** — a sample from two ±30 m fixes
+has a huge speed error (tens of km/h over a ~1 s interval), which is why a raw
+needle dances even when stationary. So the needle EMA is **variance-weighted**:
+its time constant τ adapts per sample from the two fixes' accuracies
+(`needleTauMs`, τ ∝ acc_prev² + acc_now², clamped) — a tight fix (≈ reference
+accuracy) snaps the needle, a loose one barely nudges it (dozens of samples to
+converge). The needle additionally CSS-transitions for a classic-car glide.
+Per-sample speeds above a sane cycling max (~70 km/h) are rejected as GPS
+artefacts, and truly garbage fixes (accuracy worse than a hard cutoff) are
+dropped entirely. Two further guards prevent spikes from irregular fix delivery:
+**dt is measured between GPS fix timestamps, not `Date.now()` at the callback**
+(late/batched deliveries would otherwise pair a full interval's distance with a
+near-zero dt and fling the needle), a per-sample **acceleration clamp** rejects
+physically impossible speed changes, and the dt used for α is capped so one
+sample after a gap can't seize the needle. All of this is **display-only** — the recorded trace keeps
+every fix, and the arrival **pace** EMA keeps its slow fixed τ (per-fix accuracy
+matters far less over 45-min windows).
+
+**2d. Pause / Finish-now buttons — below the speedometer.** The existing controls
+(pause toggle, finish), restyled to suit the white-on-black panel. Finish runs
+the end-of-ride sanity check above.
+
+**2e. Progress — bottom.**
+- **Existing-route ride:** a graphical **progress bar**, **no numbers**, amber
+  fill left→right = `along-route-distance / route-total`. The along-route
+  distance comes from **projecting each GPS fix onto the route polyline**
+  (`projectToRoute`): nearest point on the route, read as cumulative along-route
+  distance. This is **gap-immune** — if GPS was suspended (phone off/pocketed)
+  and resumes mid-ride, the next fix snaps to the route and progress is
+  immediately correct, no accumulated trace needed. It never exceeds 100%, so
+  there is **no red overage** and the old line-of-sight *estimated-distance
+  clamp is retired* in favour of this projection.
+  - **Continuity preference:** among route points within `OFF_ROUTE_M` (150 m)
+    perpendicular, the projection nearest the last known along-route position is
+    chosen, so a route passing near itself doesn't cause jumps. After a gap the
+    hint is stale, so a self-crossing route *may snap to the wrong arm* — an
+    accepted limitation (most commutes don't self-cross).
+  - **Off-route (detour):** if no route point is within 150 m, progress
+    **freezes** at the last along-route position (you make no route progress
+    while off it).
+- **New-route recording:** no route to project onto, so the bar is **replaced by
+  a numeric distance covered so far** (raw GPS distance).
+
+**Expected arrival** (2b), shown **only when on-route**, in three stages:
+- **First km** (before live pace is trustworthy): a *progress-scaled* whole-ride
+  estimate — `estimate × (remaining / route_total)` — so it refines as the rider
+  advances instead of sitting flat until 1 km. The estimate scaled is the
+  wind- and learning-aware **predicted duration for leaving now** (`ridePrediction`,
+  the same prediction the home screen shows), with the still-air baseline as the
+  fallback if the forecast can't be fetched.
+- **After 1 km of real distance:** `now + (route_total − along-route-distance) / pace`.
+- **Off-route:** unknown → no marker.
+
+**Pace** is a 45-min EMA fed from **real trace-distance** deltas between fixes
+every good fix — pace reflects how fast the rider is moving and is therefore
+always live, on- or off-route (the time-aware EMA absorbs GPS gaps correctly).
+Off-route it is *remaining distance* that is undefined, not pace: since we can't
+know where an off-route rider will go next, arrival is genuinely unknown, so the
+**bezel marker is hidden while off-route** (deliberately, not as a side effect).
+The **speedometer needle** uses the same trace-distance movement, variance-
+weighted (see 2c-data).
+
+**Off-route status message.** While off-route, the frozen progress bar and absent
+arrival marker would otherwise look like the app has died. To explain them and
+reassure the rider that movement is still tracked, a message **"Off route by
+x.x km"** is shown in the space between the clock and the speedometer (their
+placement unchanged), using the nearest perpendicular distance to the route
+(`projectToRoute` returns `offRouteM`), rounded to 1 dp — coarse enough not to
+jitter, live enough to show tracking is active.
+
+**Average speed** (used for the dynamic arrival, and a candidate small readout) =
+`distance-so-far ÷ elapsed-moving-time`, excluding paused time (consistent with
+how ride time excludes pauses).
+
+### Notes
+- All readouts are display-only; none affect the recorded ride, its `actualSec`,
+  or wind reconstruction.
+- The progress bar is deliberately **distance-travelled vs route-length**, no
+  on-route geometry — a detour makes it read high (hence the red overage is a
+  genuine "you've ridden further than the route" signal, not an error).
 
 ---
 
@@ -261,13 +424,45 @@ No changes to the learning model, storage schema (beyond a possibly-reused
    `createRoute` — not a new extraction. With zero rides at setup, learn controls
    correctly fall back to the sliders ("using your setting until enough rides
    recorded").
-3. **Item 5** (live readouts) — self-contained additive UI on the existing Ride
-   tab; derived-speed + average + clock + naive progress bar.
+3. **Item 5** (live readouts) — the instrument-panel redesign (analogue clock +
+   arrival bezel, classic speedometer, amber-on-black, progress bar with red
+   overage), **plus** screen Wake Lock keep-awake and the end-of-ride sanity
+   check (both pulled into this turn). Derived-speed + average + dynamic-arrival
+   logic is unit-testable; the SVG/GPS/Wake-Lock parts are device-verified.
+   **[DONE]** Pure math extracted to `lib/rideReadout.js` (gauge angle, clock
+   angles, arrival bezel, dynamic arrival w/ 1 km forecast→live switch, avg +
+   smoothed speed, progress amber/red fractions), covered by `testreadout.mjs`.
+   `onTick` extended with `speedMps`/`distanceToEndM`; new `distanceToEnd`
+   controller method; Wake Lock acquired on start / released on finish & pause /
+   re-acquired on visibility.
 4. **Item 4** (manual ride entry) — moderate; reuses wind reconstruction.
+   **[DONE]** `controller.recordManualRide(routeId, {startMs, endMs})` fetches
+   today's forecast and delegates to `recordRide`, so wind_factor reconstruction,
+   classification and used/unused are identical to a GPS-recorded ride;
+   `actualTimeSec = finish − start`. UI: an "Enter a ride from earlier today"
+   button in the Rides Manager opens `ManualRideEntry` (two time inputs, today-
+   only, finish ≤ now and > start).
 5. **Item 3C / 3B** (GPX demotion + reverse) — the method chooser plus the
-   reverse transform.
-6. **Item 3A** (record by GPS) — largest new piece; build last on top of the
-   method chooser and the shared details form.
+   reverse transform. **[DONE]** New route now opens a **method chooser**:
+   Record with GPS (shown, disabled "coming soon" until 3A), Reverse an existing
+   route, Import a GPX file — GPX demoted to the third option. Both reverse and
+   GPX flow into the **shared details form** (name/tuning/schedule) via a common
+   `preview`+`processed` path: `previewReverse(sourceId)` returns reversed
+   geometry + inherited config defaults without creating; `previewGpx` as before;
+   the form saves via `createRouteFromProcessed` (reverse) or `createRoute`
+   (GPX). The route editor's "Create return trip" button remains as a convenience
+   shortcut (direct `createReverseRoute`). Back navigation steps preview→picker→
+   chooser→cancel. (3A record-by-GPS still to do.)
+6. **Item 3A** (record by GPS) — largest new piece; built last on top of the
+   method chooser and the shared details form. **[DONE]** `recordRoute()`
+   collects a raw trace (no end detection, pause support); on finish the trace is
+   denoised + quality-gated (`denoiseTrace`/`gpsQualityGate`/`processTrace` in
+   gpxRoute.js, sharing `processPoints` with GPX import) and, if it passes,
+   flows into the shared details form via `previewTrace`; save calls
+   `finalizeRecordedRoute`, which creates the route and logs the traversal as its
+   first ride. UI: `RouteRecorder` (elapsed/distance/speed, pause, Finish; no
+   progress bar or map) with Wake Lock + silent-audio keep-alive. Block-or-
+   re-record on a marginal trace (too short / too few fixes / dominant gap).
 
 ---
 

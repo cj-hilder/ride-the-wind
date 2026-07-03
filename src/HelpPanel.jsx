@@ -91,9 +91,12 @@ export default function HelpPanel({ onClose }) {
         </div>
 
         <div style={section}>
-          <h3 style={h3}>Making a GPX file for a route</h3>
+          <h3 style={h3}>Adding a route</h3>
           <p style={p}>
-            A route needs a GPX file (its path on the map). If you've already got one from Strava, Komoot, Garmin or similar, just open it here. Otherwise it takes a minute to make one:
+            The simplest way to add a route is to <b>record it while you ride</b>. Choose <b>New</b>, tap <b>Record with GPS</b>, and ride the route once.
+          </p>
+          <p style={p}>
+            You can also <b>import a GPX file</b> (the path drawn on a map). That's handy if you'd rather plan the route before you ride it, or if you already have a GPX exported from Strava, Komoot, Garmin or a mapping site — just choose <b>New</b> → <b>Import a GPX file</b> and open it. To make one from scratch:
           </p>
           <p style={{ ...p, fontWeight: 600, color: "rgba(255,255,255,0.85)", marginTop: 8 }}>
             <a href="https://mapy.com" target="_blank" rel="noopener noreferrer" style={lnk}>Mapy.com</a> — good for dedicated bike lanes
@@ -113,7 +116,7 @@ export default function HelpPanel({ onClose }) {
             <li>Open the menu (top right) and tap <b>Export as GPX</b>.</li>
           </ol>
           <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
-            Either way the file lands in your Downloads folder. Choose <b>New</b> in Ride the Wind to load the GPX and add the route. You actually need to make two GPX files and add two routes per destination, one for riding out, and one for the return ride.
+            However you add them, you'll want a route for each direction — one for riding out and one for the return.
           </p>
         </div>
 

@@ -200,5 +200,45 @@ console.log('\nPersistent storage request shim:');
   ok('reorder persists new order', JSON.stringify(names)===JSON.stringify(['Three','One','Two']), names.join(','));
 }
 
+console.log('\nDuplicate route names are rejected:');
+{
+  const s = mkStore();
+  await s.createRoute(processed, { ...setup, name:'Home to Work' }, { kHead:1, kTail:1 });
+  let threw = false;
+  try { await s.createRoute(processed, { ...setup, name:'Home to Work' }, { kHead:1, kTail:1 }); }
+  catch { threw = true; }
+  ok('exact duplicate rejected', threw);
+  // case-insensitive + trimmed
+  threw = false;
+  try { await s.createRoute(processed, { ...setup, name:'  home TO work ' }, { kHead:1, kTail:1 }); }
+  catch { threw = true; }
+  ok('case/space-insensitive duplicate rejected', threw);
+  // a different name is fine
+  const okRoute = await s.createRoute(processed, { ...setup, name:'Work to Home' }, { kHead:1, kTail:1 });
+  ok('distinct name allowed', okRoute.name === 'Work to Home');
+  ok('only two routes exist', (await s.listRoutes()).length === 2);
+}
+
+console.log('\nRename collision guard (updateRoute):');
+{
+  const s = mkStore();
+  const a = await s.createRoute(processed, { ...setup, name:'Alpha' }, { kHead:1, kTail:1 });
+  const b = await s.createRoute(processed, { ...setup, name:'Beta' }, { kHead:1, kTail:1 });
+  // rename Beta → Alpha collides
+  let threw = false;
+  try { await s.updateRoute(b.id, { name:'Alpha' }); } catch { threw = true; }
+  ok('rename into another route name rejected', threw);
+  // case-insensitive collision
+  threw = false;
+  try { await s.updateRoute(b.id, { name:'  ALPHA ' }); } catch { threw = true; }
+  ok('case-insensitive rename collision rejected', threw);
+  // re-saving own name is fine (self excluded)
+  const okSelf = await s.updateRoute(a.id, { name:'Alpha' });
+  ok('re-saving own name allowed', okSelf.name === 'Alpha');
+  // renaming to a genuinely new name is fine
+  const okNew = await s.updateRoute(b.id, { name:'Gamma' });
+  ok('rename to a free name allowed', okNew.name === 'Gamma');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
