@@ -1239,6 +1239,27 @@ export function createAppController(deps = {}) {
    * current time so the alerts reflect the actual ride. Returns the whatToExpect
    * result ({ line, tokens, ... }) or null if the forecast can't be fetched.
    */
+  /**
+   * Predicted ride duration (seconds) for departing NOW — the same wind- and
+   * learning-aware prediction the home screen shows, evaluated for an immediate
+   * departure. Returns { predictedSec } or null if the forecast can't be fetched.
+   * Used to seed the ride screen's first-km arrival estimate (before live pace).
+   */
+  async function ridePrediction(route) {
+    if (!route || !route.segments) return null;
+    const r = isExampleId(route.id) ? exampleRoute() : route;
+    const { rides, config } = await modelInputsFor(r);
+    const stationSeries = await stationSeriesFor(r).catch(() => []);
+    if (!stationSeries.length) return null;
+    const nowMs = now();
+    const predictForArrival = makePredictor({ route: r, rides, config, stationSeries, opts: { nowMs } });
+    // Depart ≈ now: arrive at now + still-air baseline as the seed; the predictor
+    // refines the window internally. Good enough for a "leaving now" duration.
+    const guessArrival = nowMs + (r.baselineTimeSec || 0) * 1000;
+    const p = predictForArrival(guessArrival);
+    return p && p.predictedSec > 0 ? { predictedSec: p.predictedSec } : null;
+  }
+
   async function rideExpectation(route) {
     if (!route || !route.segments) return null;
     const stationSeries = await stationSeriesFor(route).catch(() => []);
@@ -1365,7 +1386,7 @@ export function createAppController(deps = {}) {
     store,
     createRoute, createRouteFromProcessed, createReverseRoute, previewReverse, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
     getHomeVerdict, listRoutesWithVerdict,
-    recordRide, recordManualRide, listRides, startRide, recordRoute, previewTrace, finalizeRecordedRoute, distanceToStart, distanceToEnd, rideExpectation, routeTuning, updateExampleSeeds,
+    recordRide, recordManualRide, listRides, startRide, recordRoute, previewTrace, finalizeRecordedRoute, distanceToStart, distanceToEnd, rideExpectation, ridePrediction, routeTuning, updateExampleSeeds,
     updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,
     start,
     exportAll, importAll, requestPersistence,

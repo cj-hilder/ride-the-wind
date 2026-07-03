@@ -57,9 +57,21 @@ console.log('\narrivalBezel (always shows minute; grey ≥1h, amber <1h):');
 console.log('\nexpectedArrivalMs:');
 {
   const now = 1_000_000_000_000;
-  // before 1 km of REAL gps distance: forecast estimate
+  // before 1 km of REAL gps distance: PROGRESS-SCALED forecast estimate.
+  // est 200 of 5000 → remaining fraction 0.96 → 1200 × 0.96 = 1152 s.
   const a = expectedArrivalMs({ nowMs: now, estDistanceM: 200, gpsDistanceM: 200, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 1200 });
-  ok('before 1km uses forecast', a === now + 1200 * 1000, `${a}`);
+  ok('before 1km: progress-scaled forecast', a === now + 1152 * 1000, `${a}`);
+  // scaling refines as you advance: at 800 m along, remaining fraction 0.84 → 1008 s
+  const a2 = expectedArrivalMs({ nowMs: now, estDistanceM: 800, gpsDistanceM: 800, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 1200 });
+  ok('scaling shrinks as rider advances', a2 === now + 1008 * 1000, `${a2}`);
+  // fallback to baseline when no forecast: baseline 1000, est 500 of 5000 → 0.9 → 900 s
+  const a3 = expectedArrivalMs({ nowMs: now, estDistanceM: 500, gpsDistanceM: 500, routeTotalM: 5000, paceMps: 5, baselineRemainingSec: 1000 });
+  ok('before 1km: baseline fallback when no forecast', a3 === now + 900 * 1000, `${a3}`);
+  // forecast preferred over baseline when both present
+  const a4 = expectedArrivalMs({ nowMs: now, estDistanceM: 0, gpsDistanceM: 0, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 1200, baselineRemainingSec: 9999 });
+  ok('forecast preferred over baseline', a4 === now + 1200 * 1000, `${a4}`);
+  // neither estimate → null in the first km
+  ok('no estimate in first km → null', expectedArrivalMs({ nowMs: now, estDistanceM: 200, gpsDistanceM: 200, routeTotalM: 5000, paceMps: 5 }) === null);
   // after 1 km: remaining (from est) / pace. est 2000 of 5000 → remaining 3000; pace 5 → 600s
   const b = expectedArrivalMs({ nowMs: now, estDistanceM: 2000, gpsDistanceM: 2000, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 9999 });
   ok('after 1km uses remaining/pace', b === now + 600 * 1000, `${b}`);

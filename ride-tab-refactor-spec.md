@@ -347,15 +347,24 @@ the end-of-ride sanity check above.
 - **New-route recording:** no route to project onto, so the bar is **replaced by
   a numeric distance covered so far** (raw GPS distance).
 
-**Expected arrival** (2b) = `now + (route_total − along-route-distance) / pace`,
-shown **only when on-route**. **Pace** is a 45-min EMA fed from **real
-trace-distance** deltas between fixes every good fix — pace reflects how fast the
-rider is moving and is therefore always live, on- or off-route (the time-aware
-EMA absorbs GPS gaps correctly). Off-route it is *remaining distance* that is
-undefined, not pace: since we can't know where an off-route rider will go next,
-arrival is genuinely unknown, so the **bezel marker is hidden while off-route**
-(deliberately, not as a side effect). The **speedometer needle** uses the same
-trace-distance movement via a fast 5s EMA.
+**Expected arrival** (2b), shown **only when on-route**, in three stages:
+- **First km** (before live pace is trustworthy): a *progress-scaled* whole-ride
+  estimate — `estimate × (remaining / route_total)` — so it refines as the rider
+  advances instead of sitting flat until 1 km. The estimate scaled is the
+  wind- and learning-aware **predicted duration for leaving now** (`ridePrediction`,
+  the same prediction the home screen shows), with the still-air baseline as the
+  fallback if the forecast can't be fetched.
+- **After 1 km of real distance:** `now + (route_total − along-route-distance) / pace`.
+- **Off-route:** unknown → no marker.
+
+**Pace** is a 45-min EMA fed from **real trace-distance** deltas between fixes
+every good fix — pace reflects how fast the rider is moving and is therefore
+always live, on- or off-route (the time-aware EMA absorbs GPS gaps correctly).
+Off-route it is *remaining distance* that is undefined, not pace: since we can't
+know where an off-route rider will go next, arrival is genuinely unknown, so the
+**bezel marker is hidden while off-route** (deliberately, not as a side effect).
+The **speedometer needle** uses the same trace-distance movement, variance-
+weighted (see 2c-data).
 
 **Off-route status message.** While off-route, the frozen progress bar and absent
 arrival marker would otherwise look like the app has died. To explain them and

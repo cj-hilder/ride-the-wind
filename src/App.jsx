@@ -22,7 +22,7 @@ import { createAppController } from "./lib/app.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   averageSpeedKmh, emaStep, routePolyline, projectToRoute,
-  needleTauMs, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
+  needleTauMs, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
@@ -1865,20 +1865,21 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
 
   const begin = async () => {
     setState("recording"); setElapsed(0); setPaused(false); setLive({ distanceM: 0, speedKmh: 0 });
-    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null };
+    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, warmed: false };
     acquireWake(); startAudio();
     const handle = await controller.recordRoute({
       onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM }) => {
         setElapsed(elapsedSec);
         // Needle smoothing identical to ride capture: smooth the controller's
         // per-fix speed with the variance-weighted EMA, dt measured between GPS
-        // fix timestamps (not Date.now()), with the accel jump-limiter (A) and
-        // dt cap (B). See the ride-capture tick for the rationale.
+        // fix timestamps (not Date.now()), warm-up gate, accel jump-limiter (A)
+        // and dt cap (B). See the ride-capture tick for the rationale.
         const em = emaRef.current;
         const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
         if (em.lastFixT != null && needleUsable) {
           const dt = fixT - em.lastFixT;
-          if (dt > 0) {
+          if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) em.warmed = true;
+          if (dt > 0 && em.warmed) {
             let instMps = Math.max(0, speedMps || 0);
             if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
             const maxDelta = NEEDLE_MAX_ACCEL_MPS2 * (dt / 1000);
@@ -2377,6 +2378,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const [live, setLive] = useState({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0 });
   const [endConfirm, setEndConfirm] = useState(null); // {metres} when far from end on finish
   const [expectLine, setExpectLine] = useState(null); // what-to-expect for the ride
+  const [forecastSec, setForecastSec] = useState(null); // wind+learning-aware duration (leaving now), for first-km arrival
   const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
   const ref = useRef({});
   const wakeRef = useRef(null);
@@ -2422,14 +2424,18 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     // speed, including off-route). Progress/remaining come from along-route
     // projection, so they self-heal after a GPS gap and never need the clamp.
     emaRef.current = {
-      speedMps: 0, paceMps: null, paceSeeded: false,
+      speedMps: 0, paceMps: null, paceSeeded: false, warmed: false,
       lastFixT: null, lastAlongM: null, lastAccM: null,
       polyline: routePolyline(route),
     };
     setExpectLine(null);
+    setForecastSec(null);
     // Show the what-to-expect line for every route, including the example — on
-    // the example it showcases the feature during a demo ride.
+    // the example it showcases the feature during a demo ride. Also fetch the
+    // wind/learning-aware predicted duration for leaving now, which seeds the
+    // first-km arrival estimate before live pace is available.
     controller.rideExpectation(route).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
+    controller.ridePrediction(route).then((p) => setForecastSec(p && p.predictedSec ? p.predictedSec : null)).catch(() => {});
     acquireWake();
     const handle = await controller.startRide(route, {
       onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM, lat, lon }) => {
@@ -2451,11 +2457,16 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           // back) whenever delivery was bunched. Using fix time keeps distance and
           // dt over the SAME interval.
           const dt = fixT - em.lastFixT;
+          // Warm-up: GPS is very inaccurate for the first few seconds, so hold the
+          // needle at 0 until the first genuinely-good fix arrives — otherwise the
+          // acquisition garbage seeds a visible startup jump. A stationary start at
+          // 0 is the honest prior.
+          if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) em.warmed = true;
           // Needle: the controller already derived this fix's speed over its own
           // GPS interval (speedMps); we just smooth it with the variance-weighted
           // EMA. τ adapts to accuracy so tight fixes are snappy, loose ones calm.
           const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
-          if (dt > 0 && needleUsable) {
+          if (dt > 0 && needleUsable && em.warmed) {
             let instMps = Math.max(0, speedMps || 0);
             if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
             // A (jump limiter): reject a physically impossible change in speed
@@ -2622,7 +2633,13 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         // marker; an "Off route" message explains the frozen progress instead).
         const arrivalMs = live.offRoute ? null : expectedArrivalMs({
           nowMs, estDistanceM: alongM, gpsDistanceM: live.distanceM, routeTotalM: totalM,
-          paceMps: emaRef.current.paceMps, forecastRemainingSec: route.baselineTimeSec ?? null,
+          paceMps: emaRef.current.paceMps,
+          // Wind + learning-aware predicted duration for leaving now (the same
+          // prediction the home screen shows) when the forecast was fetchable;
+          // the still-air baseline is the fallback. The first-km estimate is
+          // progress-scaled from whichever is used.
+          forecastRemainingSec: forecastSec,
+          baselineRemainingSec: route.baselineTimeSec ?? null,
         });
         const avg = Math.round(averageSpeedKmh(live.distanceM, movingSec) * 2) / 2;
         return (

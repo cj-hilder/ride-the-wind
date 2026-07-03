@@ -270,6 +270,19 @@ console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRec
 }
 clock = new Date(2026,4,31,21,30).getTime(); // restore after geo stub advanced it
 
+console.log('\nRide prediction (leaving-now duration for arrival seeding):');
+{
+  const pApp = mkApp(stubForecast(90, 25)); // headwind
+  const pr = await pApp.createRoute(gpx, { name:'PredRoute', seedStillAirSec:1000,
+    seedHeadwind20Sec:1300, seedTailwind20Sec:760, targetArrival:'08:45', activeDays:['MO'] });
+  clock = new Date(2026,5,1,8,0).getTime();
+  const pred = await pApp.ridePrediction(pr);
+  ok('ridePrediction returns a positive duration', pred && pred.predictedSec > 0, JSON.stringify(pred));
+  // headwind should make it no faster than still-air baseline
+  ok('headwind prediction ≥ baseline', pred.predictedSec >= 1000 * 0.99, `${pred.predictedSec}`);
+  clock = new Date(2026,4,31,21,30).getTime();
+}
+
 console.log('\nExcluded ride is ignored by the resolver:');
 {
   const t=await app.routeTuning(route.id);

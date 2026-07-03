@@ -25,10 +25,14 @@ export const PACE_EMA_TAU_MS = 45 * 60000;   // arrival pace EMA time constant ~
 // EMA time constant τ (inverse-variance weighting): small τ (snappy) for tight
 // fixes, large τ (heavily smoothed) for loose ones.
 export const NEEDLE_ACC_REF_M = 4;           // accuracy at which a sample is basically trusted (τ ≈ min)
-export const NEEDLE_TAU_MIN_MS = 1200;       // floor τ for an excellent fix (not a 1-sample snap: accuracy can lie)
+export const NEEDLE_TAU_MIN_MS = 2500;       // floor τ for an excellent fix — deliberately calm (a position-
+                                             // differenced speedo has an irreducible ±1–2 km/h wander; this
+                                             // trades a little needle lag for a steadier read)
 export const NEEDLE_TAU_MAX_MS = 40000;      // ceiling τ for a poor fix (≈ dozens of samples to converge)
 export const GPS_ACCURACY_HARD_M = 50;       // above this a fix is still dropped for the needle (garbage)
-export const NEEDLE_MAX_ACCEL_MPS2 = 2.5;    // (A) sane cycling accel; per-sample speed change is clamped to this × dt
+export const NEEDLE_WARMUP_ACC_M = 8;        // needle stays at 0 until the first fix at least this accurate
+                                             // (kills GPS-acquisition spikes in the first few seconds)
+export const NEEDLE_MAX_ACCEL_MPS2 = 1.75;   // (A) sane cycling accel; per-sample speed change is clamped to this × dt
 export const NEEDLE_MAX_DT_MS = 6000;        // (B) cap the dt used for α so one sample after a gap can't seize the needle
 
 /**
@@ -109,28 +113,36 @@ export function arrivalBezel(nowMs, arrivalMs, { windowMin = ARRIVAL_BEZEL_WINDO
 }
 
 /**
- * Expected arrival instant (ms). `estDistanceM` is the estimated distance along
- * the route (clamped; drives *remaining*). `gpsDistanceM` is the real distance
- * ridden (drives the forecast→live switch). `paceMps` is the smoothed pace
- * (a GPS-distance-based EMA, supplied by the caller) used for the live estimate.
+ * Expected arrival instant (ms). `estDistanceM` is the along-route distance
+ * (drives *remaining*). `gpsDistanceM` is the real distance ridden (drives the
+ * forecast→live switch). `paceMps` is the smoothed live pace.
  *
- * Until the rider has genuinely ridden ARRIVAL_LIVE_AFTER_M (real GPS distance),
- * use the forecast estimate. After that: remaining ÷ pace.
+ * Three stages:
+ *  - **On-route, first km** (before live pace is trustworthy): a *progress-scaled*
+ *    estimate — the whole-ride estimate times the fraction of the route still
+ *    ahead, `estimate × remaining/total`. This refines as the rider advances
+ *    instead of sitting flat until 1 km. The estimate scaled is the wind-aware
+ *    `forecastRemainingSec` when available, else the still-air `baselineRemainingSec`.
+ *  - **After 1 km of real distance:** `remaining ÷ live pace`.
+ *  - **No estimate available / off-route (caller passes null):** null.
  *
- * Crucially, `remaining` uses the clamped *estimated* distance (so a detour keeps
- * remaining near the true route length) while `pace` comes from *real* GPS
- * distance (so a detour doesn't crater the pace). Feeding the clamped distance
- * into both — the old bug — made pace collapse during an early detour and blew
- * arrival out to hours.
+ * `remaining` uses along-route distance (so a detour keeps remaining near true
+ * route length) while pace comes from real GPS distance (so a detour doesn't
+ * crater pace).
  */
 export function expectedArrivalMs({
-  nowMs, estDistanceM, gpsDistanceM, routeTotalM, paceMps, forecastRemainingSec,
+  nowMs, estDistanceM, gpsDistanceM, routeTotalM, paceMps, forecastRemainingSec, baselineRemainingSec,
 }) {
-  if (routeTotalM == null) return null; // new-route recording: no total
+  if (routeTotalM == null || routeTotalM <= 0) return null; // new-route recording: no total
   const remaining = Math.max(0, routeTotalM - (estDistanceM || 0));
   if ((gpsDistanceM || 0) < ARRIVAL_LIVE_AFTER_M) {
-    if (forecastRemainingSec == null) return null;
-    return nowMs + forecastRemainingSec * 1000;
+    // Progress-scaled whole-ride estimate: prefer the wind-aware forecast, fall
+    // back to the still-air baseline. Scale by the fraction of route remaining.
+    const wholeRideSec = forecastRemainingSec != null ? forecastRemainingSec
+      : (baselineRemainingSec != null ? baselineRemainingSec : null);
+    if (wholeRideSec == null) return null;
+    const remainingFraction = remaining / routeTotalM;
+    return nowMs + wholeRideSec * remainingFraction * 1000;
   }
   if (!(paceMps > 0)) return null;
   return nowMs + (remaining / paceMps) * 1000;
