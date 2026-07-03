@@ -2316,15 +2316,15 @@ function Speedometer({ kmh, size = 230 }) {
 function InstrumentPanel({
   elapsed, paused, avg, nowMs, arrivalMs, speedKmh,
   centerMessage, onPause, onFinish, finishLabel = "Finish now",
-  bottom, caption,
+  bottom, caption, label = "Elapsed",
 }) {
   const fmtC = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "6px 4px 0" }}>
       {/* top row: elapsed left, clock right */}
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-        <div style={{ flex: 1, textAlign: "left", paddingTop: 6 }}>
-          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", letterSpacing: "0.04em", textTransform: "uppercase" }}>{paused ? "Paused" : "Elapsed"}</div>
+        <div style={{ flex: 1, textAlign: "left", paddingTop: 6, minWidth: 0 }}>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", letterSpacing: "0.04em", textTransform: "uppercase", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{paused ? "Paused" : label}</div>
           <div style={{ fontFamily: "'Fraunces',serif", fontSize: 40, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.55 : 1, lineHeight: 1.1 }}>{fmtC(elapsed)}</div>
           <div style={{ fontSize: 23, color: "#fff", marginTop: 6 }}>avg {avg.toFixed(1)} km/h</div>
         </div>
@@ -2668,7 +2668,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         const avg = Math.round((live.avgKmh || 0) * 2) / 2;
         return (
           <InstrumentPanel
-            elapsed={elapsed} paused={paused} avg={avg}
+            elapsed={elapsed} paused={paused} avg={avg} label={route.name}
             nowMs={nowMs} arrivalMs={arrivalMs} speedKmh={live.speedKmh}
             centerMessage={live.offRoute && live.offRouteM != null
               ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
