@@ -21,7 +21,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { createAppController } from "./lib/app.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
-  averageSpeedKmh, emaStep, routePolyline, projectToRoute,
+  emaStep, routePolyline, projectToRoute,
   needleTauMs, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
@@ -2280,30 +2280,24 @@ function Speedometer({ kmh, size = 230 }) {
         transform={`rotate(${rot} ${p.x} ${p.y})`}>{v}</text>
     );
   });
-  // Gate the needle target on the WHOLE km/h. We only move the needle when the
-  // rounded speed changes, so the transform string is byte-identical between
-  // agreeing fixes — the browser then starts no new transition and lets the
-  // in-flight 2 s ease-out run to completion and settle. When the rounded speed
-  // IS changing (e.g. slowing down), each fix retargets the transition mid-sweep,
-  // so the eases connect into one continuous glide rather than sweep-stop-sweep.
-  const whole = Math.round(kmh || 0);
-  const [needleAng, setNeedleAng] = useState(() => speedToAngle(whole));
-  const lastWholeRef = useRef(whole);
-  useEffect(() => {
-    if (whole !== lastWholeRef.current) {
-      lastWholeRef.current = whole;
-      setNeedleAng(speedToAngle(whole));
-    }
-  }, [whole]);
+  // Needle angle straight from the (EMA-smoothed) speed — no rounding. The EMA
+  // itself supplies the easing: each new target is an asymptotic approach to the
+  // true speed, so the *sequence* of targets already decelerates. A LINEAR CSS
+  // transition slightly longer than the ~1 s fix cadence then connects
+  // consecutive fixes into one continuous glide (the needle is always still
+  // moving when the next value arrives and retargets it). Ease-out here would
+  // brake to a stop at every fix — the sweep-stop-sweep we don't want — and
+  // rounding would throw away the sub-km/h asymptotic approach that makes the
+  // glide smooth near a stop.
+  const needleAng = speedToAngle(kmh || 0);
   return (
     <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ display: "block" }}>
       <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth={1.5} />
       {ticks}{nums}
-      {/* Needle drawn pointing straight up, rotated to the speed angle. Ease-out
-          at 2 s (twice the ~1 s fix cadence): a changing speed retargets mid-
-          sweep for one continuous glide; when two fixes agree on the whole km/h
-          the transform is unchanged so this ease runs out and settles. */}
-      <g style={{ transform: `rotate(${needleAng}deg)`, transformOrigin: `${c}px ${c}px`, transition: "transform 2s cubic-bezier(0.22,1,0.36,1)" }}>
+      {/* Needle drawn pointing straight up, rotated to the speed angle; linear
+          1.1 s transition connects fixes into one continuous sweep (easing comes
+          from the EMA, not the CSS curve). */}
+      <g style={{ transform: `rotate(${needleAng}deg)`, transformOrigin: `${c}px ${c}px`, transition: "transform 1.1s linear" }}>
         <line x1={c} y1={c + 12} x2={c} y2={c - (r - 6)} stroke="#e0a45e" strokeWidth={3.2} strokeLinecap="round" />
       </g>
       <circle cx={c} cy={c} r={6} fill="#e0a45e" />
@@ -2390,7 +2384,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const [confirm, setConfirm] = useState(null);
   const [adjustMin, setAdjustMin] = useState(0); // minutes added/removed at review
   const [nowMs, setNowMs] = useState(Date.now());   // ticking clock for the dial
-  const [live, setLive] = useState({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0 });
+  const [live, setLive] = useState({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0, avgKmh: 0 });
   const [endConfirm, setEndConfirm] = useState(null); // {metres} when far from end on finish
   const [expectLine, setExpectLine] = useState(null); // what-to-expect for the ride
   const [forecastSec, setForecastSec] = useState(null); // wind+learning-aware duration (leaving now), for first-km arrival
@@ -2439,7 +2433,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     // speed, including off-route). Progress/remaining come from along-route
     // projection, so they self-heal after a GPS gap and never need the clamp.
     emaRef.current = {
-      speedMps: 0, paceMps: null, paceSeeded: false, warmed: false,
+      speedMps: 0, paceMps: null, paceSeeded: false, warmed: false, warmDistM: 0, warmSec: null,
       lastFixT: null, lastAlongM: null, lastAccM: null,
       polyline: routePolyline(route),
     };
@@ -2476,7 +2470,15 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           // needle at 0 until the first genuinely-good fix arrives — otherwise the
           // acquisition garbage seeds a visible startup jump. A stationary start at
           // 0 is the honest prior.
-          if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) em.warmed = true;
+          if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) {
+            em.warmed = true;
+            // Anchor the average here: distance/time accumulated during GPS
+            // acquisition (before the first good fix) is noise, and dividing a few
+            // spurious metres by a near-zero elapsed reads as tens of km/h. Measure
+            // the average from the warm-up moment instead of ride start.
+            em.warmDistM = distanceM;
+            em.warmSec = elapsedSec;
+          }
           // Needle: the controller already derived this fix's speed over its own
           // GPS interval (speedMps); we just smooth it with the variance-weighted
           // EMA. τ adapts to accuracy so tight fixes are snappy, loose ones calm.
@@ -2510,7 +2512,15 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
         if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; }
         if (goodFix && !proj.offRoute) em.lastAlongM = proj.alongM;
-        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6 });
+        // Average speed measured from the warm-up anchor (0 until warmed), so
+        // acquisition-noise distance over a near-zero time can't read as ~40 km/h.
+        let avgKmh = 0;
+        if (em.warmed && em.warmSec != null) {
+          const dSec = elapsedSec - em.warmSec;
+          const dDist = distanceM - em.warmDistM;
+          if (dSec > 0 && dDist > 0) avgKmh = (dDist / dSec) * 3.6;
+        }
+        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh });
       },
       onFinish: (r) => {
         releaseWake();
@@ -2636,7 +2646,6 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         </div>
       )}
       {state === "riding" && (() => {
-        const movingSec = elapsed; // elapsed already excludes paused time
         const totalM = route.totalDistance ?? null;
         // Along-route position from projection drives progress + remaining. It's
         // gap-immune (self-heals on any fix) and never exceeds the route, so no
@@ -2656,7 +2665,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           forecastRemainingSec: forecastSec,
           baselineRemainingSec: route.baselineTimeSec ?? null,
         });
-        const avg = Math.round(averageSpeedKmh(live.distanceM, movingSec) * 2) / 2;
+        const avg = Math.round((live.avgKmh || 0) * 2) / 2;
         return (
           <InstrumentPanel
             elapsed={elapsed} paused={paused} avg={avg}
