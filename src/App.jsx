@@ -2280,15 +2280,30 @@ function Speedometer({ kmh, size = 230 }) {
         transform={`rotate(${rot} ${p.x} ${p.y})`}>{v}</text>
     );
   });
-  const needleAng = speedToAngle(kmh);
+  // Gate the needle target on the WHOLE km/h. We only move the needle when the
+  // rounded speed changes, so the transform string is byte-identical between
+  // agreeing fixes — the browser then starts no new transition and lets the
+  // in-flight 2 s ease-out run to completion and settle. When the rounded speed
+  // IS changing (e.g. slowing down), each fix retargets the transition mid-sweep,
+  // so the eases connect into one continuous glide rather than sweep-stop-sweep.
+  const whole = Math.round(kmh || 0);
+  const [needleAng, setNeedleAng] = useState(() => speedToAngle(whole));
+  const lastWholeRef = useRef(whole);
+  useEffect(() => {
+    if (whole !== lastWholeRef.current) {
+      lastWholeRef.current = whole;
+      setNeedleAng(speedToAngle(whole));
+    }
+  }, [whole]);
   return (
     <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ display: "block" }}>
       <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth={1.5} />
       {ticks}{nums}
-      {/* Needle drawn pointing straight up, rotated to the speed angle. The CSS
-          transition on the group's transform makes it glide between readings —
-          the classic-car sweep — independent of the ~5s speed EMA. */}
-      <g style={{ transform: `rotate(${needleAng}deg)`, transformOrigin: `${c}px ${c}px`, transition: "transform 0.9s cubic-bezier(0.22,1,0.36,1)" }}>
+      {/* Needle drawn pointing straight up, rotated to the speed angle. Ease-out
+          at 2 s (twice the ~1 s fix cadence): a changing speed retargets mid-
+          sweep for one continuous glide; when two fixes agree on the whole km/h
+          the transform is unchanged so this ease runs out and settles. */}
+      <g style={{ transform: `rotate(${needleAng}deg)`, transformOrigin: `${c}px ${c}px`, transition: "transform 2s cubic-bezier(0.22,1,0.36,1)" }}>
         <line x1={c} y1={c + 12} x2={c} y2={c - (r - 6)} stroke="#e0a45e" strokeWidth={3.2} strokeLinecap="round" />
       </g>
       <circle cx={c} cy={c} r={6} fill="#e0a45e" />
