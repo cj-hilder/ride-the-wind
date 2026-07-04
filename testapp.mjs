@@ -280,6 +280,17 @@ console.log('\nRide prediction (leaving-now duration for arrival seeding):');
   ok('ridePrediction returns a positive duration', pred && pred.predictedSec > 0, JSON.stringify(pred));
   // headwind should make it no faster than still-air baseline
   ok('headwind prediction ≥ baseline', pred.predictedSec >= 1000 * 0.99, `${pred.predictedSec}`);
+
+  // With an ensemble available, ridePrediction returns the ensemble-weighted
+  // center (the "likely"), not the bare deterministic value.
+  const eApp = mkApp(stubForecast(90, 25), stubEnsemble(90, 25));
+  const er = await eApp.createRoute(gpx, { name:'EnsRoute', seedStillAirSec:1000,
+    seedHeadwind20Sec:1300, seedTailwind20Sec:760, targetArrival:'08:45', activeDays:['MO'] });
+  clock = new Date(2026,5,1,8,0).getTime();
+  const ep = await eApp.ridePrediction(er);
+  ok('ridePrediction (ensemble) returns a positive center', ep && ep.predictedSec > 0, JSON.stringify(ep));
+  ok('ensemble center is a sane headwind duration', ep.predictedSec >= 1000 * 0.99, `${ep.predictedSec}`);
+  clock = new Date(2026,4,31,21,30).getTime();
   clock = new Date(2026,4,31,21,30).getTime();
 }
 
