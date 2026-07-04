@@ -1234,30 +1234,27 @@ export function createAppController(deps = {}) {
   function distanceToEnd(route, opts) { return distanceToRegion(route && route.endRegion, opts); }
 
   /**
-   * "What to expect" for a ride starting NOW (as opposed to getHomeVerdict's
-   * planned departure). Same computation as the Plan line, but departing at the
-   * current time so the alerts reflect the actual ride. Returns the whatToExpect
-   * result ({ line, tokens, ... }) or null if the forecast can't be fetched.
-   */
-  /**
-   * Predicted ride duration (seconds) for departing NOW — the same wind- and
-   * learning-aware prediction the home screen shows, evaluated for an immediate
-   * departure. Returns { predictedSec } or null if the forecast can't be fetched.
-   * Used to seed the ride screen's first-km arrival estimate (before live pace).
+   * Predicted ride duration (seconds) for leaving NOW — IDENTICAL BY CONSTRUCTION
+   * to the plan screen's "go now" likely. Go-now on the plan screen is an explored
+   * override of {current HH:MM, depart:true}; we call getHomeVerdict with exactly
+   * those arguments (today, current HH:MM, forceDepart) and return its
+   * `verdict.predictedSec` (the ensemble-weighted center). This guarantees that a
+   * rider who taps "go now" sees the same figure on the ride screen as the plan
+   * screen showed. (There is deliberately NO equivalence with the *scheduled*
+   * prediction — the rider may leave hours off-schedule, when the wind differs.)
+   * Returns { predictedSec } or null if no forecast/verdict is available.
    */
   async function ridePrediction(route) {
     if (!route || !route.segments) return null;
-    const r = isExampleId(route.id) ? exampleRoute() : route;
-    const { rides, config } = await modelInputsFor(r);
-    const stationSeries = await stationSeriesFor(r).catch(() => []);
-    if (!stationSeries.length) return null;
-    const nowMs = now();
-    const predictForArrival = makePredictor({ route: r, rides, config, stationSeries, opts: { nowMs } });
-    // Depart ≈ now: arrive at now + still-air baseline as the seed; the predictor
-    // refines the window internally. Good enough for a "leaving now" duration.
-    const guessArrival = nowMs + (r.baselineTimeSec || 0) * 1000;
-    const p = predictForArrival(guessArrival);
-    return p && p.predictedSec > 0 ? { predictedSec: p.predictedSec } : null;
+    try {
+      const d = new Date(now());
+      const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      const res = await getHomeVerdict(route.id, now(), hhmm, true); // depart at current time
+      const sec = res && res.verdict && res.verdict.predictedSec;
+      return sec > 0 ? { predictedSec: sec } : null;
+    } catch {
+      return null;
+    }
   }
 
   async function rideExpectation(route) {
