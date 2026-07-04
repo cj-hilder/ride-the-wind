@@ -120,6 +120,13 @@ export default function HelpPanel({ onClose }) {
           </p>
         </div>
 
+        <div style={section}>
+          <h3 style={h3}>Say thanks</h3>
+          <p style={p}>
+            If you like using this app and want to say thanks, <a href="https://ko-fi.com/chrishilder" target="_blank" rel="noopener noreferrer" style={lnk}>buy me a coffee</a>.
+          </p>
+        </div>
+
         <div style={{ padding: "16px 0 4px" }}>
           <p style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.55, margin: 0 }}>
             Ride the Wind gives estimates from weather forecasts provided by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer" style={lnk}>Open-Meteo</a>, a free, open-source forecast service. Ride the Wind is provided as is, with no warranty and no liability for lateness, wet socks, lightning strike or any other outcome. It's free and open source — made by <a href="https://github.com/cj-hilder/ride-the-wind" target="_blank" rel="noopener noreferrer" style={lnk}>Chris Hilder</a> and released under the MIT License.
