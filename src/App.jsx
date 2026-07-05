@@ -2227,11 +2227,32 @@ function AnalogClock({ nowMs, arrivalMs, size = 150 }) {
   const bz = arrivalBezel(nowMs, arrivalMs);
   let marker = null;
   if (bz != null) {
-    const col = bz.imminent ? "#e0a45e" : "rgba(255,255,255,0.45)";
-    const tip = polarPoint(c, c, r + 3, bz.angle);
-    const baseL = polarPoint(c, c, r + 15, bz.angle - 6);
-    const baseR = polarPoint(c, c, r + 15, bz.angle + 6);
-    marker = <polygon points={`${tip.x},${tip.y} ${baseL.x},${baseL.y} ${baseR.x},${baseR.y}`} fill={col} />;
+    // The amber marker always sits at the exact arrival minute. When arrival is
+    // ≥ 1 h away (not imminent) an OPAQUE grey marker is overlaid a fixed 12°
+    // (=2 min) clockwise so the amber peeks out beneath it — this signals the
+    // "1 h+" case that a 12-hour dial can't otherwise show. If ≥ 2 h away, the
+    // whole-hours count is printed in black inside the grey marker.
+    const triAt = (angle, fill) => {
+      const tip = polarPoint(c, c, r + 3, angle);
+      const baseL = polarPoint(c, c, r + 15, angle - 6);
+      const baseR = polarPoint(c, c, r + 15, angle + 6);
+      return <polygon points={`${tip.x},${tip.y} ${baseL.x},${baseL.y} ${baseR.x},${baseR.y}`} fill={fill} />;
+    };
+    const amber = triAt(bz.angle, "#e0a45e");
+    let grey = null, hoursLabel = null;
+    if (!bz.imminent) {
+      const gAng = bz.angle - 5; // fixed 5° anticlockwise offset so amber peeks out
+      grey = triAt(gAng, "#8a8a8a"); // opaque grey, drawn over the amber
+      if (bz.hoursAway >= 2) {
+        // centroid-ish of the triangle, for the black hours integer
+        const lbl = polarPoint(c, c, r + 10, gAng);
+        hoursLabel = (
+          <text x={lbl.x} y={lbl.y} fill="#000" fontSize={9} fontWeight={700}
+            textAnchor="middle" dominantBaseline="central">{bz.hoursAway}</text>
+        );
+      }
+    }
+    marker = <g>{amber}{grey}{hoursLabel}</g>;
   }
   return (
     <svg viewBox={`-18 -18 ${size + 36} ${size + 36}`} width="100%" style={{ display: "block" }}>

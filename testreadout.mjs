@@ -52,6 +52,12 @@ console.log('\narrivalBezel (always shows minute; grey ≥1h, amber <1h):');
   // at/just after arrival → still returns angle, imminent
   const bnow = arrivalBezel(now, now);
   ok('at arrival still returns angle, imminent', bnow != null && bnow.imminent === true);
+  // hoursAway: floor(minsAway/60), drives grey overlay (≥1) and hours integer (≥2)
+  ok('25 min away → hoursAway 0', arrivalBezel(now, now + 25*60000).hoursAway === 0);
+  ok('90 min away → hoursAway 1 (grey, no number)', arrivalBezel(now, now + 90*60000).hoursAway === 1);
+  ok('150 min away → hoursAway 2 (grey + "2")', arrivalBezel(now, now + 150*60000).hoursAway === 2);
+  ok('exactly 120 min → hoursAway 2', arrivalBezel(now, now + 120*60000).hoursAway === 2);
+  ok('at arrival → hoursAway 0', bnow.hoursAway === 0);
 }
 
 console.log('\nexpectedArrivalMs:');

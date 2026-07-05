@@ -97,19 +97,27 @@ export function clockAngles(ms) {
 }
 
 /**
- * Bezel marker for the expected arrival time: returns { angle, imminent } or
- * null only when there is no arrival estimate. The marker shows the arrival's
- * minute-of-hour position **regardless of how far away** it is (on a 12-hour
- * dial the hour is ambiguous beyond 60 min, understood as approximate). The
- * caller colours it: grey when arrival is ≥ 60 min away, amber when < 60 min
- * (imminent). The marker stays in place at/after arrival.
+ * Bezel marker for the expected arrival time: returns { angle, imminent,
+ * hoursAway } or null only when there is no arrival estimate. `angle` is the
+ * arrival's minute-of-hour position on the dial (**regardless of how far away**
+ * — on a 12-hour dial the hour is ambiguous beyond 60 min). The caller always
+ * draws the amber marker at `angle`; when NOT imminent (≥ 60 min away) it also
+ * overlays an opaque grey marker offset a fixed +12° clockwise so the amber peeks
+ * out, and if `hoursAway` (= whole hours to arrival) is ≥ 2 it prints that
+ * integer in the grey marker. This disambiguates the 1h+ / 2h+ cases that would
+ * otherwise land on the same minute tick. The marker stays in place at/after
+ * arrival.
  */
 export function arrivalBezel(nowMs, arrivalMs, { windowMin = ARRIVAL_BEZEL_WINDOW_MIN } = {}) {
   if (arrivalMs == null) return null;
   const minsAway = (arrivalMs - nowMs) / 60000;
   const d = new Date(arrivalMs);
   const minute = d.getMinutes() + d.getSeconds() / 60;
-  return { angle: minute * 6, imminent: minsAway < windowMin };
+  return {
+    angle: minute * 6,
+    imminent: minsAway < windowMin,
+    hoursAway: Math.max(0, Math.floor(minsAway / 60)),
+  };
 }
 
 /**

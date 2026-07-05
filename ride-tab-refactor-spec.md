@@ -279,10 +279,14 @@ are starting points to tune on-device.
   marker**: a pip at the clock-angle of the **expected arrival time** (e.g.
   arrive 8:47 → marker at the 47-minute angle, 282°). Mental model = the marker
   sits at the arrival o'clock-position and the real minute hand sweeps toward it.
-  - Shown **always** (whenever an arrival estimate exists), coloured **grey when
-    arrival is ≥ 60 min away** and **amber when < 60 min** (imminent). Beyond
-    60 min the hour is ambiguous on a 12-h dial — understood as the approximate
-    minute-of-arrival.
+  - The **amber marker is shown always** (whenever an arrival estimate exists) at
+    the exact arrival minute. When arrival is **≥ 60 min away** an **opaque grey
+    marker is overlaid a fixed 5° anticlockwise** so the amber peeks out
+    beneath it — this signals the "1 h+" case a 12-h dial can't otherwise show.
+    When **≥ 2 h away**, the **whole-hours count is printed in black** inside the
+    grey marker (e.g. a 150-min-away arrival shows amber + grey + "2"; the grey
+    marker clears under 1 h, the number under 2 h). Beyond 60 min the *minute*
+    position is exact; the overlay conveys the hours.
   - The marker **stays in place once arrival is reached**.
 - **Expected arrival** is dynamic: `now + (route_total − estimated_distance) /
   speed`, where **estimated_distance** is the clamped value from 2e (so remaining
