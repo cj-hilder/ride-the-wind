@@ -19,6 +19,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
  * ========================================================================== */
 
 import { createAppController } from "./lib/app.js";
+import { solarTimes } from "./lib/solar.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
@@ -61,8 +62,42 @@ const SKY = {
   dusk: ["#6b3f2e", "#5e3a44", "#3c2d50"],
   night: ["#0f1226", "#171530", "#201a3a"],
 };
-const skyFor = (hour) =>
-  hour < 6 ? SKY.predawn : hour < 9 ? SKY.sunrise : hour < 17 ? SKY.day : hour < 20 ? SKY.dusk : SKY.night;
+const SKY_BAND_MS = 40 * 60000; // ± window around sunrise/sunset for the transition palettes
+
+/**
+ * Pick a sky palette by comparing the departure instant against the route's real
+ * sunrise/sunset instants (all absolute UTC ms — no timezone conversion). A fixed
+ * ±SKY_BAND_MS band around each event gets the sunrise/dusk palettes; between the
+ * bands is day, outside is night/predawn. `solar` may be null (no geometry yet),
+ * or a polar-day/polar-night marker at high latitudes.
+ */
+const skyFor = (instantMs, solar) => {
+  if (!solar) return SKY.predawn;
+  if (solar.polar === 'day') return SKY.day;
+  if (solar.polar === 'night') return SKY.night;
+  const { sunriseMs, sunsetMs } = solar;
+  if (instantMs < sunriseMs - SKY_BAND_MS) return SKY.predawn;
+  if (instantMs < sunriseMs + SKY_BAND_MS) return SKY.sunrise;
+  if (instantMs < sunsetMs - SKY_BAND_MS) return SKY.day;
+  if (instantMs < sunsetMs + SKY_BAND_MS) return SKY.dusk;
+  return SKY.night;
+};
+
+/**
+ * Sky palette for a ride, chosen by the ride's MIDPOINT rather than its start —
+ * a ride spanning two daylight bands (e.g. departs in the sunrise band, arrives
+ * in day) should reflect where most of the ride actually is. Midpoint =
+ * departure + half the predicted duration. `startRegion` gives the departure
+ * lat/lon for the (timezone-free) solar calc. The plan and ride screens both
+ * call this the same way, so a rider who checks "go now" and then rides sees the
+ * same colour (both use departure = now).
+ */
+const skyForRide = (startRegion, departureMs, predictedSec) => {
+  if (departureMs == null) return SKY.predawn;
+  const midpointMs = departureMs + (predictedSec ? predictedSec * 500 : 0); // +half duration (sec·1000/2)
+  const solar = startRegion ? solarTimes(startRegion.lat, startRegion.lon, midpointMs) : null;
+  return skyFor(midpointMs, solar);
+};
 const ACCENT = { headwind: "#5b8fc7", tailwind: "#e0a45e", normal: "#9aa7b0" };
 const fmtMin = (sec) => `${Math.round(sec / 60)} min`;
 
@@ -381,7 +416,9 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
 
   const verdict = dayVerdict && dayVerdict.verdict;
   const accent = verdict ? ACCENT[verdict.verdict] : ACCENT.normal;
-  const sky = verdict ? skyFor(new Date(verdict.departureMs).getHours()) : SKY.predawn;
+  const sky = verdict
+    ? skyForRide(activeRoute.startRegion, verdict.departureMs, verdict.predictedSec)
+    : SKY.predawn;
 
   // The route's configured time for the selected day (per-weekday override, else
   // the default). Used so an explored time equal to the default counts as none.
