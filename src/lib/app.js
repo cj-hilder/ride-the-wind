@@ -1242,7 +1242,11 @@ export function createAppController(deps = {}) {
    * rider who taps "go now" sees the same figure on the ride screen as the plan
    * screen showed. (There is deliberately NO equivalence with the *scheduled*
    * prediction — the rider may leave hours off-schedule, when the wind differs.)
-   * Returns { predictedSec } or null if no forecast/verdict is available.
+   * Also returns `windWord`: "headwind" or "tailwind" when the go-now verdict is a
+   * definite head/tailwind, else null (calm / "usual" / probability "mixed" cases
+   * insert nothing). The ride screen shows this in place of the home card's
+   * headline, which isn't visible during a ride.
+   * Returns { predictedSec, windWord } or null if no forecast/verdict is available.
    */
   async function ridePrediction(route) {
     if (!route || !route.segments) return null;
@@ -1251,20 +1255,25 @@ export function createAppController(deps = {}) {
       const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
       const res = await getHomeVerdict(route.id, now(), hhmm, true); // depart at current time
       const sec = res && res.verdict && res.verdict.predictedSec;
-      return sec > 0 ? { predictedSec: sec } : null;
+      if (!(sec > 0)) return null;
+      // Head/tail word from the SAME windEffect the home card headline uses, so
+      // classification can't diverge. Only definite head/tailwind insert a word.
+      const dir = res.windEffect && res.windEffect.direction;
+      const windWord = dir === "headwind" ? "headwind" : dir === "tailwind" ? "tailwind" : null;
+      return { predictedSec: sec, windWord };
     } catch {
       return null;
     }
   }
 
-  async function rideExpectation(route) {
+  async function rideExpectation(route, windWord = null) {
     if (!route || !route.segments) return null;
     const stationSeries = await stationSeriesFor(route).catch(() => []);
     if (!stationSeries.length) return null;
     const baseSpeed = speedFromBaseline(route.totalDistance, route.baselineTimeSec);
     const times = segmentTimes(route.segments, baseSpeed, { useGradient: true });
     const windFn = makeWindFn(stationSeries);
-    return whatToExpect({ segments: route.segments, times, windFn, departMs: now() });
+    return whatToExpect({ segments: route.segments, times, windFn, departMs: now(), windWord });
   }
 
   async function startRide(route, { onTick, onFinish, geo } = {}) {

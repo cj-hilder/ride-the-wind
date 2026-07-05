@@ -280,6 +280,7 @@ console.log('\nRide prediction (leaving-now duration for arrival seeding):');
   ok('ridePrediction returns a positive duration', pred && pred.predictedSec > 0, JSON.stringify(pred));
   // headwind should make it no faster than still-air baseline
   ok('headwind prediction ≥ baseline', pred.predictedSec >= 1000 * 0.99, `${pred.predictedSec}`);
+  ok('ridePrediction returns a head/tail word or null', pred.windWord === 'headwind' || pred.windWord === 'tailwind' || pred.windWord === null, `${pred.windWord}`);
 
   // With an ensemble available, ridePrediction returns the ensemble-weighted
   // center (the "likely"), not the bare deterministic value.

@@ -31,8 +31,8 @@ export const TEMP_HOT_C = 26; // at/above this, show the max not the min
 //   - Ride total (mm): the sustained soak, accumulated over the actual ride.
 export const RAIN_PROB_GATE = 10;   // %, below which rain stays blank
 export const RAIN_PROB_MAYBE = 50;  // %, 10–50 → "maybe <x>"; ≥50 → "<x>"
-export const RAIN_RATE_BANDS = [0.6, 2, 5]; // mm/h peak: a little / wet / very
-export const RAIN_TOTAL_BANDS = [0.3, 1.5, 5]; // mm total: a little / wet / very
+export const RAIN_RATE_BANDS = [0.6, 1.75, 3.5]; // mm/h peak: a little / wet / very
+export const RAIN_TOTAL_BANDS = [0.3, 1.25, 3]; // mm total: a little / wet / very
 export const CROSSWIND_BANDS = [15, 30]; // km/h: crosswinds / strong
 // Snow is a cm/HOUR rate. Any settling snow matters for traction/visibility, so
 // the bar is low. Intensity-labelled (no "maybe": the deterministic feed carries
@@ -197,18 +197,27 @@ export function crosswindToken(crosswinds) {
 /**
  * Full "what to expect" result for a route at a departure time.
  * Returns { tokens: string[], line: string } — line is tokens joined by " · ".
+ * `windWord` (optional): "headwind"/"tailwind" to insert right after the
+ * temperature token (before the weather alerts). Used on the ride screen, where
+ * the home card's head/tailwind headline isn't visible; omitted elsewhere since
+ * that headline is shown separately.
  */
-export function whatToExpect({ segments, times, windFn, departMs }) {
+export function whatToExpect({ segments, times, windFn, departMs, windWord = null }) {
   const c = sampleConditions({ segments, times, windFn, departMs });
+  // Deliberate priority order: temperature, then the along-route wind word
+  // (headwind/tailwind — ride screen only), then wind-related conditions
+  // (crosswinds, gusts), then wetness, then the rarer hazards in severity order
+  // (thunderstorms, freezing rain, snow, fog).
   const tokens = [
     temperatureToken(c.temps),
+    windWord,
+    crosswindToken(c.crosswinds),
+    c.strongGust ? "strong gusts" : null,
     rainToken(c.precipTotalMm, c.precipPeakRate, c.precipProb),
     c.thunder ? "thunderstorms" : null,
     c.freezing ? "freezing rain" : null,
     snowToken(c.snowMaxCm, c.snowCode),
     c.fog ? "fog" : null,
-    c.strongGust ? "strong gusts" : null,
-    crosswindToken(c.crosswinds),
   ].filter(Boolean);
   return { tokens, line: tokens.join(" · ") };
 }

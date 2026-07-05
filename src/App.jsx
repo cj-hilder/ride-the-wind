@@ -2439,12 +2439,15 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     };
     setExpectLine(null);
     setForecastSec(null);
-    // Show the what-to-expect line for every route, including the example — on
-    // the example it showcases the feature during a demo ride. Also fetch the
-    // wind/learning-aware predicted duration for leaving now, which seeds the
-    // first-km arrival estimate before live pace is available.
-    controller.rideExpectation(route).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
-    controller.ridePrediction(route).then((p) => setForecastSec(p && p.predictedSec ? p.predictedSec : null)).catch(() => {});
+    // Fetch the go-now prediction first (duration + head/tailwind word), then
+    // build the what-to-expect line with that word inserted — on the ride screen
+    // the home card's head/tailwind headline isn't visible, so the line carries
+    // it. Shown for every route incl. the example (showcases the feature).
+    controller.ridePrediction(route).then((p) => {
+      setForecastSec(p && p.predictedSec ? p.predictedSec : null);
+      const windWord = p && p.windWord ? p.windWord : null;
+      return controller.rideExpectation(route, windWord);
+    }).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
     acquireWake();
     const handle = await controller.startRide(route, {
       onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM, lat, lon }) => {

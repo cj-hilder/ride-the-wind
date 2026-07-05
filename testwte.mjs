@@ -12,15 +12,19 @@ console.log('\nRain (worse-of {peak rate mm/h, total mm}; "maybe" by probability
 // rainToken(totalMm, peakRateMmH, probArray)
 ok('blank when prob below 10 gate', rainToken(5,5,[8])===null);
 ok('blank when dry', rainToken(0,0,[90])===null);
-// total-driven levels (low/zero peak rate so total dominates)
+// total-driven levels (low/zero peak rate so total dominates). Bands 0.3/1.25/3.
 ok('total 0.3 → a little wet', rainToken(0.3,0,[80])==='a little wet', rainToken(0.3,0,[80]));
-ok('total 1.5 → wet', rainToken(1.5,0,[80])==='wet');
-ok('total 5 → very wet', rainToken(5,0,[80])==='very wet');
+ok('total 1.25 → wet', rainToken(1.25,0,[80])==='wet');
+ok('total just under 1.25 → a little wet', rainToken(1.24,0,[80])==='a little wet');
+ok('total 3 → very wet', rainToken(3,0,[80])==='very wet');
+ok('total just under 3 → wet', rainToken(2.9,0,[80])==='wet');
 ok('total just under 0.3 → blank', rainToken(0.29,0,[80])===null);
-// rate-driven levels (tiny total so rate dominates)
+// rate-driven levels (tiny total so rate dominates). Bands 0.6/1.75/3.5.
 ok('rate 0.6 → a little wet', rainToken(0,0.6,[80])==='a little wet');
-ok('rate 2 → wet', rainToken(0,2,[80])==='wet');
-ok('rate 5 → very wet', rainToken(0,5,[80])==='very wet');
+ok('rate 1.75 → wet', rainToken(0,1.75,[80])==='wet');
+ok('rate just under 1.75 → a little wet', rainToken(0,1.74,[80])==='a little wet');
+ok('rate 3.5 → very wet', rainToken(0,3.5,[80])==='very wet');
+ok('rate just under 3.5 → wet', rainToken(0,3.4,[80])==='wet');
 ok('rate just under 0.6 → blank', rainToken(0,0.59,[80])===null);
 // worse-of: short intense shower — small total, high rate → graded on rate
 ok('15-min 3mm/h shower (total 0.75) → wet via rate', rainToken(0.75,3,[80])==='wet', rainToken(0.75,3,[80]));
@@ -64,11 +68,19 @@ console.log('\nAssembly:');
   const times=[600,600];
   const windFn=()=>({speed:22,fromDeg:0,tempC:3,precipMm:3,precipProb:80}); // crosswind, wet, cold
   const r=whatToExpect({segments:segs,times,windFn,departMs:0});
-  ok('full line assembles', r.line==='3°C · wet · crosswinds', r.line);
+  ok('full line assembles', r.line==='3°C · crosswinds · wet', r.line);
   // calm dry mild -> just temp
   const windFn2=()=>({speed:5,fromDeg:90,tempC:14,precipMm:0,precipProb:0});
   const r2=whatToExpect({segments:segs,times,windFn:windFn2,departMs:0});
   ok('calm dry -> temp only', r2.line==='14°C', r2.line);
+  // windWord inserted after temperature, before alerts (ride screen)
+  const rw=whatToExpect({segments:segs,times,windFn,departMs:0,windWord:'headwind'});
+  ok('windWord inserted after temp, before alerts', rw.line==='3°C · headwind · crosswinds · wet', rw.line);
+  // windWord alongside alerts, positioned before them (tailwind)
+  const rw2=whatToExpect({segments:segs,times:[600,600],windFn:()=>({speed:22,fromDeg:0,tempC:3,precipMm:3,precipProb:80}),departMs:0,windWord:'tailwind'});
+  ok('windWord before alerts (tailwind)', rw2.tokens.indexOf('tailwind') < rw2.tokens.indexOf('wet'), rw2.line);
+  // no windWord → unchanged
+  ok('no windWord → unchanged line', whatToExpect({segments:segs,times,windFn,departMs:0}).line==='3°C · crosswinds · wet');
 }
 
 console.log('\nSnow token (cm/h rate; intensity, no maybe):');
