@@ -20,6 +20,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 
 import { createAppController } from "./lib/app.js";
 import { solarTimes } from "./lib/solar.js";
+import { useKeepAlive } from "./lib/useKeepAlive.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
@@ -1851,44 +1852,10 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
   const [nowMs, setNowMs] = useState(Date.now());
   const ref = useRef({});
   const emaRef = useRef({ speedMps: 0, lastT: null, lastDistM: 0 });
-  const wakeRef = useRef(null);
-  const audioRef = useRef(null);
+  const keepAlive = useKeepAlive();
 
-  const acquireWake = async () => {
-    try { if (navigator.wakeLock && !wakeRef.current) {
-      wakeRef.current = await navigator.wakeLock.request("screen");
-      wakeRef.current.addEventListener?.("release", () => { wakeRef.current = null; });
-    } } catch { /* unavailable */ }
-  };
-  const releaseWake = () => { try { wakeRef.current?.release?.(); } catch {} wakeRef.current = null; };
+  useEffect(() => () => { ref.current.handle?.stop?.(); }, []);
 
-  // Silent-audio keep-alive: a looping, effectively-inaudible tone via WebAudio,
-  // started on the Start gesture (autoplay needs a gesture) and stopped on finish.
-  const startAudio = () => {
-    try {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return;
-      const ctx = new Ctx();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      gain.gain.value = 0.0001; // inaudible but non-zero → media session stays live
-      osc.frequency.value = 440;
-      osc.connect(gain).connect(ctx.destination);
-      osc.start();
-      audioRef.current = { ctx, osc };
-    } catch { /* audio keep-alive unavailable; wake lock still helps */ }
-  };
-  const stopAudio = () => {
-    try { audioRef.current?.osc?.stop(); audioRef.current?.ctx?.close(); } catch {}
-    audioRef.current = null;
-  };
-
-  useEffect(() => {
-    const onVis = () => { if (document.visibilityState === "visible" && state === "recording" && !paused) acquireWake(); };
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, [state, paused]);
-  useEffect(() => () => { releaseWake(); stopAudio(); ref.current.handle?.stop?.(); }, []);
   useEffect(() => {
     if (state !== "recording" || paused) return;
     const id = setInterval(() => setElapsed((e) => e + 1), 1000);
@@ -1903,7 +1870,7 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
   const begin = async () => {
     setState("recording"); setElapsed(0); setPaused(false); setLive({ distanceM: 0, speedKmh: 0 });
     emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, warmed: false };
-    acquireWake(); startAudio();
+    keepAlive.start();
     const handle = await controller.recordRoute({
       onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM }) => {
         setElapsed(elapsedSec);
@@ -1927,9 +1894,9 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
         if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; }
         setLive({ distanceM, speedKmh: (em.speedMps || 0) * 3.6 });
       },
-    }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); stopAudio(); });
+    }).catch((e) => { alert(e.message); setState("armed"); keepAlive.stop(); });
     handle?.onFinish?.((rec) => {
-      releaseWake(); stopAudio();
+      keepAlive.stop();
       // Gate the trace here so we own the blocked UI (with a Cancel path). On a
       // good recording, hand it up; on a blocked one, show why + let the user
       // record again or cancel out entirely.
@@ -1941,8 +1908,8 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
   };
   const togglePause = () => {
     const h = ref.current.handle; if (!h) return;
-    if (paused) { h.resume?.(); setPaused(false); acquireWake(); }
-    else { h.pause?.(); setPaused(true); releaseWake(); }
+    if (paused) { h.resume?.(); setPaused(false); keepAlive.start(); }
+    else { h.pause?.(); setPaused(true); keepAlive.stop(); }
   };
   const finish = () => ref.current.handle?.manualFinish?.();
   const avg = elapsed > 0 ? Math.round((live.distanceM / elapsed) * 3.6 * 2) / 2 : 0;
@@ -2448,7 +2415,6 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const [forecastSec, setForecastSec] = useState(null); // wind+learning-aware duration (leaving now), for first-km arrival
   const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
   const ref = useRef({});
-  const wakeRef = useRef(null);
   // EMA state (persist across ticks). `emaRef` holds the smoothed needle speed
   // (~5s) and the smoothed arrival pace (~45min), plus the last tick's distance
   // and timestamp so we can derive per-interval pace and elapsed Δt.
@@ -2461,8 +2427,14 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   }, [state, onRecordingChange]);
   useEffect(() => () => onRecordingChange?.(false), [onRecordingChange]);
 
-  // Screen Wake Lock: keep the screen on while recording so the live readouts
-  // can be watched. Re-acquire when the page becomes visible again.
+  // Screen Wake Lock only: keep the screen on while the rider is watching the
+  // live readouts. Deliberately NO audio/MediaSession keep-alive here — for a
+  // ride on a KNOWN route, GPS with the screen off would only feed live readouts
+  // the rider isn't looking at; the final time/average reconstructs adequately
+  // from distance-since-last-fix even with sparse fixes, so it isn't worth the
+  // battery/audio-focus cost. (New-route RECORDING is different — there the
+  // geometry itself depends on the fixes, so it uses the full keep-alive hook.)
+  const wakeRef = useRef(null);
   const acquireWake = async () => {
     try {
       if (navigator.wakeLock && !wakeRef.current) {
