@@ -20,7 +20,6 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 
 import { createAppController } from "./lib/app.js";
 import { solarTimes } from "./lib/solar.js";
-import { useKeepAlive } from "./lib/useKeepAlive.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
@@ -1848,13 +1847,33 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
   const [blocked, setBlocked] = useState(null); // gate-failure message
   const [elapsed, setElapsed] = useState(0);
   const [paused, setPaused] = useState(false);
-  const [live, setLive] = useState({ distanceM: 0, speedKmh: 0 });
+  const [live, setLive] = useState({ distanceM: 0, speedKmh: 0, avgKmh: 0 });
   const [nowMs, setNowMs] = useState(Date.now());
   const ref = useRef({});
   const emaRef = useRef({ speedMps: 0, lastT: null, lastDistM: 0 });
-  const keepAlive = useKeepAlive();
+  // Wake Lock only: keep the screen on (and thus the document visible) so GPS
+  // keeps delivering. There is deliberately no audio/MediaSession keep-alive —
+  // the Geolocation spec gates watchPosition on document visibility, and screen
+  // lock makes the document hidden, so NO web-app keep-alive can record GPS in
+  // the background; audio would only cost battery and a media notification for
+  // no benefit. The recorder tells the user to keep the app visible instead.
+  const wakeRef = useRef(null);
+  const acquireWake = async () => {
+    try {
+      if (navigator.wakeLock && !wakeRef.current) {
+        wakeRef.current = await navigator.wakeLock.request("screen");
+        wakeRef.current.addEventListener?.("release", () => { wakeRef.current = null; });
+      }
+    } catch { /* wake lock unavailable or denied; harmless */ }
+  };
+  const releaseWake = () => { try { wakeRef.current?.release?.(); } catch {} wakeRef.current = null; };
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible" && state === "recording" && !paused) acquireWake(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [state, paused]);
 
-  useEffect(() => () => { ref.current.handle?.stop?.(); }, []);
+  useEffect(() => () => { releaseWake(); ref.current.handle?.stop?.(); }, []);
 
   useEffect(() => {
     if (state !== "recording" || paused) return;
@@ -1869,8 +1888,8 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
 
   const begin = async () => {
     setState("recording"); setElapsed(0); setPaused(false); setLive({ distanceM: 0, speedKmh: 0 });
-    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, warmed: false };
-    keepAlive.start();
+    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null };
+    acquireWake();
     const handle = await controller.recordRoute({
       onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM }) => {
         setElapsed(elapsedSec);
@@ -1882,7 +1901,13 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
         const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
         if (em.lastFixT != null && needleUsable) {
           const dt = fixT - em.lastFixT;
-          if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) em.warmed = true;
+          if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) {
+            em.warmed = true;
+            // Anchor the average here (as in ride capture): acquisition-phase
+            // distance over a near-zero elapsed otherwise reads as ~40 km/h.
+            em.warmDistM = distanceM;
+            em.warmSec = elapsedSec;
+          }
           if (dt > 0 && em.warmed) {
             let instMps = Math.max(0, speedMps || 0);
             if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
@@ -1892,11 +1917,23 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
           }
         }
         if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; }
-        setLive({ distanceM, speedKmh: (em.speedMps || 0) * 3.6 });
+        // Track the best (lowest) accuracy seen for the "GPS initialising" readout
+        // shown during warm-up. The pseudo-percentage 8/best×100 approaches 100 as
+        // fixes sharpen; monotonic (best only improves) so it never ticks backward.
+        if (accuracyM != null && (em.bestAccM == null || accuracyM < em.bestAccM)) em.bestAccM = accuracyM;
+        const initPct = em.bestAccM != null ? Math.min(100, Math.round((NEEDLE_WARMUP_ACC_M / em.bestAccM) * 100)) : null;
+        // Average from the warm-up anchor (0 until warmed), same as ride capture.
+        let avgKmh = 0;
+        if (em.warmed && em.warmSec != null) {
+          const dSec = elapsedSec - em.warmSec;
+          const dDist = distanceM - em.warmDistM;
+          if (dSec > 0 && dDist > 0) avgKmh = (dDist / dSec) * 3.6;
+        }
+        setLive({ distanceM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh, initialising: !em.warmed, initPct });
       },
-    }).catch((e) => { alert(e.message); setState("armed"); keepAlive.stop(); });
+    }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); });
     handle?.onFinish?.((rec) => {
-      keepAlive.stop();
+      releaseWake();
       // Gate the trace here so we own the blocked UI (with a Cancel path). On a
       // good recording, hand it up; on a blocked one, show why + let the user
       // record again or cancel out entirely.
@@ -1908,11 +1945,11 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
   };
   const togglePause = () => {
     const h = ref.current.handle; if (!h) return;
-    if (paused) { h.resume?.(); setPaused(false); keepAlive.start(); }
-    else { h.pause?.(); setPaused(true); keepAlive.stop(); }
+    if (paused) { h.resume?.(); setPaused(false); acquireWake(); }
+    else { h.pause?.(); setPaused(true); releaseWake(); }
   };
   const finish = () => ref.current.handle?.manualFinish?.();
-  const avg = elapsed > 0 ? Math.round((live.distanceM / elapsed) * 3.6 * 2) / 2 : 0;
+  const avg = Math.round((live.avgKmh || 0) * 2) / 2;
 
   if (state === "blocked") {
     // Recording couldn't form a usable route — offer re-record or cancel.
@@ -1939,7 +1976,9 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
         <InstrumentPanel
           elapsed={elapsed} paused={paused} avg={avg}
           nowMs={nowMs} arrivalMs={null} speedKmh={live.speedKmh}
-          centerMessage={{ text: "Recording new route", color: "#d9534f" }}
+          centerMessage={live.initialising
+            ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
+            : { text: "Recording new route", color: "#d9534f" }}
           onPause={togglePause} onFinish={finish} finishLabel="Finish"
           bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
         />
@@ -1949,8 +1988,11 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
 
   return (
     <div style={{ padding: "0 22px" }}>
-      <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", lineHeight: 1.5, marginBottom: 18 }}>
+      <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.65)", lineHeight: 1.5, marginBottom: 14 }}>
         Start at the beginning of your route, then ride it once. Keep the app open — tap Finish when you arrive.
+      </div>
+      <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", lineHeight: 1.5, marginBottom: 18, padding: "12px 14px", borderRadius: 12, background: "rgba(224,164,94,0.12)", border: "1px solid rgba(224,164,94,0.35)" }}>
+        Keep this app open and visible while recording. The ability to record GPS data in the background is not currently available. (It is a possible future enhancement.)
       </div>
       <button onClick={begin} style={{ width: "100%", padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Start recording</button>
     </div>
@@ -2463,7 +2505,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     // speed, including off-route). Progress/remaining come from along-route
     // projection, so they self-heal after a GPS gap and never need the clamp.
     emaRef.current = {
-      speedMps: 0, paceMps: null, paceSeeded: false, warmed: false, warmDistM: 0, warmSec: null,
+      speedMps: 0, paceMps: null, paceSeeded: false, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null,
       lastFixT: null, lastAlongM: null, lastAccM: null,
       polyline: routePolyline(route),
     };
@@ -2545,6 +2587,10 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
         if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; }
         if (goodFix && !proj.offRoute) em.lastAlongM = proj.alongM;
+        // "GPS initialising" readout during warm-up: best (lowest) accuracy so far,
+        // 8/best×100 → approaches 100 as fixes sharpen; monotonic.
+        if (accuracyM != null && (em.bestAccM == null || accuracyM < em.bestAccM)) em.bestAccM = accuracyM;
+        const initPct = em.bestAccM != null ? Math.min(100, Math.round((NEEDLE_WARMUP_ACC_M / em.bestAccM) * 100)) : null;
         // Average speed measured from the warm-up anchor (0 until warmed), so
         // acquisition-noise distance over a near-zero time can't read as ~40 km/h.
         let avgKmh = 0;
@@ -2553,7 +2599,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           const dDist = distanceM - em.warmDistM;
           if (dSec > 0 && dDist > 0) avgKmh = (dDist / dSec) * 3.6;
         }
-        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh });
+        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh, initialising: !em.warmed, initPct });
       },
       onFinish: (r) => {
         releaseWake();
@@ -2703,9 +2749,11 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           <InstrumentPanel
             elapsed={elapsed} paused={paused} avg={avg} label={route.name}
             nowMs={nowMs} arrivalMs={arrivalMs} speedKmh={live.speedKmh}
-            centerMessage={live.offRoute && live.offRouteM != null
-              ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
-              : null}
+            centerMessage={live.initialising
+              ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
+              : (live.offRoute && live.offRouteM != null
+                ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
+                : null)}
             onPause={togglePause} onFinish={finishNow}
             bottom={totalM
               ? <ProgressBar travelledM={alongM} totalM={totalM} />

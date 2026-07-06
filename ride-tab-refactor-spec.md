@@ -120,22 +120,19 @@ commute can be long). Two complementary techniques, both acquired on the
   awake while the page is visible (well-supported on Android Chrome and iOS
   Safari 16.4+). Re-acquire on `visibilitychange` back to visible (the lock is
   auto-released when the page is hidden).
-- **Inaudible audio + MediaSession** — a resumed `AudioContext` playing an
-  inaudible 1 Hz tone (gain 0.001 — non-zero so it isn't treated as silence and
-  denied audio focus; the context must be `resume()`d since a fresh one can start
-  suspended even inside a gesture and then never play), **plus**
-  `navigator.mediaSession` with metadata and `playbackState:'playing'`. The
-  MediaSession is the part that makes Android treat the tab as a foreground-
-  equivalent media player (it shows in the notification shade) and exempts it
-  from background suspension — audio alone is not enough. This is the technique
-  that actually enables background GPS in a PWA. Started from the Start tap
-  (autoplay/AudioContext need a gesture), stopped on Finish. Implemented in the
-  shared `useKeepAlive` hook, used by the **route recorder only**: capturing a
-  new route's geometry depends on the fixes, so background survival is critical.
-  A **regular ride** deliberately does NOT use it — the route is already known,
-  so screen-off GPS would only feed live readouts the rider isn't watching, and
-  the final time/average reconstruct adequately from distance-since-last-fix; the
-  ride keeps just a Wake Lock (screen-on while foreground).
+- **Inaudible audio + MediaSession — REMOVED / not used.** The W3C Geolocation
+  spec gates `watchPosition` on **document visibility**, and screen lock (or any
+  backgrounding) makes the document `hidden`, so `watchPosition` stops delivering
+  regardless of any keep-alive. Audio/MediaSession keeps the JS process alive and
+  unthrottled but does **not** exempt geolocation from the visibility gate (audio
+  is on the throttling-exemption list; geolocation is not). This is cross-engine,
+  spec-level, intended behaviour — there is **no pure-PWA way** to record GPS with
+  the screen off (the only path is a native wrapper / TWA + foreground service).
+  So the route recorder uses **Wake Lock only** (keep the screen on → document
+  stays visible → GPS flows) plus on-screen guidance: "Keep this app open and
+  visible while recording. The ability to record GPS data in the background is not
+  currently available." Background recording is noted as a possible future
+  enhancement (would require migrating to a native, e.g. Flutter-based, app).
 
 **Honest caveats** (state in code comments / user copy, don't overclaim): this
 is **best-effort, not a platform guarantee**. iOS media/background behaviour
