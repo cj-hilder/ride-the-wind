@@ -324,12 +324,16 @@ accuracy) snaps the needle, a loose one barely nudges it (dozens of samples to
 converge). The needle additionally CSS-transitions for a classic-car glide.
 Per-sample speeds above a sane cycling max (~70 km/h) are rejected as GPS
 artefacts, and truly garbage fixes (accuracy worse than a hard cutoff) are
-dropped entirely. Two further guards prevent spikes from irregular fix delivery:
-**dt is measured between GPS fix timestamps, not `Date.now()` at the callback**
-(late/batched deliveries would otherwise pair a full interval's distance with a
-near-zero dt and fling the needle), a per-sample **acceleration clamp** rejects
-physically impossible speed changes, and the dt used for α is capped so one
-sample after a gap can't seize the needle. All of this is **display-only** — the recorded trace keeps
+dropped entirely. Further guards prevent spikes from irregular fix delivery and
+dishonest accuracy: **the speed dt is computed from the GPS fixes' own timestamps
+(`pos.timestamp`), not `Date.now()` at the callback** (late/batched deliveries
+otherwise pair a full interval's distance with a near-zero wall-clock dt and
+fling the needle; falls back to the app clock only if the device omits/garbles
+`pos.timestamp`); a per-sample **acceleration clamp** rejects impossible speed
+changes; the dt used for α is capped so one sample after a gap can't seize the
+needle; and reported **accuracy is floored at ~2.5 m** so a device lying with an
+over-optimistic value can't make the needle over-trust. All of this is
+**display-only** — the recorded trace keeps
 every fix, and the arrival **pace** EMA keeps its slow fixed τ (per-fix accuracy
 matters far less over 45-min windows).
 

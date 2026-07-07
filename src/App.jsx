@@ -1887,7 +1887,8 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
   }, [state]);
 
   const begin = async () => {
-    setState("recording"); setElapsed(0); setPaused(false); setLive({ distanceM: 0, speedKmh: 0 });
+    setState("recording"); setElapsed(0); setPaused(false);
+    setLive({ distanceM: 0, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null };
     acquireWake();
     const handle = await controller.recordRoute({
@@ -2497,7 +2498,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   // first — guards against accidentally recording from the wrong place.
   const beginRecording = async () => {
     setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0);
-    setLive({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0 });
+    setLive({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     // Needle speed seeds at 0 (rider stationary). Arrival pace is dormant (null)
     // and seeded at the 1 km along-route mark with the average speed so far, then
     // refined by the 45-min EMA. Pace samples use ALONG-ROUTE distance (gap- and

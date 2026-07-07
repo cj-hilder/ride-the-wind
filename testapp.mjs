@@ -244,6 +244,31 @@ console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRec
   handle.manualFinish();
   ok('recordRoute produced a trace', recorded && recorded.trace.length === 150, `${recorded && recorded.trace.length}`);
 
+  // GPS-timestamp timing: if fixes carry pos.timestamp, the derived speed must
+  // use the GPS interval, not the (possibly batched/late) callback clock. Here
+  // the callback clock advances 5000 ms per fix (as if delivered in a slow batch)
+  // while the GPS timestamps advance a true 1000 ms; a ~5 m step over the real
+  // 1 s is ~5 m/s, over the wrong 5 s would be ~1 m/s. We assert the tick sees
+  // the ~5 m/s (GPS-time) speed.
+  {
+    const gApp2 = mkApp(stubForecast(90, 20));
+    let cb2 = null; let gpsClock = 1_700_000_000_000;
+    const geo2 = {
+      watchPosition: (s) => { cb2 = s; return 1; },
+      clearWatch: () => {},
+    };
+    const speeds = [];
+    const h2 = await gApp2.recordRoute({ geo: geo2, onTick: ({ speedMps }) => speeds.push(speedMps) });
+    for (let i = 0; i < 5; i++) {
+      clock += 5000;        // callback/app clock jumps 5 s (batched delivery)
+      gpsClock += 1000;     // true GPS time advances 1 s
+      cb2({ coords: { latitude: 0, longitude: i * dLon, accuracy: 5 }, timestamp: gpsClock });
+    }
+    h2.manualFinish();
+    const last = speeds[speeds.length - 1];
+    ok('speed uses GPS-interval dt (≈5 m/s not ≈1)', last > 3.5 && last < 6.5, `${last?.toFixed(2)} m/s`);
+  }
+
   // previewTrace: gate + process without creating
   const pv = gApp.previewTrace(recorded.trace);
   ok('previewTrace ok', pv.ok === true, JSON.stringify(pv.reason));

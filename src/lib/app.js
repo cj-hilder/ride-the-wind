@@ -1045,17 +1045,25 @@ export function createAppController(deps = {}) {
     const watchId = geoApi.watchPosition(
       (pos) => {
         const fix = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: now(),
+          gpsT: (typeof pos.timestamp === "number" && pos.timestamp > 0) ? pos.timestamp : null,
           accuracyM: (typeof pos.coords.accuracy === "number" && pos.coords.accuracy >= 0) ? pos.coords.accuracy : null };
         if (paused) { prev = fix; return; }
         trace.push(fix);
         if (prev && onTick) {
           const moved = haversineLocal(prev.lat, prev.lon, fix.lat, fix.lon);
-          const dt = (fix.t - prev.t) / 1000;
+          // Speed dt from GPS fix timestamps (see startRide for rationale); fall
+          // back to the app clock if gpsT missing/implausible.
+          const appDt = (fix.t - prev.t) / 1000;
+          let dt = appDt;
+          if (fix.gpsT != null && prev.gpsT != null) {
+            const gdt = (fix.gpsT - prev.gpsT) / 1000;
+            if (gdt > 0 && gdt < 3600) dt = gdt; // plausible GPS interval; batched delivery makes gdt < appDt (the case we fix)
+          }
           onTick({
             elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000,
             distanceM: traceDistance(trace),
             speedMps: dt > 0 ? moved / dt : 0,
-            fixT: fix.t,
+            fixT: fix.gpsT ?? fix.t,
             accuracyM: fix.accuracyM,
           });
         }
@@ -1295,6 +1303,7 @@ export function createAppController(deps = {}) {
     const watchId = geoApi.watchPosition(
       (pos) => {
         const fix = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: Date.now(),
+          gpsT: (typeof pos.timestamp === "number" && pos.timestamp > 0) ? pos.timestamp : null,
           gpsSpeedMps: (typeof pos.coords.speed === "number" && pos.coords.speed >= 0) ? pos.coords.speed : null,
           accuracyM: (typeof pos.coords.accuracy === "number" && pos.coords.accuracy >= 0) ? pos.coords.accuracy : null };
         // While paused, ignore movement entirely — no distance, no finish
@@ -1318,13 +1327,28 @@ export function createAppController(deps = {}) {
           } else stoppedSince = null;
 
           if (onTick) {
-            const dt = (fix.t - prev.t) / 1000;
+            // Speed dt from the GPS fix timestamps (pos.timestamp), NOT the app
+            // clock: watchPosition callbacks can be delivered late or batched, so
+            // Date.now() at callback time may span a different interval than the
+            // distance covered — the classic fast-out/slow-back needle spike. GPS
+            // time is the correct clock for a GPS-derived speed. Fall back to the
+            // app clock if either gpsT is missing or gives an implausible dt.
+            const appDt = (fix.t - prev.t) / 1000;
+            let dt = appDt;
+            if (fix.gpsT != null && prev.gpsT != null) {
+              const gdt = (fix.gpsT - prev.gpsT) / 1000;
+              // Use the GPS interval whenever it's plausible on its own (positive,
+              // not absurdly long). We deliberately DON'T require it to match the
+              // app-clock dt — a GPS dt much smaller than the app dt is exactly the
+              // batched-delivery case we're correcting. Only reject garbage.
+              if (gdt > 0 && gdt < 3600) dt = gdt;
+            }
             const speedMps = dt > 0 ? moved / dt : 0;
             onTick({
               elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000,
               distanceM: traceDistance(trace),
               speedMps,                 // this-fix derived speed over the GPS interval; UI smooths
-              fixT: fix.t,              // GPS fix timestamp — use for EMA dt, NOT Date.now()
+              fixT: fix.gpsT ?? fix.t,  // GPS fix timestamp for the EMA dt (falls back to app clock)
               gpsSpeedMps: fix.gpsSpeedMps, // device GPS speed if available (m/s)
               accuracyM: fix.accuracyM, // device GPS accuracy estimate (m), or null
               lat: fix.lat, lon: fix.lon,  // fix position, for route projection

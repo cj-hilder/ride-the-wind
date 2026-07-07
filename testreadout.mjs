@@ -183,6 +183,10 @@ console.log('\nneedleTauMs (adaptive needle smoothing from GPS accuracy):');
   const tight = emaStep(0, 10, 1000, needleTauMs(2, 2));
   const loose = emaStep(0, 10, 1000, needleTauMs(30, 30));
   ok('tight fix moves needle more than loose', tight > loose * 3, `tight ${tight.toFixed(2)} loose ${loose.toFixed(2)}`);
+  // Accuracy floor: a device lying with sub-floor accuracy is treated as no
+  // better than the floor, so it can't produce a shorter τ than a floor-accuracy fix.
+  ok('sub-floor accuracy clamped to floor', needleTauMs(0.5, 0.5) === needleTauMs(2.5, 2.5), `${needleTauMs(0.5,0.5)} vs ${needleTauMs(2.5,2.5)}`);
+  ok('0.5 m does not beat 2.5 m (no over-trust)', needleTauMs(0.5, 0.5) >= needleTauMs(2.5, 2.5));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

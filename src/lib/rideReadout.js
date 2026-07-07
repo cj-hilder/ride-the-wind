@@ -25,6 +25,9 @@ export const PACE_EMA_TAU_MS = 45 * 60000;   // arrival pace EMA time constant ~
 // EMA time constant τ (inverse-variance weighting): small τ (snappy) for tight
 // fixes, large τ (heavily smoothed) for loose ones.
 export const NEEDLE_ACC_REF_M = 4;           // accuracy at which a sample is basically trusted (τ ≈ min)
+export const NEEDLE_ACC_FLOOR_M = 2.5;       // consumer GPS is essentially never truly better than this; clamp
+                                             // reported accuracy UP to it so a device lying with a tiny value
+                                             // (e.g. 0.5 m) can't make the needle over-trust and snap
 export const NEEDLE_TAU_MIN_MS = 2500;       // floor τ for an excellent fix — deliberately calm (a position-
                                              // differenced speedo has an irreducible ±1–2 km/h wander; this
                                              // trades a little needle lag for a steadier read)
@@ -43,8 +46,13 @@ export const NEEDLE_MAX_DT_MS = 6000;        // (B) cap the dt used for α so on
  * ok) so behaviour is unchanged on devices that don't report accuracy.
  */
 export function needleTauMs(accPrev, accNow) {
-  const ap = (accPrev == null || Number.isNaN(accPrev)) ? NEEDLE_ACC_REF_M : accPrev;
-  const an = (accNow == null || Number.isNaN(accNow)) ? NEEDLE_ACC_REF_M : accNow;
+  // Clamp each reported accuracy UP to a realistic floor: consumer GPS is
+  // essentially never truly sub-2.5 m, so a device claiming (or lying) better is
+  // treated as no better than the floor — otherwise one over-optimistic fix
+  // makes τ snap short and the needle jumps.
+  const clamp = (a) => Math.max(NEEDLE_ACC_FLOOR_M, a);
+  const ap = clamp((accPrev == null || Number.isNaN(accPrev)) ? NEEDLE_ACC_REF_M : accPrev);
+  const an = clamp((accNow == null || Number.isNaN(accNow)) ? NEEDLE_ACC_REF_M : accNow);
   const variance = ap * ap + an * an;
   const refVar = 2 * NEEDLE_ACC_REF_M * NEEDLE_ACC_REF_M;
   const tau = NEEDLE_TAU_MIN_MS * (variance / refVar);
