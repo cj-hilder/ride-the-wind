@@ -23,7 +23,7 @@ import { solarTimes } from "./lib/solar.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
-  needleTauMs, needleTauMsFromSpeedAcc, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
+  needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_MIN_MS, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
@@ -2649,8 +2649,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           const dDist = distanceM - em.warmDistM;
           if (dSec > 0 && dDist > 0) avgKmh = (dDist / dSec) * 3.6;
         }
-        em.tickN = (em.tickN || 0) + 1;
-        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh, initialising: !em.warmed, initPct, rawAccM: accuracyM, tickN: em.tickN });
+        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh, initialising: !em.warmed, initPct });
       },
       onFinish: (r) => {
         releaseWake();
@@ -2818,7 +2817,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
             elapsed={elapsed} paused={paused} avg={avg} label={route.name}
             nowMs={nowMs} arrivalMs={arrivalMs} speedKmh={live.speedKmh}
             centerMessage={live.initialising
-              ? { text: live.initPct != null ? `GPS init ${live.initPct}% · ${live.rawAccM != null ? live.rawAccM.toFixed(1) + "m" : "—"} · #${live.tickN || 0}` : `GPS initialising… #${live.tickN || 0}`, color: "#e0a45e" }
+              ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
               : (live.offRoute && live.offRouteM != null
                 ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
                 : null)}
