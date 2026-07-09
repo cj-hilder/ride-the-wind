@@ -17,6 +17,8 @@ export const SPEED_EMA_TAU_MS = 5000;        // legacy fixed needle τ (kept for
 export const SPEED_SANE_MAX_MPS = 19.4;      // ~70 km/h: above this a per-fix speed is a GPS artefact, not cycling
 export const GPS_ACCURACY_GATE_M = 30;       // (legacy) fixes worse than this were skipped for the needle
 export const PACE_EMA_TAU_MS = 45 * 60000;   // arrival pace EMA time constant ~45min
+export const PACE_MOVING_MIN_MPS = 1.0;      // below this the rider is treated as stopped; excluded from moving
+                                             // pace so a light-stop doesn't drag the arrival projection down
 
 // Adaptive needle smoothing. Each GPS fix reports a horizontal accuracy (metres);
 // a speed sample derived from two fixes has an error that scales with
@@ -45,6 +47,28 @@ export const NEEDLE_MAX_DT_MS = 6000;        // (B) cap the dt used for α so on
  * clamped to [MIN, MAX]. Missing accuracies are treated as the reference (assume
  * ok) so behaviour is unchanged on devices that don't report accuracy.
  */
+export const NEEDLE_SPEED_ACC_REF_MPS = 1.0; // Doppler speed accuracy (m/s) at which a sample is ~trusted
+export const NEEDLE_SPEED_ACC_FLOOR_MPS = 0.3; // floor: Doppler is essentially never truly better than this
+
+/**
+ * τ for the Doppler needle path, driven by the fix's VELOCITY accuracy
+ * (coords.speedAccuracy, m/s) — the correct error signal for a Doppler-derived
+ * speed, as opposed to horizontal POSITION accuracy which governs the
+ * differencing path. Same shape as needleTauMs: τ scales with variance,
+ * clamped to [τ_min, τ_max]. When speedAccuracy is unavailable, the caller
+ * falls back to needleTauMs(position accuracy) — imperfect but better than a
+ * fixed τ.
+ */
+export function needleTauMsFromSpeedAcc(speedAccPrev, speedAccNow) {
+  const clamp = (a) => Math.max(NEEDLE_SPEED_ACC_FLOOR_MPS, a);
+  const ap = clamp((speedAccPrev == null || Number.isNaN(speedAccPrev)) ? NEEDLE_SPEED_ACC_REF_MPS : speedAccPrev);
+  const an = clamp((speedAccNow == null || Number.isNaN(speedAccNow)) ? NEEDLE_SPEED_ACC_REF_MPS : speedAccNow);
+  const variance = ap * ap + an * an;
+  const refVar = 2 * NEEDLE_SPEED_ACC_REF_MPS * NEEDLE_SPEED_ACC_REF_MPS;
+  const tau = NEEDLE_TAU_MIN_MS * (variance / refVar);
+  return Math.max(NEEDLE_TAU_MIN_MS, Math.min(NEEDLE_TAU_MAX_MS, tau));
+}
+
 export function needleTauMs(accPrev, accNow) {
   // Clamp each reported accuracy UP to a realistic floor: consumer GPS is
   // essentially never truly sub-2.5 m, so a device claiming (or lying) better is

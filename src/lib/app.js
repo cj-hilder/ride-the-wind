@@ -37,7 +37,7 @@ import {
   predictEnsembleRange,
   speedFromBaseline,
 } from "./prediction.js";
-import { whatToExpect } from "./whatToExpect.js";
+import { whatToExpect, rainLevel } from "./whatToExpect.js";
 import {
   Store,
   MemoryBackend,
@@ -219,6 +219,14 @@ export function createAppController(deps = {}) {
   // a short window. Keyed by rounded lat/lon.
   const forecastCache = new Map();
   const FORECAST_TTL = 30 * 60 * 1000; // 30 min
+  // Distance the rider must cover before finish-detection arms. Must exceed the
+  // end-region "stopped near it" zone (radius×3 = 180m) so a ride that starts
+  // near its own end can't self-finish before actually setting off.
+  const FINISH_ARM_DIST_M = 200;
+  // Percentile across ensemble members for the worst-case wetness upgrade. A high
+  // percentile (not the literal wettest member) so one freak run doesn't cry wolf:
+  // "a meaningful minority of scenarios are this wet".
+  const ENSEMBLE_RAIN_PCT = 85;
 
   async function stationSeriesFor(route) {
     const stations = chooseStations(route);
@@ -272,9 +280,66 @@ export function createAppController(deps = {}) {
   }
 
   /**
-   * Create a route from raw GPX text plus the setup form values.
-   * Handles processing, k-seeding, and persistence in one call.
+   * Ensemble worst-case wetness level (0–3) for a ride, at a high percentile
+   * across members — a robust "worst case" that isn't hijacked by one freak
+   * member. For each member: walk the ride segments, sample that member's
+   * precipitation (mm/h) at each segment's mid-time from the NEAREST ensemble
+   * station, accumulate the ride total and track the peak rate, then map via the
+   * SAME worse-of-rate/total banding the deterministic token uses. The returned
+   * level is the value at ~ENSEMBLE_RAIN_PCT across members (e.g. 85th percentile:
+   * "a meaningful minority of scenarios are this wet"), NOT the single wettest.
+   * Returns { level (0–3), peakMmH, totalMm } from that same worst-case member;
+   * level 0 / zero figures when precip data is missing so the merge is a no-op.
    */
+  function ensembleRainLevelFor(ensembleStations, segments, times, departMs) {
+    const ZERO = { level: 0, peakMmH: 0, totalMm: 0 };
+    if (!ensembleStations || !ensembleStations.length || !segments || !segments.length) return ZERO;
+    const memberCount = Math.min(...ensembleStations.map((s) => s.members.length));
+    if (!(memberCount > 0)) return ZERO;
+    // Nearest station index per segment (cheap squared-distance).
+    const nearest = segments.map((s) => {
+      let bi = 0, bd = Infinity;
+      ensembleStations.forEach((st, i) => {
+        const dx = st.lat - s.lat, dy = st.lon - s.lon, d = dx * dx + dy * dy;
+        if (d < bd) { bd = d; bi = i; }
+      });
+      return bi;
+    });
+    // Precip (mm/h) for a member series at a time — pick the hour the rider is in
+    // (earlier bracket), since precip is an hourly total, matching windModel.
+    const precipAt = (series, atMs) => {
+      if (!series || !series.length) return 0;
+      let lo = 0;
+      while (lo < series.length - 1 && series[lo + 1].time <= atMs) lo++;
+      const v = series[lo] && series[lo].precipMm;
+      return typeof v === "number" && v >= 0 ? v : 0;
+    };
+    let anyPrecip = false;
+    const members = [];
+    for (let m = 0; m < memberCount; m++) {
+      let total = 0, peak = 0, segMs = departMs;
+      for (let i = 0; i < segments.length; i++) {
+        const st = ensembleStations[nearest[i]];
+        const series = st.members[m];
+        const mid = segMs + (times[i] * 1000) / 2;
+        const rate = precipAt(series, mid); // mm/h
+        if (rate > 0) anyPrecip = true;
+        if (rate > peak) peak = rate;
+        total += rate * (times[i] / 3600); // mm over this segment
+        segMs += times[i] * 1000;
+      }
+      members.push({ peak, total });
+    }
+    if (!anyPrecip) return { level: 0, peakMmH: 0, totalMm: 0 };
+    // Rank members by peak rate and pick the one at ENSEMBLE_RAIN_PCT — the level
+    // AND the reported mm figures then come from the SAME (worst-case) member, so
+    // the debug numbers and the band label are self-consistent.
+    members.sort((a, b) => a.peak - b.peak);
+    const idx = Math.min(members.length - 1, Math.floor((ENSEMBLE_RAIN_PCT / 100) * members.length));
+    const worst = members[idx];
+    return { level: rainLevel(worst.total, worst.peak), peakMmH: worst.peak, totalMm: worst.total };
+  }
+
   /**
    * Parse a GPX without persisting, for the setup preview (distance, elevation,
    * point count, warnings). Throws GpxError on invalid files so the UI can show
@@ -331,6 +396,10 @@ export function createAppController(deps = {}) {
     };
   }
 
+  /**
+   * Create a route from raw GPX text plus the setup form values.
+   * Handles processing, k-seeding, and persistence in one call.
+   */
   async function createRoute(gpxText, setup) {
     const processed = processGpx(gpxText, { domParser: deps.domParser });
     const seededK = computeSeedKSplit(
@@ -803,10 +872,23 @@ export function createAppController(deps = {}) {
     let debug = null;
     if (next) {
       const baseSpeed = speedFromBaseline(route.totalDistance, route.baselineTimeSec);
-      const times = segmentTimes(route.segments, baseSpeed, { useGradient: true });
+      const stillAir = segmentTimes(route.segments, baseSpeed, { useGradient: true });
+      // Scale segment times by the predicted duration ratio (predicted / still-air)
+      // so rain EXPOSURE reflects the wind slowdown — a headwind lengthens time in
+      // the rain and raises the total. Same basis as the arrival prediction.
+      const ts = (route.baselineTimeSec > 0 && verdict.predictedSec > 0)
+        ? verdict.predictedSec / route.baselineTimeSec : 1;
+      const times = stillAir.map((t) => t * ts);
       const windFn = makeWindFn(stationSeries);
       const departMs = conservative ? conservative.departureMs : next.arrivalMs - verdict.predictedSec * 1000;
-      expect = whatToExpect({ segments: route.segments, times, windFn, departMs });
+      // Ensemble worst-case wetness (planning only): can upgrade the rain token to
+      // "maybe «wetter»". Uses the cached ensemble (cheap); 0 if unavailable.
+      let ensRain = { level: 0, peakMmH: 0, totalMm: 0 };
+      try {
+        const ens = await ensembleStationsFor(route);
+        ensRain = ensembleRainLevelFor(ens, route.segments, times, departMs);
+      } catch { ensRain = { level: 0, peakMmH: 0, totalMm: 0 }; }
+      expect = whatToExpect({ segments: route.segments, times, windFn, departMs, ensembleRainLevel: ensRain.level });
 
       // Diagnostics. The linear mean headwind and crosswind are sampled per
       // segment at the time the rider reaches it; they describe the wind but do
@@ -858,6 +940,17 @@ export function createAppController(deps = {}) {
         forecastNextUpdateMs: fetchedAt != null ? fetchedAt + FORECAST_TTL : null,
         kIdHead: resolved.kHeadSource === "learned",
         kIdTail: resolved.kTailSource === "learned",
+        // Rain diagnostics — the actual figures the wetness token is computed
+        // from, so a "why no 'a little wet'?" can be checked against the bands.
+        rainPeakRateMmH: expect && expect.conditions ? +(expect.conditions.precipPeakRate || 0).toFixed(2) : null,
+        rainTotalMm: expect && expect.conditions ? +(expect.conditions.precipTotalMm || 0).toFixed(2) : null,
+        rainMaxProbPct: expect && expect.conditions && expect.conditions.precipProb && expect.conditions.precipProb.length
+          ? Math.round(Math.max(...expect.conditions.precipProb)) : null,
+        // Ensemble worst-case (85th-percentile member) actual figures — the
+        // numbers behind any "maybe «wetter»" upgrade, in the same mm currency as
+        // the deterministic rows above so they're directly comparable.
+        rainWettestPeakMmH: ensRain.level > 0 ? +ensRain.peakMmH.toFixed(2) : null,
+        rainWettestTotalMm: ensRain.level > 0 ? +ensRain.totalMm.toFixed(2) : null,
       };
     }
 
@@ -1254,7 +1347,9 @@ export function createAppController(deps = {}) {
    * definite head/tailwind, else null (calm / "usual" / probability "mixed" cases
    * insert nothing). The ride screen shows this in place of the home card's
    * headline, which isn't visible during a ride.
-   * Returns { predictedSec, windWord } or null if no forecast/verdict is available.
+   * Also returns `timeScale` = predictedSec / still-air baseline — how much longer
+   * (or shorter) today's wind makes the ride — for scaling rain-exposure time.
+   * Returns { predictedSec, windWord, timeScale } or null if unavailable.
    */
   async function ridePrediction(route) {
     if (!route || !route.segments) return null;
@@ -1268,18 +1363,30 @@ export function createAppController(deps = {}) {
       // classification can't diverge. Only definite head/tailwind insert a word.
       const dir = res.windEffect && res.windEffect.direction;
       const windWord = dir === "headwind" ? "headwind" : dir === "tailwind" ? "tailwind" : null;
-      return { predictedSec: sec, windWord };
+      // How much longer/shorter than still air (unambiguous ratio; avoids the
+      // additive-vs-multiplicative ambiguity of the raw windFactor).
+      const base = route.baselineTimeSec;
+      const timeScale = (base > 0) ? sec / base : 1;
+      return { predictedSec: sec, windWord, timeScale };
     } catch {
       return null;
     }
   }
 
-  async function rideExpectation(route, windWord = null) {
+  async function rideExpectation(route, windWord = null, timeScale = 1) {
     if (!route || !route.segments) return null;
     const stationSeries = await stationSeriesFor(route).catch(() => []);
     if (!stationSeries.length) return null;
     const baseSpeed = speedFromBaseline(route.totalDistance, route.baselineTimeSec);
-    const times = segmentTimes(route.segments, baseSpeed, { useGradient: true });
+    const stillAir = segmentTimes(route.segments, baseSpeed, { useGradient: true });
+    // Scale still-air segment times by the whole-ride duration ratio (predicted /
+    // still-air) so the rain EXPOSURE (total mm = rate × time-in-rain) reflects
+    // today's wind: a headwind lengthens time on each segment and correctly
+    // increases the accumulated rain total. Uniform net scaling (whole-ride, not
+    // per-segment); defaults to 1.0 (still air). Also aligns the rain-exposure
+    // time basis with the arrival prediction, which uses the same duration.
+    const ts = (typeof timeScale === "number" && timeScale > 0) ? timeScale : 1;
+    const times = stillAir.map((t) => t * ts);
     const windFn = makeWindFn(stationSeries);
     return whatToExpect({ segments: route.segments, times, windFn, departMs: now(), windWord });
   }
@@ -1294,6 +1401,7 @@ export function createAppController(deps = {}) {
     const trace = [];
     let prev = null;
     let stoppedSince = null;
+    let hasLeftStart = false; // finish detection stays disarmed until the rider actually leaves the start
     // Pause support: total paused ms is excluded from the ride time, so a rider
     // can stop (lights, coffee, mechanical) without inflating the learned time.
     let paused = false;
@@ -1305,6 +1413,7 @@ export function createAppController(deps = {}) {
         const fix = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: Date.now(),
           gpsT: (typeof pos.timestamp === "number" && pos.timestamp > 0) ? pos.timestamp : null,
           gpsSpeedMps: (typeof pos.coords.speed === "number" && pos.coords.speed >= 0) ? pos.coords.speed : null,
+          speedAccMps: (typeof pos.coords.speedAccuracy === "number" && pos.coords.speedAccuracy >= 0) ? pos.coords.speedAccuracy : null,
           accuracyM: (typeof pos.coords.accuracy === "number" && pos.coords.accuracy >= 0) ? pos.coords.accuracy : null };
         // While paused, ignore movement entirely — no distance, no finish
         // detection, no trace growth, and the clock is held.
@@ -1313,18 +1422,29 @@ export function createAppController(deps = {}) {
           // distance accrual
           const moved = haversineLocal(prev.lat, prev.lon, fix.lat, fix.lon);
           trace.push(fix);
-          // finish detection: in end region, or stopped near it
+          // finish detection: in end region, or stopped near it. GATED on the
+          // ride having actually begun — the rider must have moved a minimum
+          // distance from the start first. Without this, starting a ride within
+          // ~180m of the end region (common: out-and-back commutes, loops, or
+          // testing from home) while stationary during GPS warm-up trips the
+          // "arrived and stopped" branch after 20s, calls stop(), and freezes the
+          // whole ride (no more ticks — distance, speed, and the "GPS
+          // initialising" readout all stick at their first values).
           const dEnd = haversineLocal(fix.lat, fix.lon, endRegion.lat, endRegion.lon);
+          const distSoFar = traceDistance(trace);
+          if (!hasLeftStart && distSoFar >= FINISH_ARM_DIST_M) hasLeftStart = true;
           let finished = false;
-          if (dEnd <= endRegion.radius) finished = true;
-          else if (dEnd <= endRegion.radius * 3) {
-            const dt = (fix.t - prev.t) / 1000;
-            const speed = dt > 0 ? moved / dt : 0;
-            if (speed < 1.2) {
-              if (stoppedSince == null) stoppedSince = fix.t;
-              if ((fix.t - stoppedSince) / 1000 >= 20) finished = true;
+          if (hasLeftStart) {
+            if (dEnd <= endRegion.radius) finished = true;
+            else if (dEnd <= endRegion.radius * 3) {
+              const dt = (fix.t - prev.t) / 1000;
+              const speed = dt > 0 ? moved / dt : 0;
+              if (speed < 1.2) {
+                if (stoppedSince == null) stoppedSince = fix.t;
+                if ((fix.t - stoppedSince) / 1000 >= 20) finished = true;
+              } else stoppedSince = null;
             } else stoppedSince = null;
-          } else stoppedSince = null;
+          }
 
           if (onTick) {
             // Speed dt from the GPS fix timestamps (pos.timestamp), NOT the app
@@ -1350,6 +1470,7 @@ export function createAppController(deps = {}) {
               speedMps,                 // this-fix derived speed over the GPS interval; UI smooths
               fixT: fix.gpsT ?? fix.t,  // GPS fix timestamp for the EMA dt (falls back to app clock)
               gpsSpeedMps: fix.gpsSpeedMps, // device GPS speed if available (m/s)
+              speedAccMps: fix.speedAccMps, // device GPS speed accuracy if available (m/s), for Doppler τ
               accuracyM: fix.accuracyM, // device GPS accuracy estimate (m), or null
               lat: fix.lat, lon: fix.lon,  // fix position, for route projection
               distanceToEndM: dEnd,     // straight-line metres to the end region

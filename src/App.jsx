@@ -23,7 +23,7 @@ import { solarTimes } from "./lib/solar.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
-  needleTauMs, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
+  needleTauMs, needleTauMsFromSpeedAcc, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
@@ -751,6 +751,18 @@ function DebugReadout({ debug }) {
         </Row>
         <Row label="forecast updated">{fmtClock(debug.forecastUpdatedMs)}</Row>
         <Row label="next update">{fmtClock(debug.forecastNextUpdateMs)}</Row>
+        {(debug.rainPeakRateMmH != null || debug.rainTotalMm != null) && (
+          <>
+            <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
+            <Row label="rain peak rate">{debug.rainPeakRateMmH != null ? `${debug.rainPeakRateMmH} mm/h` : "—"}</Row>
+            <Row label="rain total">{debug.rainTotalMm != null ? `${debug.rainTotalMm} mm` : "—"}</Row>
+            <Row label="rain max prob">{debug.rainMaxProbPct != null ? `${debug.rainMaxProbPct}%` : "—"}</Row>
+            <Row label="wettest forecast">{debug.rainWettestPeakMmH != null ? `${debug.rainWettestPeakMmH} mm/h · ${debug.rainWettestTotalMm} mm` : "—"}</Row>
+            <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "2px 0 0" }}>
+              bands — rate: 0.6 / 1.75 / 3.5 mm/h · total: 0.3 / 1.25 / 3 mm (a little / wet / very). Blank below {`${10}`}% prob. Worse of rate & total wins.
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -2457,6 +2469,13 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const [expectLine, setExpectLine] = useState(null); // what-to-expect for the ride
   const [forecastSec, setForecastSec] = useState(null); // wind+learning-aware duration (leaving now), for first-km arrival
   const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
+  // ── Needle tuning A/B (dev control on the riding screen) ──────────────────
+  const [needleSource, setNeedleSource] = useState("doppler"); // "doppler" | "diff"
+  const [smoothTau, setSmoothTau] = useState(2500); // ms; scales the adaptive τ (2500 = designed baseline, scale 1.0)
+  const needleSourceRef = useRef(needleSource);
+  const smoothTauRef = useRef(smoothTau);
+  useEffect(() => { needleSourceRef.current = needleSource; }, [needleSource]);
+  useEffect(() => { smoothTauRef.current = smoothTau; }, [smoothTau]);
   const ref = useRef({});
   // EMA state (persist across ticks). `emaRef` holds the smoothed needle speed
   // (~5s) and the smoothed arrival pace (~45min), plus the last tick's distance
@@ -2507,6 +2526,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     // projection, so they self-heal after a GPS gap and never need the clamp.
     emaRef.current = {
       speedMps: 0, paceMps: null, paceSeeded: false, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null,
+      moveDistM: 0, moveSec: 0, lastSpeedAccM: null,
       lastFixT: null, lastAlongM: null, lastAccM: null,
       polyline: routePolyline(route),
     };
@@ -2519,11 +2539,12 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     controller.ridePrediction(route).then((p) => {
       setForecastSec(p && p.predictedSec ? p.predictedSec : null);
       const windWord = p && p.windWord ? p.windWord : null;
-      return controller.rideExpectation(route, windWord);
+      const timeScale = p && p.timeScale ? p.timeScale : 1;
+      return controller.rideExpectation(route, windWord, timeScale);
     }).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
     acquireWake();
     const handle = await controller.startRide(route, {
-      onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM, lat, lon }) => {
+      onTick: ({ elapsedSec, distanceM, speedMps, gpsSpeedMps, speedAccMps, fixT, accuracyM, lat, lon }) => {
         setElapsed(elapsedSec);
         const em = emaRef.current;
         const goodFix = accuracyM == null || accuracyM <= GPS_ACCURACY_GATE_M;
@@ -2548,45 +2569,73 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           // 0 is the honest prior.
           if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) {
             em.warmed = true;
-            // Anchor the average here: distance/time accumulated during GPS
-            // acquisition (before the first good fix) is noise, and dividing a few
-            // spurious metres by a near-zero elapsed reads as tens of km/h. Measure
-            // the average from the warm-up moment instead of ride start.
             em.warmDistM = distanceM;
             em.warmSec = elapsedSec;
           }
-          // Needle: the controller already derived this fix's speed over its own
-          // GPS interval (speedMps); we just smooth it with the variance-weighted
-          // EMA. τ adapts to accuracy so tight fixes are snappy, loose ones calm.
+          // ── NEEDLE SOURCE (fair A/B) ─────────────────────────────────────────
+          // Both sources now run through the IDENTICAL filter — accel clamp,
+          // sane-max, dt-capped adaptive-τ EMA — so flipping the toggle changes
+          // ONLY the instantaneous speed and which accuracy drives τ. This is the
+          // apples-to-apples test the earlier harness lacked (it showed raw Doppler
+          // vs filtered differencing).
+          //   "doppler": instMps = coords.speed; τ from VELOCITY accuracy
+          //     (coords.speedAccuracy) — the correct error signal for Doppler —
+          //     falling back to position-accuracy τ when speedAccuracy is absent.
+          //     Falls back to differencing entirely when coords.speed is null.
+          //   "diff": instMps = differenced speed; τ from POSITION accuracy.
+          // The slider scales the adaptive τ the SAME way in both modes.
+          const src = needleSourceRef.current;
+          const sliderScale = smoothTauRef.current / NEEDLE_TAU_MIN_MS; // 1.0 at the 2500ms baseline
           const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
-          if (dt > 0 && needleUsable && em.warmed) {
-            let instMps = Math.max(0, speedMps || 0);
-            if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
-            // A (jump limiter): reject a physically impossible change in speed
-            // between fixes — clamp the sample to a sane acceleration bound so a
-            // stray reading can't fling the needle; a real accel still gets there
-            // over a couple of samples.
+          const useDoppler = src === "doppler" && gpsSpeedMps != null && gpsSpeedMps >= 0;
+          if (dt > 0 && em.warmed && (useDoppler || needleUsable)) {
+            // 1) instantaneous speed sample from the chosen source
+            let instMps = useDoppler ? gpsSpeedMps : Math.max(0, speedMps || 0);
+            if (instMps > SPEED_SANE_MAX_MPS) instMps = useDoppler ? SPEED_SANE_MAX_MPS : 0;
+            // 2) acceleration clamp (source-agnostic physical bound)
             const maxDelta = NEEDLE_MAX_ACCEL_MPS2 * (dt / 1000);
             instMps = Math.max(em.speedMps - maxDelta, Math.min(em.speedMps + maxDelta, instMps));
-            // B: cap the dt used for α so one sample after a long gap can't seize
-            // the needle.
+            // 3) adaptive τ from the source-appropriate accuracy, scaled by slider
+            let baseTau;
+            if (useDoppler) {
+              baseTau = (speedAccMps != null || em.lastSpeedAccM != null)
+                ? needleTauMsFromSpeedAcc(em.lastSpeedAccM, speedAccMps)
+                : needleTauMs(em.lastAccM, accuracyM); // fallback: position accuracy
+            } else {
+              baseTau = needleTauMs(em.lastAccM, accuracyM);
+            }
+            const tau = baseTau * sliderScale;
             const dtForAlpha = Math.min(dt, NEEDLE_MAX_DT_MS);
-            em.speedMps = emaStep(em.speedMps, instMps, dtForAlpha, needleTauMs(em.lastAccM, accuracyM));
+            em.speedMps = emaStep(em.speedMps, instMps, dtForAlpha, tau);
           }
-          // Pace (arrival): fed from the same per-fix speed on any good fix.
+          // Pace (arrival): MOVING pace — fed only from fixes where the rider is
+          // actually moving (above PACE_MOVING_MIN_MPS). Time spent stopped is
+          // excluded entirely: arrival is a pace-based projection ("time to ride
+          // the remaining distance at my moving pace"), so a stop must not drag
+          // the rate down and inflate the projection for the whole remaining
+          // distance. This makes arrival mildly optimistic by however long the
+          // rider is actually stopped (unforeseeable), which is the honest stance —
+          // we have no better guess at future stops than none.
           if (dt > 0 && goodFix) {
             const instMps = Math.max(0, Math.min(SPEED_SANE_MAX_MPS, speedMps || 0));
-            if (!em.paceSeeded && distanceM >= ARRIVAL_LIVE_AFTER_M && elapsedSec > 0) {
-              em.paceMps = distanceM / elapsedSec;
-              em.paceSeeded = true;
-            } else if (em.paceSeeded) {
-              em.paceMps = emaStep(em.paceMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), PACE_EMA_TAU_MS);
+            if (instMps >= PACE_MOVING_MIN_MPS) {
+              // Accrue moving distance/time for a stop-free seed.
+              em.moveDistM = (em.moveDistM || 0) + instMps * (Math.min(dt, NEEDLE_MAX_DT_MS) / 1000);
+              em.moveSec = (em.moveSec || 0) + Math.min(dt, NEEDLE_MAX_DT_MS) / 1000;
+              if (!em.paceSeeded && em.moveDistM >= ARRIVAL_LIVE_AFTER_M && em.moveSec > 0) {
+                em.paceMps = em.moveDistM / em.moveSec; // moving-only seed
+                em.paceSeeded = true;
+              } else if (em.paceSeeded) {
+                em.paceMps = emaStep(em.paceMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), PACE_EMA_TAU_MS);
+              }
             }
+            // Below the moving threshold: contribute nothing (neither seed nor
+            // EMA), so stops don't affect moving pace.
           }
         }
 
         const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
-        if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; }
+        if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; em.lastSpeedAccM = speedAccMps; }
         if (goodFix && !proj.offRoute) em.lastAlongM = proj.alongM;
         // "GPS initialising" readout during warm-up: best (lowest) accuracy so far,
         // 8/best×100 → approaches 100 as fixes sharpen; monotonic.
@@ -2600,7 +2649,8 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           const dDist = distanceM - em.warmDistM;
           if (dSec > 0 && dDist > 0) avgKmh = (dDist / dSec) * 3.6;
         }
-        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh, initialising: !em.warmed, initPct });
+        em.tickN = (em.tickN || 0) + 1;
+        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh, initialising: !em.warmed, initPct, rawAccM: accuracyM, tickN: em.tickN });
       },
       onFinish: (r) => {
         releaseWake();
@@ -2747,11 +2797,28 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         });
         const avg = Math.round((live.avgKmh || 0) * 2) / 2;
         return (
+          <>
+          <div style={{ position: "absolute", top: 8, left: 8, right: 8, zIndex: 30, background: "rgba(0,0,0,0.72)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 12, padding: "8px 10px", fontSize: 12, color: "#fff" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <span style={{ opacity: 0.7 }}>Needle (dev):</span>
+              <button onClick={() => setNeedleSource("doppler")}
+                style={{ flex: 1, padding: "5px 6px", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 600,
+                  background: needleSource === "doppler" ? "#e0a45e" : "rgba(255,255,255,0.15)", color: needleSource === "doppler" ? "#1a1f3a" : "#fff" }}>Doppler</button>
+              <button onClick={() => setNeedleSource("diff")}
+                style={{ flex: 1, padding: "5px 6px", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 600,
+                  background: needleSource === "diff" ? "#e0a45e" : "rgba(255,255,255,0.15)", color: needleSource === "diff" ? "#1a1f3a" : "#fff" }}>Differencing</button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ opacity: 0.7, whiteSpace: "nowrap" }}>τ ×{(smoothTau / 2500).toFixed(2)}</span>
+              <input type="range" min={500} max={8000} step={250} value={smoothTau}
+                onChange={(e) => setSmoothTau(Number(e.target.value))} style={{ flex: 1 }} />
+            </div>
+          </div>
           <InstrumentPanel
             elapsed={elapsed} paused={paused} avg={avg} label={route.name}
             nowMs={nowMs} arrivalMs={arrivalMs} speedKmh={live.speedKmh}
             centerMessage={live.initialising
-              ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
+              ? { text: live.initPct != null ? `GPS init ${live.initPct}% · ${live.rawAccM != null ? live.rawAccM.toFixed(1) + "m" : "—"} · #${live.tickN || 0}` : `GPS initialising… #${live.tickN || 0}`, color: "#e0a45e" }
               : (live.offRoute && live.offRouteM != null
                 ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
                 : null)}
@@ -2761,6 +2828,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
               : <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
             caption={expectLine}
           />
+          </>
         );
       })()}
       {endConfirm && (

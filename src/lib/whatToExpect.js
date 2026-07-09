@@ -141,25 +141,61 @@ export function temperatureToken(temps) {
  * @param {number} precipPeakRate max hourly rate (mm/h) any segment touches
  * @param {number[]} precipProb   per-segment probabilities (%)
  */
-export function rainToken(precipTotalMm, precipPeakRate, precipProb) {
-  const maxProb = precipProb && precipProb.length ? Math.max(...precipProb) : 0;
-  if (maxProb < RAIN_PROB_GATE) return null;
-
-  // Each mechanism → a level index: 0 none, 1 a little wet, 2 wet, 3 very wet.
+/** Wetness level (0 none, 1 a little wet, 2 wet, 3 very wet) from the WORSE of
+ * the two mechanisms: peak hourly rate and ride total, each via its own bands.
+ * Shared by the deterministic token and the ensemble worst-case upgrade so both
+ * use identical banding. */
+export function rainLevel(precipTotalMm, precipPeakRate) {
   const levelFrom = (value, bands) => {
     if (value >= bands[2]) return 3;
     if (value >= bands[1]) return 2;
     if (value >= bands[0]) return 1;
     return 0;
   };
-  const rateLevel = levelFrom(precipPeakRate || 0, RAIN_RATE_BANDS);
-  const totalLevel = levelFrom(precipTotalMm || 0, RAIN_TOTAL_BANDS);
-  const level = Math.max(rateLevel, totalLevel); // worse of the two
-  if (level === 0) return null;
+  return Math.max(levelFrom(precipPeakRate || 0, RAIN_RATE_BANDS), levelFrom(precipTotalMm || 0, RAIN_TOTAL_BANDS));
+}
 
-  const intensity = level === 1 ? "a little wet" : level === 2 ? "wet" : "very wet";
+/** Level index → wetness word. */
+export function intensityWord(level) {
+  return level === 1 ? "a little wet" : level === 2 ? "wet" : level === 3 ? "very wet" : null;
+}
+
+export function rainToken(precipTotalMm, precipPeakRate, precipProb) {
+  const maxProb = precipProb && precipProb.length ? Math.max(...precipProb) : 0;
+  if (maxProb < RAIN_PROB_GATE) return null;
+  const level = rainLevel(precipTotalMm, precipPeakRate);
+  if (level === 0) return null;
+  const intensity = intensityWord(level);
   const maybe = maxProb < RAIN_PROB_MAYBE;
   return maybe ? `maybe ${intensity}` : intensity;
+}
+
+/**
+ * Merge the deterministic rain token with an ensemble worst-case wetness level,
+ * staying entirely within the maybe / a-little-wet / wet / very-wet vocabulary.
+ * The ensemble only ever *raises* a ceiling as a "maybe" — it never downgrades.
+ *
+ * Rules (E = ensemble worst-case level, only acts when E is WETTER than the
+ * deterministic level):
+ *   1. Deterministic already carries "maybe" → upgrade in place to the ensemble
+ *      level: "maybe wet" + E=very → "maybe very wet".
+ *   2. Deterministic is confident or blank → append a "maybe «E»" clause:
+ *      "wet" + E=very → "wet, maybe very wet"; blank + E=wet → "maybe wet".
+ *
+ * @param {string|null} detToken  deterministic rainToken output ("maybe wet", "wet", null…)
+ * @param {number} ensembleLevel  0–3 worst-case wetness from the ensemble
+ * @returns {string|null} merged rain token
+ */
+export function mergeRainWithEnsemble(detToken, ensembleLevel) {
+  if (!ensembleLevel || ensembleLevel === 0) return detToken; // nothing wetter to add
+  const detIsMaybe = !!detToken && detToken.startsWith("maybe ");
+  const detWord = detToken ? detToken.replace(/^maybe /, "") : null;
+  const detLevel = detWord === "very wet" ? 3 : detWord === "wet" ? 2 : detWord === "a little wet" ? 1 : 0;
+  if (ensembleLevel <= detLevel) return detToken; // ensemble no wetter → unchanged
+  const eWord = intensityWord(ensembleLevel);
+  if (detIsMaybe) return `maybe ${eWord}`;              // rule 1: upgrade the existing hedge
+  if (detLevel === 0) return `maybe ${eWord}`;          // rule 2 (blank): just the maybe clause
+  return `${detToken}, maybe ${eWord}`;                 // rule 2 (confident): append
 }
 
 /**
@@ -202,22 +238,26 @@ export function crosswindToken(crosswinds) {
  * the home card's head/tailwind headline isn't visible; omitted elsewhere since
  * that headline is shown separately.
  */
-export function whatToExpect({ segments, times, windFn, departMs, windWord = null }) {
+export function whatToExpect({ segments, times, windFn, departMs, windWord = null, ensembleRainLevel = 0 }) {
   const c = sampleConditions({ segments, times, windFn, departMs });
   // Deliberate priority order: temperature, then the along-route wind word
   // (headwind/tailwind — ride screen only), then wind-related conditions
   // (crosswinds, gusts), then wetness, then the rarer hazards in severity order
   // (thunderstorms, freezing rain, snow, fog).
+  // Rain: deterministic token, then merged with the ensemble worst-case (which
+  // can only raise a "maybe" ceiling, never downgrade).
+  const detRain = rainToken(c.precipTotalMm, c.precipPeakRate, c.precipProb);
+  const mergedRain = mergeRainWithEnsemble(detRain, ensembleRainLevel);
   const tokens = [
     temperatureToken(c.temps),
     windWord,
     crosswindToken(c.crosswinds),
     c.strongGust ? "strong gusts" : null,
-    rainToken(c.precipTotalMm, c.precipPeakRate, c.precipProb),
+    mergedRain,
     c.thunder ? "thunderstorms" : null,
     c.freezing ? "freezing rain" : null,
     snowToken(c.snowMaxCm, c.snowCode),
     c.fog ? "fog" : null,
   ].filter(Boolean);
-  return { tokens, line: tokens.join(" · ") };
+  return { tokens, line: tokens.join(" · "), conditions: c };
 }
