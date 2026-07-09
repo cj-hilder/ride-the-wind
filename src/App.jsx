@@ -1857,6 +1857,7 @@ const lbl = { display: "block", fontSize: 12.5, color: "rgba(255,255,255,0.6)", 
 function RouteRecorder({ controller, onCancel, onRecorded }) {
   const [state, setState] = useState("armed"); // armed | recording | blocked
   const [blocked, setBlocked] = useState(null); // gate-failure message
+  const [gpsError, setGpsError] = useState(null); // {code,message} when geolocation fails
   const [elapsed, setElapsed] = useState(0);
   const [paused, setPaused] = useState(false);
   const [live, setLive] = useState({ distanceM: 0, speedKmh: 0, avgKmh: 0 });
@@ -1899,13 +1900,15 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
   }, [state]);
 
   const begin = async () => {
-    setState("recording"); setElapsed(0); setPaused(false);
+    setState("recording"); setElapsed(0); setPaused(false); setGpsError(null);
     setLive({ distanceM: 0, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null };
     acquireWake();
     const handle = await controller.recordRoute({
+      onError: (e) => { setGpsError(e || { code: 2 }); },
       onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM }) => {
         setElapsed(elapsedSec);
+        setGpsError(null); // a fix arrived → clear any prior error (no-op if already null)
         // Needle smoothing identical to ride capture: smooth the controller's
         // per-fix speed with the variance-weighted EMA, dt measured between GPS
         // fix timestamps (not Date.now()), warm-up gate, accel jump-limiter (A)
@@ -1989,9 +1992,11 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
         <InstrumentPanel
           elapsed={elapsed} paused={paused} avg={avg}
           nowMs={nowMs} arrivalMs={null} speedKmh={live.speedKmh}
-          centerMessage={live.initialising
-            ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
-            : { text: "Recording new route", color: "#d9534f" }}
+          centerMessage={gpsError
+            ? { text: gpsError.code === 1 ? "Location permission denied" : gpsError.code === 3 ? "GPS timed out — no signal" : "GPS not available", color: "#d9534f" }
+            : (live.initialising
+              ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
+              : { text: "Recording new route", color: "#d9534f" })}
           onPause={togglePause} onFinish={finish} finishLabel="Finish"
           bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
         />
@@ -2469,6 +2474,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const [expectLine, setExpectLine] = useState(null); // what-to-expect for the ride
   const [forecastSec, setForecastSec] = useState(null); // wind+learning-aware duration (leaving now), for first-km arrival
   const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
+  const [gpsError, setGpsError] = useState(null); // {code,message} when geolocation fails
   // ── Needle tuning A/B (dev control on the riding screen) ──────────────────
   const [needleSource, setNeedleSource] = useState("doppler"); // "doppler" | "diff"
   const [smoothTau, setSmoothTau] = useState(2500); // ms; scales the adaptive τ (2500 = designed baseline, scale 1.0)
@@ -2516,7 +2522,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   // Begin recording. If GPS says we're well away from the route's start, ask
   // first — guards against accidentally recording from the wrong place.
   const beginRecording = async () => {
-    setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0);
+    setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0); setGpsError(null);
     setLive({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     // Needle speed seeds at 0 (rider stationary). Arrival pace is dormant (null)
     // and seeded at the 1 km along-route mark with the average speed so far, then
@@ -2546,6 +2552,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     const handle = await controller.startRide(route, {
       onTick: ({ elapsedSec, distanceM, speedMps, gpsSpeedMps, speedAccMps, fixT, accuracyM, lat, lon }) => {
         setElapsed(elapsedSec);
+        setGpsError(null); // a fix arrived → clear any prior error (no-op if already null)
         const em = emaRef.current;
         const goodFix = accuracyM == null || accuracyM <= GPS_ACCURACY_GATE_M;
 
@@ -2656,6 +2663,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         setResult({ actualSec: r.actualSec, distance: r.distanceM, startedAt: r.startedAt, endedAt: r.endedAt, pausedSec: r.pausedSec || 0, forecastWind: r.forecastWind });
         setState("done");
       },
+      onError: (e) => { setGpsError(e || { code: 2 }); },
     }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); });
     ref.current = { handle };
   };
@@ -2816,11 +2824,13 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           <InstrumentPanel
             elapsed={elapsed} paused={paused} avg={avg} label={route.name}
             nowMs={nowMs} arrivalMs={arrivalMs} speedKmh={live.speedKmh}
-            centerMessage={live.initialising
-              ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
-              : (live.offRoute && live.offRouteM != null
-                ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
-                : null)}
+            centerMessage={gpsError
+              ? { text: gpsError.code === 1 ? "Location permission denied" : gpsError.code === 3 ? "GPS timed out — no signal" : "GPS not available", color: "#d9534f" }
+              : (live.initialising
+                ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
+                : (live.offRoute && live.offRouteM != null
+                  ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
+                  : null))}
             onPause={togglePause} onFinish={finishNow}
             bottom={totalM
               ? <ProgressBar travelledM={alongM} totalM={totalM} />

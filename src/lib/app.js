@@ -1128,7 +1128,7 @@ export function createAppController(deps = {}) {
    * with manualFinish(). Pause is supported (excluded from actualSec). The trace
    * is kept RAW here; denoising/gating happens at route construction.
    */
-  async function recordRoute({ onTick, geo } = {}) {
+  async function recordRoute({ onTick, onError, geo } = {}) {
     const geoApi = geo || (typeof navigator !== "undefined" ? navigator.geolocation : null);
     if (!geoApi) throw new Error("Geolocation unavailable.");
     const startedAt = now();
@@ -1162,7 +1162,12 @@ export function createAppController(deps = {}) {
         }
         prev = fix;
       },
-      () => {},
+      (err) => {
+        // Surface geolocation errors (denied / unavailable / timeout) instead of
+        // swallowing them — otherwise recording on a device with no GPS hangs on
+        // "GPS initialising" forever. code: 1=denied, 2=unavailable, 3=timeout.
+        if (onError) onError({ code: err && err.code, message: err && err.message });
+      },
       { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
     );
 
@@ -1391,7 +1396,7 @@ export function createAppController(deps = {}) {
     return whatToExpect({ segments: route.segments, times, windFn, departMs: now(), windWord });
   }
 
-  async function startRide(route, { onTick, onFinish, geo } = {}) {
+  async function startRide(route, { onTick, onFinish, onError, geo } = {}) {
     const geoApi = geo || (typeof navigator !== "undefined" ? navigator.geolocation : null);
     if (!geoApi) throw new Error("Geolocation unavailable.");
 
@@ -1482,7 +1487,13 @@ export function createAppController(deps = {}) {
         }
         prev = fix;
       },
-      () => {},
+      (err) => {
+        // Geolocation error (permission denied, position unavailable, timeout).
+        // Previously swallowed — which left the UI stuck on "GPS initialising"
+        // forever on a device with no GPS or with permission denied. Surface it so
+        // the screen can say so. code: 1=denied, 2=unavailable, 3=timeout.
+        if (onError) onError({ code: err && err.code, message: err && err.message });
+      },
       { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
     );
 
