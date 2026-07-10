@@ -244,6 +244,49 @@ console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRec
   handle.manualFinish();
   ok('recordRoute produced a trace', recorded && recorded.trace.length === 150, `${recorded && recorded.trace.length}`);
 
+  // Geolocation error must be surfaced via onError (previously swallowed → the UI
+  // hung on "GPS initialising" on a device with no GPS / denied permission).
+  {
+    let errCb = null;
+    const geoErr = { watchPosition: (_s, e) => { errCb = e; return 9; }, clearWatch: () => {} };
+    let gotErr = null;
+    await gApp.recordRoute({ geo: geoErr, onError: (e) => { gotErr = e; } });
+    errCb && errCb({ code: 1, message: "User denied Geolocation" });
+    ok('recordRoute surfaces geolocation error', gotErr && gotErr.code === 1, JSON.stringify(gotErr));
+  }
+
+  // REGRESSION: startRide must NOT finish while the rider is stationary near the
+  // end region during GPS warm-up before actually setting off. Starting a ride
+  // within ~180m of its own end (out-and-back / loop / testing from home) used to
+  // trip finish-detection after 20s, call stop(), and freeze the whole ride.
+  {
+    const er = route.endRegion;
+    let cbR = null;
+    const geoR = { watchPosition: (s) => { cbR = s; return 7; }, clearWatch: () => {} };
+    let finishedEarly = false, ticks = 0;
+    await gApp.startRide(route, {
+      geo: geoR,
+      onTick: () => { ticks++; },
+      onFinish: () => { finishedEarly = true; },
+    });
+    // Emit ~30 stationary fixes AT the end region (>20s of "stopped near end").
+    const base = 1_700_000_000_000;
+    for (let i = 0; i < 30; i++) {
+      cbR({ coords: { latitude: er.lat, longitude: er.lon, accuracy: 6 }, timestamp: base + i * 1000 });
+    }
+    ok('stationary-at-end during warm-up does NOT finish', finishedEarly === false, `finished=${finishedEarly}`);
+    ok('ticks keep flowing (not frozen)', ticks >= 25, `ticks=${ticks}`);
+  }
+  // startRide must also surface geolocation errors via onError.
+  {
+    let errCb = null;
+    const geoErr = { watchPosition: (_s, e) => { errCb = e; return 8; }, clearWatch: () => {} };
+    let gotErr = null;
+    await gApp.startRide(route, { geo: geoErr, onTick: () => {}, onError: (e) => { gotErr = e; } });
+    errCb && errCb({ code: 2, message: "Position unavailable" });
+    ok('startRide surfaces geolocation error', gotErr && gotErr.code === 2, JSON.stringify(gotErr));
+  }
+
   // GPS-timestamp timing: if fixes carry pos.timestamp, the derived speed must
   // use the GPS interval, not the (possibly batched/late) callback clock. Here
   // the callback clock advances 5000 ms per fix (as if delivered in a slow batch)

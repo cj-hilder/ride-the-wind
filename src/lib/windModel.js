@@ -353,7 +353,7 @@ export async function fetchEnsemble(lat, lon, opts = {}) {
 
   const url =
     `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${lat}&longitude=${lon}` +
-    `&hourly=wind_speed_10m,wind_direction_10m` +
+    `&hourly=wind_speed_10m,wind_direction_10m,precipitation` +
     `&models=${model}&wind_speed_unit=kmh&timeformat=unixtime&past_days=${pastDays}&forecast_days=${forecastDays}`;
 
   const res = await f(url);
@@ -383,9 +383,13 @@ export function parseEnsemble(data) {
     const speeds = h[sk];
     const dirs = h[dk];
     if (!Array.isArray(speeds) || !Array.isArray(dirs)) continue;
+    const precip = h["precipitation" + suffix]; // may be absent
     const series = [];
     for (let i = 0; i < times.length; i++) {
-      series.push({ time: times[i] * 1000, speed: speeds[i], fromDeg: dirs[i] });
+      series.push({
+        time: times[i] * 1000, speed: speeds[i], fromDeg: dirs[i],
+        precipMm: Array.isArray(precip) ? precip[i] : null,
+      });
     }
     series.sort((a, b) => a.time - b.time);
     members.push(series);

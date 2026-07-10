@@ -1,4 +1,4 @@
-import { temperatureToken, rainToken, snowToken, crosswindToken, whatToExpect, sampleConditions } from './src/lib/whatToExpect.js';
+import { temperatureToken, rainToken, snowToken, crosswindToken, whatToExpect, sampleConditions, mergeRainWithEnsemble, rainLevel } from './src/lib/whatToExpect.js';
 let pass=0,fail=0;
 const ok=(n,c,d='')=>{ c?(pass++,console.log(`  PASS  ${n}`)):(fail++,console.log(`  FAIL  ${n}  ${d}`)); };
 
@@ -18,14 +18,15 @@ ok('total 1.25 → wet', rainToken(1.25,0,[80])==='wet');
 ok('total just under 1.25 → a little wet', rainToken(1.24,0,[80])==='a little wet');
 ok('total 3 → very wet', rainToken(3,0,[80])==='very wet');
 ok('total just under 3 → wet', rainToken(2.9,0,[80])==='wet');
-ok('total just under 0.3 → blank', rainToken(0.29,0,[80])===null);
-// rate-driven levels (tiny total so rate dominates). Bands 0.6/1.75/3.5.
-ok('rate 0.6 → a little wet', rainToken(0,0.6,[80])==='a little wet');
+ok('total 0.1 → a little wet', rainToken(0.1,0,[80])==='a little wet');
+ok('total just under 0.1 → blank', rainToken(0.09,0,[80])===null);
+// rate-driven levels (tiny total so rate dominates). Bands 0.1/1.75/3.5.
+ok('rate 0.1 → a little wet', rainToken(0,0.1,[80])==='a little wet');
 ok('rate 1.75 → wet', rainToken(0,1.75,[80])==='wet');
 ok('rate just under 1.75 → a little wet', rainToken(0,1.74,[80])==='a little wet');
 ok('rate 3.5 → very wet', rainToken(0,3.5,[80])==='very wet');
 ok('rate just under 3.5 → wet', rainToken(0,3.4,[80])==='wet');
-ok('rate just under 0.6 → blank', rainToken(0,0.59,[80])===null);
+ok('rate just under 0.1 → blank', rainToken(0,0.09,[80])===null);
 // worse-of: short intense shower — small total, high rate → graded on rate
 ok('15-min 3mm/h shower (total 0.75) → wet via rate', rainToken(0.75,3,[80])==='wet', rainToken(0.75,3,[80]));
 // worse-of: long gentle drizzle — rate below floor, total modest → a little wet
@@ -73,6 +74,14 @@ console.log('\nAssembly:');
   const windFn2=()=>({speed:5,fromDeg:90,tempC:14,precipMm:0,precipProb:0});
   const r2=whatToExpect({segments:segs,times,windFn:windFn2,departMs:0});
   ok('calm dry -> temp only', r2.line==='14°C', r2.line);
+  // Rain exposure scales with time in the rain: a headwind that lengthens the
+  // ride (longer segment times) accumulates more total mm. Light rain rate but
+  // long exposure should escalate the wetness vs. the same rate over less time.
+  const rainFn=()=>({speed:5,fromDeg:90,tempC:14,precipMm:1.0,precipProb:80}); // 1.0 mm/h (rate → a little wet), calm
+  const shortRide=whatToExpect({segments:segs,times:[600,600],windFn:rainFn,departMs:0}); // 20 min → total ~0.33 mm
+  const longRide=whatToExpect({segments:segs,times:[2700,2700],windFn:rainFn,departMs:0}); // 90 min → total ~1.5 mm (wet via total)
+  const wetRank=(l)=>l.includes('very wet')?3:l.includes('a little wet')?1:l.includes('wet')?2:0;
+  ok('longer exposure → more rain (higher total)', wetRank(longRide.line) > wetRank(shortRide.line), `short "${shortRide.line}" long "${longRide.line}"`);
   // windWord inserted after temperature, before alerts (ride screen)
   const rw=whatToExpect({segments:segs,times,windFn,departMs:0,windWord:'headwind'});
   ok('windWord inserted after temp, before alerts', rw.line==='3°C · headwind · crosswinds · wet', rw.line);
@@ -149,6 +158,29 @@ console.log('\nStrong gusts (absolute ≥50 AND gust−sustained ≥15):');
   // present at ANY segment
   let n=0; const partial=()=>({speed:30,fromDeg:90,tempC:10,precipMm:0,precipProb:0,snowfallCm:0,weatherCode:1,gustKmh:(n++ ? 60 : 20)});
   ok('strong gust on any segment flags it', tok(partial).includes('strong gusts'));
+}
+
+console.log('\nEnsemble rain merge:');
+{
+  // Rule 1: deterministic already "maybe" → upgrade in place to ensemble level.
+  ok('maybe wet + E=very → maybe very wet', mergeRainWithEnsemble('maybe wet', 3) === 'maybe very wet', mergeRainWithEnsemble('maybe wet', 3));
+  ok('maybe a little wet + E=wet → maybe wet', mergeRainWithEnsemble('maybe a little wet', 2) === 'maybe wet', mergeRainWithEnsemble('maybe a little wet', 2));
+  // Rule 2: confident deterministic → append "maybe «E»".
+  ok('wet + E=very → wet, maybe very wet', mergeRainWithEnsemble('wet', 3) === 'wet, maybe very wet', mergeRainWithEnsemble('wet', 3));
+  ok('a little wet + E=very → a little wet, maybe very wet', mergeRainWithEnsemble('a little wet', 3) === 'a little wet, maybe very wet');
+  // Rule 2 blank: just the maybe clause.
+  ok('blank + E=wet → maybe wet', mergeRainWithEnsemble(null, 2) === 'maybe wet', mergeRainWithEnsemble(null, 2));
+  ok('blank + E=a little → maybe a little wet', mergeRainWithEnsemble(null, 1) === 'maybe a little wet');
+  // No downgrade / no change when ensemble is not wetter.
+  ok('ensemble drier than det → unchanged (confident)', mergeRainWithEnsemble('wet', 1) === 'wet');
+  ok('ensemble equal to det → unchanged (maybe)', mergeRainWithEnsemble('maybe wet', 2) === 'maybe wet');
+  ok('ensemble 0 → unchanged', mergeRainWithEnsemble('wet', 0) === 'wet');
+  ok('blank + E=0 → stays blank (null)', mergeRainWithEnsemble(null, 0) === null);
+  // rainLevel banding sanity (shared with deterministic token).
+  ok('rainLevel: 2.0 mm/h peak → wet (rate band)', rainLevel(0, 2.0) === 2);
+  ok('rainLevel: 1.5 mm total → wet (total band)', rainLevel(1.5, 0) === 2);
+  ok('rainLevel: trivial (<0.1) → 0', rainLevel(0.05, 0.05) === 0);
+  ok('rainLevel: 0.1 total → a little wet (1)', rainLevel(0.1, 0) === 1);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

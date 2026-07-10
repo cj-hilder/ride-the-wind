@@ -23,7 +23,7 @@ import { solarTimes } from "./lib/solar.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
-  needleTauMs, PACE_EMA_TAU_MS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
+  needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
@@ -751,6 +751,17 @@ function DebugReadout({ debug }) {
         </Row>
         <Row label="forecast updated">{fmtClock(debug.forecastUpdatedMs)}</Row>
         <Row label="next update">{fmtClock(debug.forecastNextUpdateMs)}</Row>
+        {(debug.rainPeakRateMmH != null || debug.rainTotalMm != null) && (
+          <>
+            <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
+            <Row label="rain peak rate · total">{debug.rainPeakRateMmH != null ? `${debug.rainPeakRateMmH} mm/h · ${debug.rainTotalMm} mm` : "—"}</Row>
+            <Row label="rain max prob">{debug.rainMaxProbPct != null ? `${debug.rainMaxProbPct}%` : "—"}</Row>
+            <Row label="wettest forecast">{debug.rainWettestPeakMmH != null ? `${debug.rainWettestPeakMmH} mm/h · ${debug.rainWettestTotalMm} mm` : "—"}</Row>
+            <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "2px 0 0" }}>
+              bands — rate: 0.1 / 1.75 / 3.5 mm/h · total: 0.1 / 1.25 / 3 mm (a little / wet / very).
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1774,6 +1785,19 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
           learned={tuning.learned} example={tuning.example}
           autoSplit={autoSplit} />
 
+        {/* Split-off: which value to keep. Sits right below the split control that
+            triggered it, above Apply/Cancel — not at the bottom of the card. */}
+        {collapseAsk && (
+          <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 12, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.18)" }}>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", marginBottom: 10 }}>Keep which ground effect setting for both directions?</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => resolveCollapse("head")} style={backupBtn}>Headwind</button>
+              <button onClick={() => resolveCollapse("tail")} style={backupBtn}>Tailwind</button>
+              <button onClick={() => setCollapseAsk(null)} style={{ ...backupBtn, flex: 0.6 }}>Cancel</button>
+            </div>
+          </div>
+        )}
+
         {/* Apply / Cancel sit above View rides. Apply persists but does NOT
             close the editor (close by tapping the chip, opening another route,
             or switching tab). Both disable until the next change. */}
@@ -1801,18 +1825,6 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
           </>
         )}
       </div>
-
-      {/* Split-off: which value to keep */}
-      {collapseAsk && (
-        <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 12, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.18)" }}>
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", marginBottom: 10 }}>Keep which ground effect setting for both directions?</div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => resolveCollapse("head")} style={backupBtn}>Headwind</button>
-            <button onClick={() => resolveCollapse("tail")} style={backupBtn}>Tailwind</button>
-            <button onClick={() => setCollapseAsk(null)} style={{ ...backupBtn, flex: 0.6 }}>Cancel</button>
-          </div>
-        </div>
-      )}
 
       {/* Delete route entirely (disabled for the ephemeral example) */}
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
@@ -1845,6 +1857,7 @@ const lbl = { display: "block", fontSize: 12.5, color: "rgba(255,255,255,0.6)", 
 function RouteRecorder({ controller, onCancel, onRecorded }) {
   const [state, setState] = useState("armed"); // armed | recording | blocked
   const [blocked, setBlocked] = useState(null); // gate-failure message
+  const [gpsError, setGpsError] = useState(null); // {code,message} when geolocation fails
   const [elapsed, setElapsed] = useState(0);
   const [paused, setPaused] = useState(false);
   const [live, setLive] = useState({ distanceM: 0, speedKmh: 0, avgKmh: 0 });
@@ -1887,13 +1900,15 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
   }, [state]);
 
   const begin = async () => {
-    setState("recording"); setElapsed(0); setPaused(false);
+    setState("recording"); setElapsed(0); setPaused(false); setGpsError(null);
     setLive({ distanceM: 0, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null };
     acquireWake();
     const handle = await controller.recordRoute({
+      onError: (e) => { setGpsError(e || { code: 2 }); },
       onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM }) => {
         setElapsed(elapsedSec);
+        setGpsError(null); // a fix arrived → clear any prior error (no-op if already null)
         // Needle smoothing identical to ride capture: smooth the controller's
         // per-fix speed with the variance-weighted EMA, dt measured between GPS
         // fix timestamps (not Date.now()), warm-up gate, accel jump-limiter (A)
@@ -1977,9 +1992,11 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
         <InstrumentPanel
           elapsed={elapsed} paused={paused} avg={avg}
           nowMs={nowMs} arrivalMs={null} speedKmh={live.speedKmh}
-          centerMessage={live.initialising
-            ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
-            : { text: "Recording new route", color: "#d9534f" }}
+          centerMessage={gpsError
+            ? { text: gpsError.code === 1 ? "Location permission denied" : gpsError.code === 3 ? "GPS timed out — no signal" : "GPS not available", color: "#d9534f" }
+            : (live.initialising
+              ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
+              : { text: "Recording new route", color: "#d9534f" })}
           onPause={togglePause} onFinish={finish} finishLabel="Finish"
           bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
         />
@@ -2457,6 +2474,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const [expectLine, setExpectLine] = useState(null); // what-to-expect for the ride
   const [forecastSec, setForecastSec] = useState(null); // wind+learning-aware duration (leaving now), for first-km arrival
   const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
+  const [gpsError, setGpsError] = useState(null); // {code,message} when geolocation fails
   const ref = useRef({});
   // EMA state (persist across ticks). `emaRef` holds the smoothed needle speed
   // (~5s) and the smoothed arrival pace (~45min), plus the last tick's distance
@@ -2497,7 +2515,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   // Begin recording. If GPS says we're well away from the route's start, ask
   // first — guards against accidentally recording from the wrong place.
   const beginRecording = async () => {
-    setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0);
+    setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0); setGpsError(null);
     setLive({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     // Needle speed seeds at 0 (rider stationary). Arrival pace is dormant (null)
     // and seeded at the 1 km along-route mark with the average speed so far, then
@@ -2507,6 +2525,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     // projection, so they self-heal after a GPS gap and never need the clamp.
     emaRef.current = {
       speedMps: 0, paceMps: null, paceSeeded: false, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null,
+      moveDistM: 0, moveSec: 0, lastSpeedAccM: null,
       lastFixT: null, lastAlongM: null, lastAccM: null,
       polyline: routePolyline(route),
     };
@@ -2519,12 +2538,14 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     controller.ridePrediction(route).then((p) => {
       setForecastSec(p && p.predictedSec ? p.predictedSec : null);
       const windWord = p && p.windWord ? p.windWord : null;
-      return controller.rideExpectation(route, windWord);
+      const timeScale = p && p.timeScale ? p.timeScale : 1;
+      return controller.rideExpectation(route, windWord, timeScale);
     }).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
     acquireWake();
     const handle = await controller.startRide(route, {
-      onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM, lat, lon }) => {
+      onTick: ({ elapsedSec, distanceM, speedMps, gpsSpeedMps, speedAccMps, fixT, accuracyM, lat, lon }) => {
         setElapsed(elapsedSec);
+        setGpsError(null); // a fix arrived → clear any prior error (no-op if already null)
         const em = emaRef.current;
         const goodFix = accuracyM == null || accuracyM <= GPS_ACCURACY_GATE_M;
 
@@ -2548,45 +2569,67 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           // 0 is the honest prior.
           if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) {
             em.warmed = true;
-            // Anchor the average here: distance/time accumulated during GPS
-            // acquisition (before the first good fix) is noise, and dividing a few
-            // spurious metres by a near-zero elapsed reads as tens of km/h. Measure
-            // the average from the warm-up moment instead of ride start.
             em.warmDistM = distanceM;
             em.warmSec = elapsedSec;
           }
-          // Needle: the controller already derived this fix's speed over its own
-          // GPS interval (speedMps); we just smooth it with the variance-weighted
-          // EMA. τ adapts to accuracy so tight fixes are snappy, loose ones calm.
+          // ── NEEDLE ───────────────────────────────────────────────────────────
+          // Doppler primary: coords.speed (the GNSS chip's own Doppler velocity)
+          // is a cleaner signal than differencing positions — road-tested to give
+          // smaller residual swings at the same filtering. We fall back to
+          // position-differencing only when coords.speed is null (indoors, first
+          // fixes after lock, some device/browser combos).
+          // Both paths share the SAME filter: sane-max, acceleration clamp, and a
+          // dt-capped adaptive-τ EMA. τ is driven by the source-appropriate
+          // accuracy — VELOCITY accuracy (coords.speedAccuracy) for Doppler,
+          // POSITION accuracy for differencing — and scaled by NEEDLE_TAU_SCALE
+          // (1.20: the road-tested balance of responsiveness vs damping).
           const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
-          if (dt > 0 && needleUsable && em.warmed) {
-            let instMps = Math.max(0, speedMps || 0);
-            if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
-            // A (jump limiter): reject a physically impossible change in speed
-            // between fixes — clamp the sample to a sane acceleration bound so a
-            // stray reading can't fling the needle; a real accel still gets there
-            // over a couple of samples.
+          const useDoppler = gpsSpeedMps != null && gpsSpeedMps >= 0;
+          if (dt > 0 && em.warmed && (useDoppler || needleUsable)) {
+            // 1) instantaneous speed sample
+            let instMps = useDoppler ? gpsSpeedMps : Math.max(0, speedMps || 0);
+            if (instMps > SPEED_SANE_MAX_MPS) instMps = useDoppler ? SPEED_SANE_MAX_MPS : 0;
+            // 2) acceleration clamp (source-agnostic physical bound)
             const maxDelta = NEEDLE_MAX_ACCEL_MPS2 * (dt / 1000);
             instMps = Math.max(em.speedMps - maxDelta, Math.min(em.speedMps + maxDelta, instMps));
-            // B: cap the dt used for α so one sample after a long gap can't seize
-            // the needle.
+            // 3) adaptive τ from the source-appropriate accuracy, ×NEEDLE_TAU_SCALE
+            const baseTau = useDoppler
+              ? ((speedAccMps != null || em.lastSpeedAccM != null)
+                  ? needleTauMsFromSpeedAcc(em.lastSpeedAccM, speedAccMps)
+                  : needleTauMs(em.lastAccM, accuracyM)) // fallback: position accuracy
+              : needleTauMs(em.lastAccM, accuracyM);
+            const tau = baseTau * NEEDLE_TAU_SCALE;
             const dtForAlpha = Math.min(dt, NEEDLE_MAX_DT_MS);
-            em.speedMps = emaStep(em.speedMps, instMps, dtForAlpha, needleTauMs(em.lastAccM, accuracyM));
+            em.speedMps = emaStep(em.speedMps, instMps, dtForAlpha, tau);
           }
-          // Pace (arrival): fed from the same per-fix speed on any good fix.
+          // Pace (arrival): MOVING pace — fed only from fixes where the rider is
+          // actually moving (above PACE_MOVING_MIN_MPS). Time spent stopped is
+          // excluded entirely: arrival is a pace-based projection ("time to ride
+          // the remaining distance at my moving pace"), so a stop must not drag
+          // the rate down and inflate the projection for the whole remaining
+          // distance. This makes arrival mildly optimistic by however long the
+          // rider is actually stopped (unforeseeable), which is the honest stance —
+          // we have no better guess at future stops than none.
           if (dt > 0 && goodFix) {
             const instMps = Math.max(0, Math.min(SPEED_SANE_MAX_MPS, speedMps || 0));
-            if (!em.paceSeeded && distanceM >= ARRIVAL_LIVE_AFTER_M && elapsedSec > 0) {
-              em.paceMps = distanceM / elapsedSec;
-              em.paceSeeded = true;
-            } else if (em.paceSeeded) {
-              em.paceMps = emaStep(em.paceMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), PACE_EMA_TAU_MS);
+            if (instMps >= PACE_MOVING_MIN_MPS) {
+              // Accrue moving distance/time for a stop-free seed.
+              em.moveDistM = (em.moveDistM || 0) + instMps * (Math.min(dt, NEEDLE_MAX_DT_MS) / 1000);
+              em.moveSec = (em.moveSec || 0) + Math.min(dt, NEEDLE_MAX_DT_MS) / 1000;
+              if (!em.paceSeeded && em.moveDistM >= ARRIVAL_LIVE_AFTER_M && em.moveSec > 0) {
+                em.paceMps = em.moveDistM / em.moveSec; // moving-only seed
+                em.paceSeeded = true;
+              } else if (em.paceSeeded) {
+                em.paceMps = emaStep(em.paceMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), PACE_EMA_TAU_MS);
+              }
             }
+            // Below the moving threshold: contribute nothing (neither seed nor
+            // EMA), so stops don't affect moving pace.
           }
         }
 
         const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
-        if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; }
+        if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; em.lastSpeedAccM = speedAccMps; }
         if (goodFix && !proj.offRoute) em.lastAlongM = proj.alongM;
         // "GPS initialising" readout during warm-up: best (lowest) accuracy so far,
         // 8/best×100 → approaches 100 as fixes sharpen; monotonic.
@@ -2607,6 +2650,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         setResult({ actualSec: r.actualSec, distance: r.distanceM, startedAt: r.startedAt, endedAt: r.endedAt, pausedSec: r.pausedSec || 0, forecastWind: r.forecastWind });
         setState("done");
       },
+      onError: (e) => { setGpsError(e || { code: 2 }); },
     }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); });
     ref.current = { handle };
   };
@@ -2750,11 +2794,13 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           <InstrumentPanel
             elapsed={elapsed} paused={paused} avg={avg} label={route.name}
             nowMs={nowMs} arrivalMs={arrivalMs} speedKmh={live.speedKmh}
-            centerMessage={live.initialising
-              ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
-              : (live.offRoute && live.offRouteM != null
-                ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
-                : null)}
+            centerMessage={gpsError
+              ? { text: gpsError.code === 1 ? "Location permission denied" : gpsError.code === 3 ? "GPS timed out — no signal" : "GPS not available", color: "#d9534f" }
+              : (live.initialising
+                ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
+                : (live.offRoute && live.offRouteM != null
+                  ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
+                  : null))}
             onPause={togglePause} onFinish={finishNow}
             bottom={totalM
               ? <ProgressBar travelledM={alongM} totalM={totalM} />
