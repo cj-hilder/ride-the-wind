@@ -18,14 +18,15 @@ ok('total 1.25 → wet', rainToken(1.25,0,[80])==='wet');
 ok('total just under 1.25 → a little wet', rainToken(1.24,0,[80])==='a little wet');
 ok('total 3 → very wet', rainToken(3,0,[80])==='very wet');
 ok('total just under 3 → wet', rainToken(2.9,0,[80])==='wet');
-ok('total just under 0.3 → blank', rainToken(0.29,0,[80])===null);
-// rate-driven levels (tiny total so rate dominates). Bands 0.6/1.75/3.5.
-ok('rate 0.6 → a little wet', rainToken(0,0.6,[80])==='a little wet');
+ok('total 0.1 → a little wet', rainToken(0.1,0,[80])==='a little wet');
+ok('total just under 0.1 → blank', rainToken(0.09,0,[80])===null);
+// rate-driven levels (tiny total so rate dominates). Bands 0.1/1.75/3.5.
+ok('rate 0.1 → a little wet', rainToken(0,0.1,[80])==='a little wet');
 ok('rate 1.75 → wet', rainToken(0,1.75,[80])==='wet');
 ok('rate just under 1.75 → a little wet', rainToken(0,1.74,[80])==='a little wet');
 ok('rate 3.5 → very wet', rainToken(0,3.5,[80])==='very wet');
 ok('rate just under 3.5 → wet', rainToken(0,3.4,[80])==='wet');
-ok('rate just under 0.6 → blank', rainToken(0,0.59,[80])===null);
+ok('rate just under 0.1 → blank', rainToken(0,0.09,[80])===null);
 // worse-of: short intense shower — small total, high rate → graded on rate
 ok('15-min 3mm/h shower (total 0.75) → wet via rate', rainToken(0.75,3,[80])==='wet', rainToken(0.75,3,[80]));
 // worse-of: long gentle drizzle — rate below floor, total modest → a little wet
@@ -178,7 +179,8 @@ console.log('\nEnsemble rain merge:');
   // rainLevel banding sanity (shared with deterministic token).
   ok('rainLevel: 2.0 mm/h peak → wet (rate band)', rainLevel(0, 2.0) === 2);
   ok('rainLevel: 1.5 mm total → wet (total band)', rainLevel(1.5, 0) === 2);
-  ok('rainLevel: trivial → 0', rainLevel(0.1, 0.2) === 0);
+  ok('rainLevel: trivial (<0.1) → 0', rainLevel(0.05, 0.05) === 0);
+  ok('rainLevel: 0.1 total → a little wet (1)', rainLevel(0.1, 0) === 1);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

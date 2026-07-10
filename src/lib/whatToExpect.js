@@ -31,8 +31,8 @@ export const TEMP_HOT_C = 26; // at/above this, show the max not the min
 //   - Ride total (mm): the sustained soak, accumulated over the actual ride.
 export const RAIN_PROB_GATE = 10;   // %, below which rain stays blank
 export const RAIN_PROB_MAYBE = 50;  // %, 10–50 → "maybe <x>"; ≥50 → "<x>"
-export const RAIN_RATE_BANDS = [0.6, 1.75, 3.5]; // mm/h peak: a little / wet / very
-export const RAIN_TOTAL_BANDS = [0.3, 1.25, 3]; // mm total: a little / wet / very
+export const RAIN_RATE_BANDS = [0.1, 1.75, 3.5]; // mm/h peak: a little / wet / very
+export const RAIN_TOTAL_BANDS = [0.1, 1.25, 3]; // mm total: a little / wet / very
 export const CROSSWIND_BANDS = [15, 30]; // km/h: crosswinds / strong
 // Snow is a cm/HOUR rate. Any settling snow matters for traction/visibility, so
 // the bar is low. Intensity-labelled (no "maybe": the deterministic feed carries

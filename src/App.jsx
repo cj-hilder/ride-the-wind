@@ -23,7 +23,7 @@ import { solarTimes } from "./lib/solar.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
-  needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_MIN_MS, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
+  needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 
@@ -754,12 +754,11 @@ function DebugReadout({ debug }) {
         {(debug.rainPeakRateMmH != null || debug.rainTotalMm != null) && (
           <>
             <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
-            <Row label="rain peak rate">{debug.rainPeakRateMmH != null ? `${debug.rainPeakRateMmH} mm/h` : "—"}</Row>
-            <Row label="rain total">{debug.rainTotalMm != null ? `${debug.rainTotalMm} mm` : "—"}</Row>
+            <Row label="rain peak rate · total">{debug.rainPeakRateMmH != null ? `${debug.rainPeakRateMmH} mm/h · ${debug.rainTotalMm} mm` : "—"}</Row>
             <Row label="rain max prob">{debug.rainMaxProbPct != null ? `${debug.rainMaxProbPct}%` : "—"}</Row>
             <Row label="wettest forecast">{debug.rainWettestPeakMmH != null ? `${debug.rainWettestPeakMmH} mm/h · ${debug.rainWettestTotalMm} mm` : "—"}</Row>
             <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "2px 0 0" }}>
-              bands — rate: 0.6 / 1.75 / 3.5 mm/h · total: 0.3 / 1.25 / 3 mm (a little / wet / very). Blank below {`${10}`}% prob. Worse of rate & total wins.
+              bands — rate: 0.1 / 1.75 / 3.5 mm/h · total: 0.1 / 1.25 / 3 mm (a little / wet / very).
             </div>
           </>
         )}
@@ -1786,6 +1785,19 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
           learned={tuning.learned} example={tuning.example}
           autoSplit={autoSplit} />
 
+        {/* Split-off: which value to keep. Sits right below the split control that
+            triggered it, above Apply/Cancel — not at the bottom of the card. */}
+        {collapseAsk && (
+          <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 12, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.18)" }}>
+            <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", marginBottom: 10 }}>Keep which ground effect setting for both directions?</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => resolveCollapse("head")} style={backupBtn}>Headwind</button>
+              <button onClick={() => resolveCollapse("tail")} style={backupBtn}>Tailwind</button>
+              <button onClick={() => setCollapseAsk(null)} style={{ ...backupBtn, flex: 0.6 }}>Cancel</button>
+            </div>
+          </div>
+        )}
+
         {/* Apply / Cancel sit above View rides. Apply persists but does NOT
             close the editor (close by tapping the chip, opening another route,
             or switching tab). Both disable until the next change. */}
@@ -1813,18 +1825,6 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
           </>
         )}
       </div>
-
-      {/* Split-off: which value to keep */}
-      {collapseAsk && (
-        <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 12, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.18)" }}>
-          <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", marginBottom: 10 }}>Keep which ground effect setting for both directions?</div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => resolveCollapse("head")} style={backupBtn}>Headwind</button>
-            <button onClick={() => resolveCollapse("tail")} style={backupBtn}>Tailwind</button>
-            <button onClick={() => setCollapseAsk(null)} style={{ ...backupBtn, flex: 0.6 }}>Cancel</button>
-          </div>
-        </div>
-      )}
 
       {/* Delete route entirely (disabled for the ephemeral example) */}
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
@@ -2475,13 +2475,6 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const [forecastSec, setForecastSec] = useState(null); // wind+learning-aware duration (leaving now), for first-km arrival
   const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
   const [gpsError, setGpsError] = useState(null); // {code,message} when geolocation fails
-  // ── Needle tuning A/B (dev control on the riding screen) ──────────────────
-  const [needleSource, setNeedleSource] = useState("doppler"); // "doppler" | "diff"
-  const [smoothTau, setSmoothTau] = useState(2500); // ms; scales the adaptive τ (2500 = designed baseline, scale 1.0)
-  const needleSourceRef = useRef(needleSource);
-  const smoothTauRef = useRef(smoothTau);
-  useEffect(() => { needleSourceRef.current = needleSource; }, [needleSource]);
-  useEffect(() => { smoothTauRef.current = smoothTau; }, [smoothTau]);
   const ref = useRef({});
   // EMA state (persist across ticks). `emaRef` holds the smoothed needle speed
   // (~5s) and the smoothed arrival pace (~45min), plus the last tick's distance
@@ -2579,39 +2572,33 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
             em.warmDistM = distanceM;
             em.warmSec = elapsedSec;
           }
-          // ── NEEDLE SOURCE (fair A/B) ─────────────────────────────────────────
-          // Both sources now run through the IDENTICAL filter — accel clamp,
-          // sane-max, dt-capped adaptive-τ EMA — so flipping the toggle changes
-          // ONLY the instantaneous speed and which accuracy drives τ. This is the
-          // apples-to-apples test the earlier harness lacked (it showed raw Doppler
-          // vs filtered differencing).
-          //   "doppler": instMps = coords.speed; τ from VELOCITY accuracy
-          //     (coords.speedAccuracy) — the correct error signal for Doppler —
-          //     falling back to position-accuracy τ when speedAccuracy is absent.
-          //     Falls back to differencing entirely when coords.speed is null.
-          //   "diff": instMps = differenced speed; τ from POSITION accuracy.
-          // The slider scales the adaptive τ the SAME way in both modes.
-          const src = needleSourceRef.current;
-          const sliderScale = smoothTauRef.current / NEEDLE_TAU_MIN_MS; // 1.0 at the 2500ms baseline
+          // ── NEEDLE ───────────────────────────────────────────────────────────
+          // Doppler primary: coords.speed (the GNSS chip's own Doppler velocity)
+          // is a cleaner signal than differencing positions — road-tested to give
+          // smaller residual swings at the same filtering. We fall back to
+          // position-differencing only when coords.speed is null (indoors, first
+          // fixes after lock, some device/browser combos).
+          // Both paths share the SAME filter: sane-max, acceleration clamp, and a
+          // dt-capped adaptive-τ EMA. τ is driven by the source-appropriate
+          // accuracy — VELOCITY accuracy (coords.speedAccuracy) for Doppler,
+          // POSITION accuracy for differencing — and scaled by NEEDLE_TAU_SCALE
+          // (1.20: the road-tested balance of responsiveness vs damping).
           const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
-          const useDoppler = src === "doppler" && gpsSpeedMps != null && gpsSpeedMps >= 0;
+          const useDoppler = gpsSpeedMps != null && gpsSpeedMps >= 0;
           if (dt > 0 && em.warmed && (useDoppler || needleUsable)) {
-            // 1) instantaneous speed sample from the chosen source
+            // 1) instantaneous speed sample
             let instMps = useDoppler ? gpsSpeedMps : Math.max(0, speedMps || 0);
             if (instMps > SPEED_SANE_MAX_MPS) instMps = useDoppler ? SPEED_SANE_MAX_MPS : 0;
             // 2) acceleration clamp (source-agnostic physical bound)
             const maxDelta = NEEDLE_MAX_ACCEL_MPS2 * (dt / 1000);
             instMps = Math.max(em.speedMps - maxDelta, Math.min(em.speedMps + maxDelta, instMps));
-            // 3) adaptive τ from the source-appropriate accuracy, scaled by slider
-            let baseTau;
-            if (useDoppler) {
-              baseTau = (speedAccMps != null || em.lastSpeedAccM != null)
-                ? needleTauMsFromSpeedAcc(em.lastSpeedAccM, speedAccMps)
-                : needleTauMs(em.lastAccM, accuracyM); // fallback: position accuracy
-            } else {
-              baseTau = needleTauMs(em.lastAccM, accuracyM);
-            }
-            const tau = baseTau * sliderScale;
+            // 3) adaptive τ from the source-appropriate accuracy, ×NEEDLE_TAU_SCALE
+            const baseTau = useDoppler
+              ? ((speedAccMps != null || em.lastSpeedAccM != null)
+                  ? needleTauMsFromSpeedAcc(em.lastSpeedAccM, speedAccMps)
+                  : needleTauMs(em.lastAccM, accuracyM)) // fallback: position accuracy
+              : needleTauMs(em.lastAccM, accuracyM);
+            const tau = baseTau * NEEDLE_TAU_SCALE;
             const dtForAlpha = Math.min(dt, NEEDLE_MAX_DT_MS);
             em.speedMps = emaStep(em.speedMps, instMps, dtForAlpha, tau);
           }
@@ -2804,23 +2791,6 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         });
         const avg = Math.round((live.avgKmh || 0) * 2) / 2;
         return (
-          <>
-          <div style={{ position: "absolute", top: 8, left: 8, right: 8, zIndex: 30, background: "rgba(0,0,0,0.72)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 12, padding: "8px 10px", fontSize: 12, color: "#fff" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-              <span style={{ opacity: 0.7 }}>Needle (dev):</span>
-              <button onClick={() => setNeedleSource("doppler")}
-                style={{ flex: 1, padding: "5px 6px", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 600,
-                  background: needleSource === "doppler" ? "#e0a45e" : "rgba(255,255,255,0.15)", color: needleSource === "doppler" ? "#1a1f3a" : "#fff" }}>Doppler</button>
-              <button onClick={() => setNeedleSource("diff")}
-                style={{ flex: 1, padding: "5px 6px", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 600,
-                  background: needleSource === "diff" ? "#e0a45e" : "rgba(255,255,255,0.15)", color: needleSource === "diff" ? "#1a1f3a" : "#fff" }}>Differencing</button>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ opacity: 0.7, whiteSpace: "nowrap" }}>τ ×{(smoothTau / 2500).toFixed(2)}</span>
-              <input type="range" min={500} max={8000} step={250} value={smoothTau}
-                onChange={(e) => setSmoothTau(Number(e.target.value))} style={{ flex: 1 }} />
-            </div>
-          </div>
           <InstrumentPanel
             elapsed={elapsed} paused={paused} avg={avg} label={route.name}
             nowMs={nowMs} arrivalMs={arrivalMs} speedKmh={live.speedKmh}
@@ -2837,7 +2807,6 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
               : <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
             caption={expectLine}
           />
-          </>
         );
       })()}
       {endConfirm && (

@@ -313,15 +313,21 @@ stylistically matching the clock:
   Needle **pegs at 40** if exceeded (cycling rarely sustains more; a pegged
   needle reads fine).
 
-**2c-data. Speed derivation.** Current speed is **derived from successive GPS
-fixes** (not `coords.speed`, which proved jumpier). Each fix's speed sample is
-only as trustworthy as its reported **accuracy** — a sample from two ±30 m fixes
-has a huge speed error (tens of km/h over a ~1 s interval), which is why a raw
-needle dances even when stationary. So the needle EMA is **variance-weighted**:
-its time constant τ adapts per sample from the two fixes' accuracies
-(`needleTauMs`, τ ∝ acc_prev² + acc_now², clamped) — a tight fix (≈ reference
-accuracy) snaps the needle, a loose one barely nudges it (dozens of samples to
-converge). The needle additionally CSS-transitions for a classic-car glide.
+**2c-data. Speed derivation.** Current speed is **primarily the GNSS chip's own
+Doppler velocity** (`coords.speed`) — road-tested (with identical filtering on
+both) to give smaller residual swings than differencing positions, consistent
+with the GNSS literature (Doppler is a cleaner observable than differencing two
+noisy position solutions). It **falls back to position-differencing** when
+`coords.speed` is null (indoors, first fixes after lock, some device/browser
+combos). Both paths share the same filter. Each sample is only as trustworthy as
+its reported **accuracy**, so the needle EMA is **variance-weighted**: τ adapts
+per sample from the relevant accuracies — **velocity** accuracy
+(`coords.speedAccuracy`, `needleTauMsFromSpeedAcc`) for the Doppler path, and
+**position** accuracy (`needleTauMs`, τ ∝ acc_prev² + acc_now², clamped) for the
+differencing path — a tight fix (≈ reference accuracy) snaps the needle, a loose
+one barely nudges it. The adaptive τ is scaled by `NEEDLE_TAU_SCALE` (1.20, the
+road-tested balance of responsiveness vs damping). The needle additionally
+CSS-transitions for a classic-car glide.
 Per-sample speeds above a sane cycling max (~70 km/h) are rejected as GPS
 artefacts, and truly garbage fixes (accuracy worse than a hard cutoff) are
 dropped entirely. Further guards prevent spikes from irregular fix delivery and

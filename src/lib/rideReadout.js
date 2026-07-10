@@ -34,6 +34,8 @@ export const NEEDLE_TAU_MIN_MS = 2500;       // floor τ for an excellent fix �
                                              // differenced speedo has an irreducible ±1–2 km/h wander; this
                                              // trades a little needle lag for a steadier read)
 export const NEEDLE_TAU_MAX_MS = 40000;      // ceiling τ for a poor fix (≈ dozens of samples to converge)
+export const NEEDLE_TAU_SCALE = 1.20;        // multiplier on the adaptive τ — road-tested balance of
+                                             // responsiveness vs damping for the Doppler-primary needle
 export const GPS_ACCURACY_HARD_M = 50;       // above this a fix is still dropped for the needle (garbage)
 export const NEEDLE_WARMUP_ACC_M = 8;        // needle stays at 0 until the first fix at least this accurate
                                              // (kills GPS-acquisition spikes in the first few seconds)
