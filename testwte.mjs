@@ -1,4 +1,5 @@
 import { temperatureToken, rainToken, snowToken, crosswindToken, whatToExpect, sampleConditions, mergeRainWithEnsemble, rainLevel } from './src/lib/whatToExpect.js';
+import { setFormatSettings, DEFAULT_UNITS } from './src/lib/format.js';
 let pass=0,fail=0;
 const ok=(n,c,d='')=>{ c?(pass++,console.log(`  PASS  ${n}`)):(fail++,console.log(`  FAIL  ${n}  ${d}`)); };
 
@@ -7,6 +8,12 @@ ok('min when all mild', temperatureToken([8,6,9,7])==='6°C', temperatureToken([
 ok('max when hot (>=26)', temperatureToken([22,27,24])==='27°C', temperatureToken([22,27,24]));
 ok('rounds to integer', temperatureToken([4.4,4.6])==='4°C', temperatureToken([4.4,4.6]));
 ok('null when empty', temperatureToken([])===null);
+// Temperature token honours the °C/°F setting via the format seam. Selection
+// (min, or max when ≥26°C) stays in canonical °C; only rendering converts.
+setFormatSettings({ temp: 'f' });
+ok('°F conversion (6°C→43°F)', temperatureToken([8,6,9,7])==='43°F', temperatureToken([8,6,9,7]));
+ok('°F hot picks max (27°C→81°F)', temperatureToken([22,27,24])==='81°F', temperatureToken([22,27,24]));
+setFormatSettings(DEFAULT_UNITS); // restore default for the rest of the suite
 
 console.log('\nRain (worse-of {peak rate mm/h, total mm}; "maybe" by probability):');
 // rainToken(totalMm, peakRateMmH, probArray)

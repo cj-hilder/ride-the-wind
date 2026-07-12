@@ -38,6 +38,7 @@ import {
   speedFromBaseline,
 } from "./prediction.js";
 import { whatToExpect, rainLevel } from "./whatToExpect.js";
+import { formatTimeOfDay } from "./format.js";
 import {
   Store,
   MemoryBackend,
@@ -53,8 +54,10 @@ function compass16(deg) {
 
 // Local HH:MM (24h) formatter, device local time.
 function hhmm(ms) {
-  const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  // Delegates to the display format seam so every verdict time (departure,
+  // arrival, earliest/latest, normal) respects the 12/24-hour setting in one
+  // place. Falls back to a bare 24h render if ms is invalid.
+  return formatTimeOfDay(ms) || "";
 }
 
 // Clamp the conservatism percentile to a sane band (50–99); guards against a

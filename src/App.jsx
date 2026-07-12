@@ -26,6 +26,8 @@ import {
   needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
+import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, rainfallValue, rainfallUnitLabel, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel } from "./lib/format.js";
+import { RAIN_RATE_BANDS, RAIN_TOTAL_BANDS } from "./lib/whatToExpect.js";
 
 /* Error boundary around the active screen. A render error in one screen (e.g. a
  * transient bad shape during a forecast refresh) must NOT tear down the whole
@@ -99,7 +101,7 @@ const skyForRide = (startRegion, departureMs, predictedSec) => {
   return skyFor(midpointMs, solar);
 };
 const ACCENT = { headwind: "#5b8fc7", tailwind: "#e0a45e", normal: "#9aa7b0" };
-const fmtMin = (sec) => `${Math.round(sec / 60)} min`;
+const fmtMin = (sec) => formatElapsed(sec);
 
 // "Uncertainty allowance" slider speaks 0–100% (how much of the forecast spread to
 // apply); the model wants a percentile in 50–99. 0% → 50 (median, no margin),
@@ -133,8 +135,8 @@ function windEffectPhrase(we, light = false) {
   const WIND_FLOOR = 7.5; // km/h
   const fast = we.fastMin, slow = we.slowMin, likely = we.likelyMin;
   const ride = fast === slow
-    ? `ride for ${likely} mins`
-    : `ride for ${fast} to ${slow} mins (likely ${likely} mins)`;
+    ? `ride for ${formatElapsed(likely * 60)}`
+    : `ride for ${formatElapsed(fast * 60)} to ${formatElapsed(slow * 60)} (likely ${formatElapsed(likely * 60)})`;
   if (we.direction === "calm") {
     // "No wind" only when the forecast wind is genuinely slight; if there's a
     // real wind that simply has little net along-route effect, say so instead.
@@ -221,6 +223,8 @@ export default function App() {
   const activeRouteIdRef = useRef(null);
   useEffect(() => { activeRouteIdRef.current = activeRouteId; }, [activeRouteId]);
   const [showHelp, setShowHelp] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [displayUnits, setDisplayUnits] = useState(DEFAULT_UNITS);
   const [nowTick, setNowTick] = useState(Date.now()); // drives the Plan day strip; bumped on midnight rollover
   const [forecastGen, setForecastGen] = useState(0); // bumped whenever routes/forecasts refresh, so Plan recomputes in place
 
@@ -229,6 +233,25 @@ export default function App() {
     controller.store.getSetting("helpSeen", false).then((seen) => {
       if (!seen) setShowHelp(true);
     });
+  }, [controller]);
+
+  // Load display-unit preferences at startup and prime the format seam so every
+  // formatter reflects them immediately (option B: module-level snapshot).
+  useEffect(() => {
+    controller.store.getSetting("displayUnits", null).then((u) => {
+      const merged = { ...DEFAULT_UNITS, ...(u || {}) };
+      setFormatSettings(merged);
+      setDisplayUnits(merged);
+    });
+  }, [controller]);
+
+  // Persist a display-unit change and re-prime the seam.
+  const changeUnits = useCallback(async (next) => {
+    const merged = { ...DEFAULT_UNITS, ...next };
+    setFormatSettings(merged);
+    setDisplayUnits(merged);
+    setForecastGen((g) => g + 1); // nudge a re-render so visible values reformat
+    await controller.store.setSetting("displayUnits", merged);
   }, [controller]);
 
   const acceptHelp = useCallback(async () => {
@@ -332,6 +355,7 @@ export default function App() {
             onChanged={refresh}
             onAddNew={() => setScreen("setup")}
             onHelp={() => setShowHelp(true)}
+            onSettings={() => setShowSettings(true)}
           />
         ) : screen === "setup" ? (
           <Setup controller={controller}
@@ -348,6 +372,7 @@ export default function App() {
       {!recording && <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} />}
 
       {showHelp && <HelpPanel onClose={acceptHelp} />}
+      {showSettings && <SettingsPanel units={displayUnits} onChange={changeUnits} onClose={() => setShowSettings(false)} />}
     </div>
   );
 }
@@ -530,10 +555,7 @@ function ExplorePicker({ timeMode, current, hasOverride, canGoNow, onApply, onGo
         See this ride at a different time — {label.toLowerCase()}:
       </div>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <input type="time" value={t} onChange={(e) => setT(e.target.value)} style={{
-          flex: 1, padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.2)",
-          background: "rgba(255,255,255,0.08)", color: "#fff", fontFamily: "inherit", fontSize: 15,
-        }} />
+        <TimeField value={t} onChange={setT} style={{ flex: 1 }} />
         <button onClick={() => t && onApply(t)} style={{
           padding: "10px 16px", borderRadius: 10, border: "none", cursor: "pointer",
           fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a",
@@ -613,7 +635,7 @@ function PlanBody({ verdict, dayVerdict, fetching, routeLon, accent, showDebug, 
               display: "inline-flex", alignItems: "center", gap: 5,
             }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-              {exploredHHMM ? `custom · ${isDepart ? "leave" : "arrive by"} ${exploredHHMM}` : "Explore"}
+              {exploredHHMM ? `custom · ${isDepart ? "leave" : "arrive by"} ${formatClockString(exploredHHMM)}` : "Explore"}
             </button>
           </div>
           {showExplore && (
@@ -675,7 +697,7 @@ function PlanBody({ verdict, dayVerdict, fetching, routeLon, accent, showDebug, 
         background: "rgba(255,255,255,0.1)", backdropFilter: "blur(14px)", border: "1px solid rgba(255,255,255,0.16)",
       }}>
         <RowLine label="Still-air baseline" value={fmtMin(verdict.baselineSec)} />
-        <RowLine label="Wind allowance" value={`${verdict.deltaMin > 0 ? "+" : ""}${verdict.deltaMin} min`} color={accent} />
+        <RowLine label="Wind allowance" value={`${verdict.deltaMin > 0 ? "+" : verdict.deltaMin < 0 ? "−" : ""}${formatElapsed(Math.abs(verdict.deltaMin) * 60)}`} color={accent} />
         <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <ConfidenceDots confidence={confidence} />
           {verdict.kHead != null && verdict.kTail != null ? (
@@ -701,11 +723,7 @@ function PlanBody({ verdict, dayVerdict, fetching, routeLon, accent, showDebug, 
 /* Tech info panel for the Plan detail — a tidy, labelled readout of the
  * forecast figures behind the prediction. */
 function DebugReadout({ debug }) {
-  const fmtClock = (ms) => {
-    if (ms == null) return "—";
-    const d = new Date(ms);
-    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  };
+  const fmtClock = (ms) => (ms == null ? "—" : formatTimeOfDay(ms));
   const Row = ({ label, children }) => (
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "3px 0" }}>
       <span style={{ color: "rgba(255,255,255,0.5)" }}>{label}</span>
@@ -727,20 +745,20 @@ function DebugReadout({ debug }) {
         background: "rgba(224,164,94,0.14)", border: "1px solid rgba(224,164,94,0.3)",
         color: "#f0d8a8", fontWeight: 600,
       }}>
-        wind: {debug.windSpeedKmh} km/h {debug.windFromLabel} ({debug.windFromDeg}°)
+        wind: {formatWindSpeed(debug.windSpeedKmh)} {debug.windFromLabel} ({debug.windFromDeg}°)
       </div>
       <div style={{ padding: "2px 12px 10px" }}>
         <Row label="route avg bearing">{debug.avgBearingDeg}°</Row>
-        <Row label="mean headwind">{debug.meanHeadwindKmh} km/h ({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</Row>
+        <Row label="mean headwind">{formatWindSpeed(debug.meanHeadwindKmh)} ({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</Row>
         {debug.effortHeadwindKmh != null && (
-          <Row label="effort headwind">{debug.effortHeadwindKmh} km/h</Row>
+          <Row label="effort headwind">{formatWindSpeed(debug.effortHeadwindKmh)}</Row>
         )}
         {debug.effortHeadwindKmh != null && (
           <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "0 0 4px" }}>
             Wind resistance grows with speed², so uneven wind slows you more than the mean suggests — effort captures that.
           </div>
         )}
-        <Row label="mean crosswind">{debug.meanCrosswindKmh} km/h</Row>
+        <Row label="mean crosswind">{formatWindSpeed(debug.meanCrosswindKmh)}</Row>
         <Row label="wind factor">{debug.windFactor} ({debug.windFactor >= 0 ? "slows" : "speeds"})</Row>
         <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
         <Row label="wind tuning">
@@ -754,11 +772,11 @@ function DebugReadout({ debug }) {
         {(debug.rainPeakRateMmH != null || debug.rainTotalMm != null) && (
           <>
             <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
-            <Row label="rain peak rate · total">{debug.rainPeakRateMmH != null ? `${debug.rainPeakRateMmH} mm/h · ${debug.rainTotalMm} mm` : "—"}</Row>
+            <Row label="rain peak rate · total">{debug.rainPeakRateMmH != null ? `${formatRainfall(debug.rainPeakRateMmH, undefined, { rate: true })} · ${formatRainfall(debug.rainTotalMm)}` : "—"}</Row>
             <Row label="rain max prob">{debug.rainMaxProbPct != null ? `${debug.rainMaxProbPct}%` : "—"}</Row>
-            <Row label="wettest forecast">{debug.rainWettestPeakMmH != null ? `${debug.rainWettestPeakMmH} mm/h · ${debug.rainWettestTotalMm} mm` : "—"}</Row>
+            <Row label="wettest forecast">{debug.rainWettestPeakMmH != null ? `${formatRainfall(debug.rainWettestPeakMmH, undefined, { rate: true })} · ${formatRainfall(debug.rainWettestTotalMm)}` : "—"}</Row>
             <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "2px 0 0" }}>
-              bands — rate: 0.1 / 1.75 / 3.5 mm/h · total: 0.1 / 1.25 / 3 mm (a little / wet / very).
+              bands — rate: {RAIN_RATE_BANDS.map((b) => rainfallValue(b)).join(" / ")} {rainfallUnitLabel(undefined, { rate: true })} · total: {RAIN_TOTAL_BANDS.map((b) => rainfallValue(b)).join(" / ")} {rainfallUnitLabel()} (a little / wet / very).
             </div>
           </>
         )}
@@ -772,7 +790,7 @@ function DebugReadout({ debug }) {
  * ========================================================================== */
 const DAY_CODES = [["MO", "M"], ["TU", "T"], ["WE", "W"], ["TH", "T"], ["FR", "F"], ["SA", "S"], ["SU", "S"]];
 
-function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
+function Routes({ controller, routes, onChanged, onAddNew, onHelp, onSettings }) {
   const [editing, setEditing] = useState(null); // route id being edited
   const [conservatism, setConservatism] = useState(75); // % uncertainty allowance (5% steps)
   const fileRef = useRef();
@@ -922,11 +940,11 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                     <span style={{ fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{route.name}</span>
                     <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)" }}>
-                      {(route.totalDistance / 1000).toFixed(1)} km
+                      {formatDistance(route.totalDistance / 1000)}
                     </span>
                   </div>
                   <div style={{ display: "flex", gap: 12, marginTop: 6, fontSize: 12.5, color: "rgba(255,255,255,0.6)" }}>
-                    <span>{route.timeMode === "depart" ? "depart" : "arrive"} {route.targetArrival}</span>
+                    <span>{route.timeMode === "depart" ? "depart" : "arrive"} {formatClockString(route.targetArrival)}</span>
                     <span>·</span>
                     <span>{route.activeDays.length} days/wk</span>
                     <span>·</span>
@@ -962,7 +980,10 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp }) {
       </div>
 
       <div style={{ padding: "22px 22px 0" }}>
-        <button onClick={onHelp} style={{ ...backupBtn, width: "100%" }}>Help &amp; getting started</button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onHelp} style={{ ...backupBtn }}>Help</button>
+          <button onClick={onSettings} style={{ ...backupBtn }}>Settings</button>
+        </div>
         <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginTop: 14, lineHeight: 1.5, textAlign: "center" }}>
           Ride the Wind · free &amp; open source (MIT) · by Chris Hilder
         </div>
@@ -1079,6 +1100,104 @@ function ModePill({ mode, onChange, disabled }) {
   );
 }
 
+/* ============================================================================
+ * SettingsPanel — display units & formatting. Full-screen overlay (sibling to
+ * HelpPanel). Each row is a labelled segmented control; a live preview line at
+ * the top reflects the current (tentative) selection. Changes are applied live
+ * via onChange (which persists + re-primes the format seam).
+ * ========================================================================== */
+function SettingsPanel({ units, onChange, onClose }) {
+  const u = { ...DEFAULT_UNITS, ...(units || {}) };
+  const set = (key, value) => onChange({ ...u, [key]: value });
+
+  // Preview, split into two explicit lines. Order mirrors the controls below so
+  // each sample maps to its toggle. Line 1: ride metrics; line 2: weather values.
+  // Decimal separator has no sample of its own; it shows through every number.
+  const previewLine1 = [
+    formatElapsed(90 * 60, u),
+    formatDistance(5.2, u),
+    formatRideSpeed(24, u),
+    formatWindSpeed(18, u),
+  ].join("  ·  ");
+  const previewLine2 = [
+    formatTemperature(12, u),
+    formatRainfall(1.2, u, { rate: true }),
+  ].join("  ·  ");
+
+  const label = { fontSize: 13.5, color: "rgba(255,255,255,0.8)", fontWeight: 600 };
+  const row = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "13px 0", borderBottom: "1px solid rgba(255,255,255,0.08)" };
+
+  return (
+    <div style={{
+      position: "absolute", inset: 0, zIndex: 50, display: "flex", flexDirection: "column",
+      background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff",
+    }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "calc(28px + env(safe-area-inset-top)) 24px 20px" }}>
+        <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600, marginBottom: 16 }}>Settings</div>
+
+        {/* Live preview */}
+        <div style={{ padding: "12px 14px", borderRadius: 12, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.14)", marginBottom: 18 }}>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: "rgba(255,255,255,0.4)", marginBottom: 6 }}>Preview</div>
+          <div style={{ fontSize: 14, color: "rgba(255,255,255,0.9)", lineHeight: 1.6 }}>{previewLine1}</div>
+          <div style={{ fontSize: 14, color: "rgba(255,255,255,0.9)", lineHeight: 1.6 }}>{previewLine2}</div>
+        </div>
+
+        <div style={row}>
+          <span style={label}>Duration</span>
+          <Segmented value={u.duration} onChange={(v) => set("duration", v)} options={[["min", "90 min"], ["hrmin", "1 hr 30"], ["colon", "1:30"]]} />
+        </div>
+        <div style={row}>
+          <span style={label}>Distance</span>
+          <Segmented value={u.distance} onChange={(v) => set("distance", v)} options={[["km", "km"], ["mi", "mi"]]} />
+        </div>
+        <div style={row}>
+          <span style={label}>Ride speed</span>
+          <Segmented value={u.rideSpeed} onChange={(v) => set("rideSpeed", v)} options={[["kmh", "km/h"], ["mph", "mph"]]} />
+        </div>
+        <div style={row}>
+          <span style={label}>Wind speed</span>
+          <Segmented value={u.windSpeed} onChange={(v) => set("windSpeed", v)} options={[["kmh", "km/h"], ["mph", "mph"], ["kt", "kt"]]} />
+        </div>
+        <div style={row}>
+          <span style={label}>Temperature</span>
+          <Segmented value={u.temp} onChange={(v) => set("temp", v)} options={[["c", "°C"], ["f", "°F"]]} />
+        </div>
+        <div style={row}>
+          <span style={label}>Rainfall</span>
+          <Segmented value={u.rainfall} onChange={(v) => set("rainfall", v)} options={[["mm", "mm"], ["in", "in"]]} />
+        </div>
+        <div style={{ ...row, borderBottom: "none" }}>
+          <span style={label}>Decimal separator</span>
+          <Segmented value={u.decimal} onChange={(v) => set("decimal", v)} options={[["dot", "1.5"], ["comma", "1,5"]]} />
+        </div>
+      </div>
+
+      <div style={{ padding: "12px 24px calc(16px + env(safe-area-inset-bottom))", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+        <button onClick={onClose} style={{
+          width: "100%", padding: 13, borderRadius: 12, border: "none", cursor: "pointer",
+          fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a",
+        }}>Done</button>
+      </div>
+    </div>
+  );
+}
+
+/* Generic segmented control (2–3 options), ModePill visual style. options is an
+ * array of [value, label] pairs. */
+function Segmented({ value, onChange, options }) {
+  return (
+    <span style={{ display: "inline-flex", padding: 2, borderRadius: 9, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}>
+      {options.map(([v, lbl]) => (
+        <button key={v} onClick={() => onChange(v)} style={{
+          padding: "4px 11px", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: 600, border: "none",
+          background: value === v ? "rgba(224,164,94,0.9)" : "transparent",
+          color: value === v ? "#1a1f3a" : "rgba(255,255,255,0.5)",
+        }}>{lbl}</button>
+      ))}
+    </span>
+  );
+}
+
 /* Status line under a control: what the quantity is currently using. */
 function SourceNote({ mode, source, rides }) {
   let text;
@@ -1099,7 +1218,6 @@ function SourceNote({ mode, source, rides }) {
 function TerrainControls({ distanceM, value, onChange, modes, onModeChange, learned, example, autoSplit }) {
   const speedKmh = value.speedKmh;
   const baselineSec = distanceM / (speedKmh / 3.6);
-  const baselineMin = Math.round(baselineSec / 60);
 
   // Is each control read-only? Only when Learn is actively serving a learned
   // value for that quantity.
@@ -1107,7 +1225,16 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
   const headLearned = modes.kMode === "learn" && learned && learned.kHeadSource === "learned";
   const tailLearned = modes.kMode === "learn" && learned && learned.kTailSource === "learned";
 
-  const setSpeed = (kmh) => { if (baseLearned) return; onChange({ ...value, speedKmh: Math.max(1, Math.min(50, Math.round(kmh * 2) / 2)) }); };
+  // Baseline speed is stored canonical (km/h) but shown/stepped in the ride-speed
+  // unit. Work in display units for the +/- logic (0.5 step, converted bounds),
+  // then convert once to canonical on commit — never re-derive from a rounded
+  // display, so mph↔km/h round-tripping doesn't drift. (Canonical bounds 1–50 km/h.)
+  const setSpeedDisplay = (nextDisplay) => {
+    if (baseLearned) return;
+    const b = rideSpeedBounds(1, 50);
+    const clamped = Math.max(b.min, Math.min(b.max, Math.round(nextDisplay * 2) / 2));
+    onChange({ ...value, speedKmh: rideSpeedToCanonicalKmh(clamped) });
+  };
   const setK = (which, k) => {
     const kk = kClampUI(k);
     if (value.split) onChange({ ...value, [which]: kk });
@@ -1119,8 +1246,11 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
   // must not pin k — that desynced the slider on revert.)
   const headK = headLearned ? learned.kHead : value.kHead;
   const tailK = tailLearned ? learned.kTail : value.kTail;
-  const dispSpeed = baseLearned ? learned.speedKmh : speedKmh;
-  const dispBaselineMin = baseLearned ? Math.round(learned.baselineSec / 60) : baselineMin;
+  const dispKmh = baseLearned ? learned.speedKmh : speedKmh;
+  const dispSpeed = canonicalKmhToRideSpeed(dispKmh); // shown/stepped in ride-speed unit
+  const speedStep = rideSpeedStep();
+  const speedUnit = rideSpeedUnitLabel();
+  const dispBaselineSec = baseLearned ? learned.baselineSec : baselineSec;
 
   return (
     <div>
@@ -1129,15 +1259,15 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
         <ModePill mode={modes.baselineMode} onChange={(m) => onModeChange("baselineMode", m)} />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, opacity: baseLearned ? 0.85 : 1 }}>
-        <button onClick={() => setSpeed(dispSpeed - 0.5)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="slower">−</button>
+        <button onClick={() => setSpeedDisplay(dispSpeed - speedStep)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="slower">−</button>
         <div style={{ flex: 1, textAlign: "center" }}>
           <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{Number.isInteger(dispSpeed) ? dispSpeed : dispSpeed.toFixed(1)}</span>
-          <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}> km/h</span>
+          <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}> {speedUnit}</span>
         </div>
-        <button onClick={() => setSpeed(dispSpeed + 0.5)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="faster">+</button>
+        <button onClick={() => setSpeedDisplay(dispSpeed + speedStep)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="faster">+</button>
       </div>
       <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)" }}>
-        Still-air ride time: <b style={{ color: "rgba(255,255,255,0.85)" }}>{dispBaselineMin} min</b>
+        Still-air ride time: <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatElapsed(dispBaselineSec)}</b>
       </div>
       <SourceNote mode={modes.baselineMode} source={learned ? learned.baselineSource : "slider"} rides={learned ? learned.ridesBaseline : 0} />
 
@@ -1193,9 +1323,9 @@ function TerrainSlider({ title, k, baselineSec, readOnly, sign, showBoth, exampl
   // the route's mean bearing (headward) or its opposite (tailward).
   const hf = example ? example.headFactor : 1;
   const tf = example ? example.tailFactor : -1;
-  const headT = Math.round((baselineSec * (1 + shownK * hf)) / 60);
-  const tailT = Math.round((baselineSec * (1 + shownK * tf)) / 60);
-  const oneT = sign === -1 ? tailT : headT;
+  const headSec = baselineSec * (1 + shownK * hf);
+  const tailSec = baselineSec * (1 + shownK * tf);
+  const oneSec = sign === -1 ? tailSec : headSec;
   const headLabel = example ? example.headBearingLabel : "";
   const tailLabel = example ? example.tailBearingLabel : "";
   const dirLabel = showBoth
@@ -1225,10 +1355,10 @@ function TerrainSlider({ title, k, baselineSec, readOnly, sign, showBoth, exampl
       </div>
       <SourceNote mode={mode} source={source} rides={rides} />
       <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 6, lineHeight: 1.4 }}>
-        <span style={{ color: "rgba(255,255,255,0.45)" }}>example ride, steady 20 km/h wind from {dirLabel}</span><br />
+        <span style={{ color: "rgba(255,255,255,0.45)" }}>example ride, steady {exampleWindLabel()} wind from {dirLabel}</span><br />
         {showBoth
-          ? <>headwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{headT} min</b> / tailwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{tailT} min</b></>
-          : <>{sign === -1 ? "tailwind" : "headwind"} <b style={{ color: "rgba(255,255,255,0.85)" }}>{oneT} min</b></>}
+          ? <>headwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatElapsed(headSec)}</b> / tailwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatElapsed(tailSec)}</b></>
+          : <>{sign === -1 ? "tailwind" : "headwind"} <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatElapsed(oneSec)}</b></>}
       </div>
     </div>
   );
@@ -1254,13 +1384,18 @@ const fmtRideDate = (ms) => {
   const d = new Date(ms);
   return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 };
-const fmtRideTime = (ms) => {
-  const d = new Date(ms);
-  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-};
-const fmtLen = (sec) => {
-  const m = Math.round(sec / 60);
-  return `${m} min`;
+// Time-of-day and duration go through the shared format seam so ride-log times
+// match the rest of the app exactly (system clock format; duration setting).
+const fmtRideTime = (ms) => formatTimeOfDay(ms);
+const fmtLen = (sec) => formatElapsed(sec);
+/** Stopwatch/elapsed clock (keeps SECONDS, unlike the duration seam). Under 1 h:
+ * "M:SS"; at 1 h or more: "H:MM:SS" (zero-padded m & s) so a value like 92:15 is
+ * never ambiguous between 92 min and 92 h. */
+const fmtStopwatch = (s) => {
+  const t = Math.max(0, Math.floor(s));
+  const hh = Math.floor(t / 3600), mm = Math.floor((t % 3600) / 60), ss = t % 60;
+  const p2 = (n) => String(n).padStart(2, "0");
+  return hh > 0 ? `${hh}:${p2(mm)}:${p2(ss)}` : `${mm}:${p2(ss)}`;
 };
 const CLASS_COLOR = { windy: "#e0a45e", gentle: "rgba(255,255,255,0.45)", still: "rgba(140,190,255,0.85)" };
 
@@ -1433,8 +1568,6 @@ function ManualRideEntry({ route, controller, onClose, onAdded }) {
     return mins > 0 ? mins : null;
   })();
 
-  const field = { width: "100%", padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: 16, fontFamily: "inherit" };
-
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "grid", placeItems: "center", background: "rgba(8,10,22,0.7)", padding: 24 }}>
       <div style={{ maxWidth: 340, width: "100%", padding: "20px 20px", borderRadius: 16, background: "#1d1b38", border: "1px solid rgba(255,255,255,0.18)" }}>
@@ -1444,13 +1577,13 @@ function ManualRideEntry({ route, controller, onClose, onAdded }) {
         </div>
         <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
           <label style={{ flex: 1, fontSize: 12, color: "rgba(255,255,255,0.55)" }}>Start
-            <input type="time" value={start} onChange={(e) => setStart(e.target.value)} style={{ ...field, marginTop: 4 }} />
+            <TimeField value={start} onChange={setStart} style={{ marginTop: 4 }} />
           </label>
           <label style={{ flex: 1, fontSize: 12, color: "rgba(255,255,255,0.55)" }}>Finish
-            <input type="time" value={finish} onChange={(e) => setFinish(e.target.value)} style={{ ...field, marginTop: 4 }} />
+            <TimeField value={finish} onChange={setFinish} style={{ marginTop: 4 }} />
           </label>
         </div>
-        {dur != null && <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", marginBottom: 12 }}>Ride length: {dur} min</div>}
+        {dur != null && <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", marginBottom: 12 }}>Ride length: {formatElapsed(dur * 60)}</div>}
         {error && <div style={{ fontSize: 13, color: "#e8927c", marginBottom: 12, lineHeight: 1.4 }}>{error}</div>}
         <div style={{ display: "flex", gap: 10 }}>
           <button onClick={onClose} disabled={busy} style={backupBtn}>Cancel</button>
@@ -1501,8 +1634,7 @@ function RideEditor({ ride, controller, onClose }) {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
           <button onClick={() => setDurMin((m) => Math.max(1, m - 1))} style={spinBtn} aria-label="shorter">−</button>
           <div style={{ flex: 1, textAlign: "center" }}>
-            <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{durMin}</span>
-            <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}> min</span>
+            <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{formatElapsed(durMin * 60)}</span>
           </div>
           <button onClick={() => setDurMin((m) => m + 1)} style={spinBtn} aria-label="longer">+</button>
         </div>
@@ -1742,7 +1874,7 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
       {nameErr && <div style={{ fontSize: 12.5, color: "#e8927c", marginTop: 6, lineHeight: 1.4 }}>{nameErr}</div>}
 
       <label style={{ ...lbl, marginTop: 12 }}>{timeMode === "depart" ? "Departure time" : "Target arrival"}</label>
-      <input type="time" value={arrival} onChange={(e) => setArrival(e.target.value)} style={INP} />
+      <TimeField value={arrival} onChange={setArrival} />
 
       <label style={{ ...lbl, marginTop: 12 }}>Active days</label>
       <div style={{ display: "flex", gap: 6 }}>
@@ -1773,8 +1905,8 @@ function RouteEditor({ route, controller, onSaved, onDeleted }) {
         <RouteMap polyline={tuning.polyline} />
         {tuning.stats && (
           <div style={{ display: "flex", gap: 18, marginBottom: 14, paddingBottom: 12, borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-            <Stat label="Distance" value={`${(tuning.stats.totalDistance / 1000).toFixed(2)} km`} />
-            <Stat label="Elevation" value={tuning.stats.hasElevation ? `${Math.round(tuning.stats.climb)} m` : "—"} />
+            <Stat label="Distance" value={formatDistance(tuning.stats.totalDistance / 1000, undefined, { dp: 2 })} />
+            <Stat label="Elevation gain" value={tuning.stats.hasElevation ? formatElevation(tuning.stats.climb) : "—"} />
             <Stat label="Points" value={tuning.stats.pointCount} />
           </div>
         )}
@@ -1998,7 +2130,7 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
               ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
               : { text: "Recording new route", color: "#d9534f" })}
           onPause={togglePause} onFinish={finish} finishLabel="Finish"
-          bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
+          bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{formatDistance(live.distanceM / 1000, undefined, { dp: 2 })}</div>}
         />
       </div>
     );
@@ -2161,7 +2293,7 @@ function Setup({ controller, onDone, onCancel }) {
                 fontFamily: "inherit", fontSize: 14.5, fontWeight: 600, color: "#fff",
                 background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.16)",
               }}>{r.name}
-                <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: "rgba(255,255,255,0.5)", marginTop: 3 }}>{(r.totalDistance / 1000).toFixed(1)} km</span>
+                <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: "rgba(255,255,255,0.5)", marginTop: 3 }}>{formatDistance(r.totalDistance / 1000)}</span>
               </button>
             ))
           )}
@@ -2203,8 +2335,8 @@ function Setup({ controller, onDone, onCancel }) {
             <div style={{ borderRadius: 16, padding: 16, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.14)" }}>
               <RouteMap polyline={preview.polyline} />
               <div style={{ display: "flex", gap: 18 }}>
-                <Stat label="Distance" value={`${(preview.totalDistance / 1000).toFixed(2)} km`} />
-                <Stat label="Elevation" value={preview.hasElevation ? `${Math.round(preview.climb)} m` : "—"} />
+                <Stat label="Distance" value={formatDistance(preview.totalDistance / 1000, undefined, { dp: 2 })} />
+                <Stat label="Elevation gain" value={preview.hasElevation ? formatElevation(preview.climb) : "—"} />
                 <Stat label="Points" value={preview.pointCount} />
               </div>
               {preview.warnings?.map((w, i) => <Warn key={i}>{w}</Warn>)}
@@ -2243,7 +2375,7 @@ function Setup({ controller, onDone, onCancel }) {
                 ? "Fixed arrival — we tell you when to leave."
                 : "Fixed departure (e.g. end of work) — we tell you when you'll arrive."}
             </div>
-            <input type="time" value={form.arrival} onChange={(e) => set("arrival", e.target.value)} style={INP} />
+            <TimeField value={form.arrival} onChange={(v) => set("arrival", v)} />
             <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
               {[["MO", "M"], ["TU", "T"], ["WE", "W"], ["TH", "T"], ["FR", "F"], ["SA", "S"], ["SU", "S"]].map(([c, l], i) => (
                 <button key={i} onClick={() => toggleDay(c)} style={{
@@ -2333,12 +2465,20 @@ function AnalogClock({ nowMs, arrivalMs, size = 150 }) {
 function Speedometer({ kmh, size = 230 }) {
   const c = size / 2, r = c - 14;
   const labels = [0, 10, 20, 30, 40];
+  // The dial face is a FIXED 0–50 scale: tick marks and the 10/20/30/40 numbers
+  // are literal and never change. Only the UNIT changes — so in mph mode "30"
+  // means 30 mph. For the needle to agree with the numbers, its speed must be
+  // expressed in the SAME unit as the dial before mapping to an angle: 30 km/h
+  // (≈18.6 mph) must point near 18–19, not at the "30" mark. So we convert the
+  // canonical km/h to the ride-speed unit here; the scale/labels stay put.
+  const dialSpeed = canonicalKmhToRideSpeed(kmh || 0) || 0;
+  const unitLabel = rideSpeedUnitLabel();
   const ticks = [];
   for (let v = 0; v <= SPEEDO_MAX_KMH; v += 1) {
     const ang = speedToAngle(v);
     const major = v % 10 === 0;
     if (!major) {
-      // minor dots: one per 1 km/h, set just inside the circle, separated from
+      // minor dots: one per 1 unit, set just inside the circle, separated from
       // it. The "5" dots (5,15,25,35) are white and a touch larger.
       const five = v % 5 === 0;
       const p = polarPoint(c, c, r - 9, ang);
@@ -2365,16 +2505,13 @@ function Speedometer({ kmh, size = 230 }) {
         transform={`rotate(${rot} ${p.x} ${p.y})`}>{v}</text>
     );
   });
-  // Needle angle straight from the (EMA-smoothed) speed — no rounding. The EMA
-  // itself supplies the easing: each new target is an asymptotic approach to the
-  // true speed, so the *sequence* of targets already decelerates. A LINEAR CSS
-  // transition slightly longer than the ~1 s fix cadence then connects
-  // consecutive fixes into one continuous glide (the needle is always still
-  // moving when the next value arrives and retargets it). Ease-out here would
-  // brake to a stop at every fix — the sweep-stop-sweep we don't want — and
-  // rounding would throw away the sub-km/h asymptotic approach that makes the
-  // glide smooth near a stop.
-  const needleAng = speedToAngle(kmh || 0);
+  // Needle angle straight from the (EMA-smoothed) speed, expressed in the dial's
+  // unit — no rounding. The EMA itself supplies the easing: each new target is an
+  // asymptotic approach to the true speed, so the *sequence* of targets already
+  // decelerates. A LINEAR CSS transition slightly longer than the ~1 s fix
+  // cadence then connects consecutive fixes into one continuous glide (the needle
+  // is always still moving when the next value arrives and retargets it).
+  const needleAng = speedToAngle(dialSpeed);
   return (
     <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ display: "block" }}>
       <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth={1.5} />
@@ -2386,7 +2523,7 @@ function Speedometer({ kmh, size = 230 }) {
         <line x1={c} y1={c + 12} x2={c} y2={c - (r - 6)} stroke="#e0a45e" strokeWidth={3.2} strokeLinecap="round" />
       </g>
       <circle cx={c} cy={c} r={6} fill="#e0a45e" />
-      <text x={c} y={c + r * 0.5} fill="rgba(255,255,255,0.55)" fontSize={12} textAnchor="middle">km/h</text>
+      <text x={c} y={c + r * 0.5} fill="rgba(255,255,255,0.55)" fontSize={12} textAnchor="middle">{unitLabel}</text>
     </svg>
   );
 }
@@ -2403,7 +2540,7 @@ function InstrumentPanel({
   centerMessage, onPause, onFinish, finishLabel = "Finish now",
   bottom, caption, label = "Elapsed",
 }) {
-  const fmtC = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const fmtC = fmtStopwatch;
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "6px 4px 0" }}>
       {/* top row: elapsed left, clock right */}
@@ -2411,7 +2548,7 @@ function InstrumentPanel({
         <div style={{ flex: 1, textAlign: "left", paddingTop: 6, minWidth: 0 }}>
           <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", letterSpacing: "0.04em", textTransform: "uppercase", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{paused ? "Paused" : label}</div>
           <div style={{ fontFamily: "'Fraunces',serif", fontSize: 40, fontWeight: 600, fontVariantNumeric: "tabular-nums", opacity: paused ? 0.55 : 1, lineHeight: 1.1 }}>{fmtC(elapsed)}</div>
-          <div style={{ fontSize: 23, color: "#fff", marginTop: 6 }}>avg {avg.toFixed(1)} km/h</div>
+          <div style={{ fontSize: 23, color: "#fff", marginTop: 6 }}>avg {formatRideSpeed(avg, undefined, { dp: 1 })}</div>
         </div>
         <div style={{ width: "48%" }}>
           <AnalogClock nowMs={nowMs} arrivalMs={arrivalMs} />
@@ -2707,7 +2844,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     doFinish();
   };
 
-  const fmtC = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const fmtC = fmtStopwatch;
 
   // Final ride time after any manual adjustment (never below zero).
   const adjustedSec = result ? Math.max(0, result.actualSec + adjustMin * 60) : 0;
@@ -2756,7 +2893,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
               Away from the start
             </div>
             <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 18 }}>
-              You are {farConfirm.metres >= 1000 ? `${(farConfirm.metres / 1000).toFixed(1)} km` : `${farConfirm.metres} metres`} away from the start of this route. Record anyway?
+              You are {formatDistanceAdaptive(farConfirm.metres)} away from the start of this route. Record anyway?
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setFarConfirm(null)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>
@@ -2799,12 +2936,12 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
               : (live.initialising
                 ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
                 : (live.offRoute && live.offRouteM != null
-                  ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
+                  ? { text: `Off route by ${formatDistanceAdaptive(live.offRouteM)}`, color: "#e0a45e" }
                   : null))}
             onPause={togglePause} onFinish={finishNow}
             bottom={totalM
               ? <ProgressBar travelledM={alongM} totalM={totalM} />
-              : <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
+              : <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{formatDistance(live.distanceM / 1000, undefined, { dp: 2 })}</div>}
             caption={expectLine}
           />
         );
@@ -2814,7 +2951,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           <div style={{ maxWidth: 320, background: "#1d1b38", borderRadius: 18, padding: "22px 22px", border: "1px solid rgba(255,255,255,0.14)", textAlign: "center" }}>
             <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 8 }}>Away from the end</div>
             <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 18 }}>
-              You are {endConfirm.metres >= 1000 ? `${(endConfirm.metres / 1000).toFixed(1)} km` : `${endConfirm.metres} metres`} from the end of this route. Really stop?
+              You are {formatDistanceAdaptive(endConfirm.metres)} from the end of this route. Really stop?
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setEndConfirm(null)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Keep riding</button>
@@ -2829,7 +2966,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
             <div style={{ fontSize: 13, color: "rgba(255,255,255,0.55)" }}>Ride complete</div>
             <div style={{ fontFamily: "'Fraunces',serif", fontSize: 70, fontWeight: 600 }}>{fmtC(adjustedSec)}</div>
             <div style={{ fontSize: 14, color: "rgba(255,255,255,0.65)" }}>
-              {(result.distance / 1000).toFixed(2)} km{result.pausedSec >= 30 ? ` · ${Math.round(result.pausedSec / 60)} min paused (excluded)` : ""}
+              {formatDistance(result.distance / 1000, undefined, { dp: 2 })}{result.pausedSec >= 30 ? ` · ${formatElapsed(result.pausedSec)} paused (excluded)` : ""}
             </div>
             {adjustMin !== 0 && (
               <div style={{ fontSize: 12.5, color: "#e0a45e", marginTop: 4 }}>
@@ -3013,3 +3150,41 @@ function Empty({ name }) {
 }
 
 const INP = { width: "100%", padding: "12px 14px", borderRadius: 12, fontSize: 15, fontFamily: "inherit", background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.16)", color: "#fff", outline: "none" };
+
+/* Time entry that shows the value in the SYSTEM clock format (via
+ * formatClockString) even when collapsed — working around native
+ * <input type="time"> rendering its field in 24h on some OS/browser combos while
+ * its picker uses 12h. A visually-hidden real time input sits behind a styled
+ * read-only chip; tapping the chip opens the NATIVE picker via showPicker()
+ * (focus fallback for browsers without it), so this is NOT a custom picker — the
+ * OS picker still does all input, and onChange still yields a 24h "HH:MM" string.
+ * Because the whole app now follows system format, chip and picker agree (no
+ * mid-edit format flip). */
+function TimeField({ value, onChange, disabled, style }) {
+  const ref = useRef(null);
+  const open = () => {
+    if (disabled) return;
+    const el = ref.current;
+    if (!el) return;
+    try {
+      if (typeof el.showPicker === "function") { el.showPicker(); return; }
+    } catch { /* showPicker can throw if not allowed; fall through to focus */ }
+    el.focus();
+    el.click(); // mobile browsers typically open the picker on focus/click
+  };
+  return (
+    <div style={{ position: "relative", ...style }}>
+      <button type="button" onClick={open} disabled={disabled}
+        style={{ ...INP, display: "flex", alignItems: "center", justifyContent: "space-between",
+          cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1, textAlign: "left" }}>
+        <span>{formatClockString(value)}</span>
+        <span aria-hidden="true" style={{ color: "rgba(255,255,255,0.45)", fontSize: 12, marginLeft: 8 }}>▾</span>
+      </button>
+      {/* Real native input, visually hidden but focusable/pickable. */}
+      <input ref={ref} type="time" value={value} disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        tabIndex={-1} aria-hidden="true"
+        style={{ position: "absolute", left: 0, bottom: 0, width: 1, height: 1, opacity: 0, pointerEvents: "none", border: 0, padding: 0, margin: 0 }} />
+    </div>
+  );
+}

@@ -14,12 +14,15 @@
  * leaving fetching to windModel.js and scheduling/push to the service-worker
  * layer, which consume this output.
  *
- * Time handling is explicit and dependency-free. Arrival times are wall-clock
- * "HH:MM" on a given calendar day in the user's local zone; we resolve them to
- * epoch-ms using the runtime's local time (the device's zone, which is what the
- * rider cares about). For testing, a fixed "now" and a tz-offset shim can be
- * injected.
+ * Time handling: arrival times are wall-clock "HH:MM" on a given calendar day in
+ * the user's local zone; we resolve them to epoch-ms using the runtime's local
+ * time (the device's zone, which is what the rider cares about). For testing, a
+ * fixed "now" and a tz-offset shim can be injected. Time *display* strings are
+ * produced via the format seam (formatTimeOfDay) so they honour the 12/24-hour
+ * setting; the underlying scheduling math stays independent of display units.
  */
+
+import { formatTimeOfDay } from "./format.js";
 
 export const VERDICT = {
   HEADWIND: "headwind", // leave earlier
@@ -79,10 +82,8 @@ export function atLocalTime(dateInDay, hhmm) {
 
 /** Format an epoch-ms instant as local "HH:MM" (24h). */
 export function formatHHMM(ms) {
-  const d = new Date(ms);
-  const h = String(d.getHours()).padStart(2, "0");
-  const m = String(d.getMinutes()).padStart(2, "0");
-  return `${h}:${m}`;
+  // Delegates to the display format seam so times respect the 12/24-hour setting.
+  return formatTimeOfDay(ms) || "";
 }
 
 /* ------------------------------------------------------------------ *
@@ -137,7 +138,7 @@ export function evaluateAlert(route, predictForArrival, opts = {}) {
     routeName: route.name,
     weekday: next.weekday,
     arrivalMs: next.arrivalMs,
-    arrivalHHMM: next.arrivalHHMM,
+    arrivalHHMM: formatHHMM(next.arrivalMs),
 
     departureMs, // recommended departure for the forecast
     departureHHMM: formatHHMM(departureMs),
