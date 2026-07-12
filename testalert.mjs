@@ -2,6 +2,11 @@ import {
   evaluateAlert, arrivalOnDate,
   formatHHMM, atLocalTime, VERDICT, DEFAULT_THRESHOLD_MIN
 } from './src/lib/alertEngine.js';
+import { _setSystemHour12 } from './src/lib/format.js';
+
+// Display HH:MM now follows the SYSTEM clock format. Pin it to 24h here so these
+// assertions test a stable canonical form regardless of the test runner's locale.
+_setSystemHour12(false);
 
 let pass=0,fail=0;
 const ok=(n,c,d='')=>{ c?(pass++,console.log(`  PASS  ${n}`)):(fail++,console.log(`  FAIL  ${n}  ${d}`)); };
