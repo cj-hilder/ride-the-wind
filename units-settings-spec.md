@@ -1,17 +1,21 @@
-# v1.4.0 — Units & Formatting Settings (SPEC, for review)
+# v1.4.0 — Units & Formatting Settings (SPEC — SHIPPED)
 
-Status: **draft for Chris to review/amend before implementation.** Nothing built yet.
+Status: **SHIPPED in 1.4.0.** Built cluster-by-cluster through the format seam;
+589 tests passing. One deliberate divergence from the original spec during build:
+**time-of-day is no longer a user setting** — it follows the system locale
+automatically (see below). This dropped the count from eight settings to seven
+stored preferences.
 
 ## Goal
 Let the user choose display units and formats. Every value shown to the user
 passes through one of a small set of pure format functions, so the preference is
 honoured everywhere and there is a single place to change each format.
 
-## User-facing preferences (EIGHT settings)
+## User-facing preferences (SEVEN stored settings + system-driven clock)
 | Setting | Options | Default |
 |---|---|---|
 | Temperature | °C / °F | °C |
-| Time of day | 24-hour / 12-hour | 12-hour |
+| ~~Time of day~~ | *(removed as a setting)* | **follows system locale** |
 | Duration (≥1 h) | `90 min` / `1 hr 30` / `1:30` | `1 hr 30` (form 2) |
 | Ride speed | km/h / mph | km/h |
 | Wind speed | km/h / mph / kt | km/h |
@@ -19,12 +23,25 @@ honoured everywhere and there is a single place to change each format.
 | Rainfall | mm(/h) / in(/h) | mm |
 | Decimal separator | dot `.` / comma `,` | dot |
 
+**Time of day — SYSTEM-DRIVEN (changed during build).** Originally specced as a
+24/12-hour toggle defaulting to 12 h. Changed to follow the system locale
+(`Intl.DateTimeFormat().resolvedOptions().hour12`, cached) with NO user toggle.
+Rationale: native `<input type="time">` widgets (entry field + OS picker) always
+render in the system format and can't be overridden; a manual app setting would
+fight them and create chip-vs-picker mismatches. Following the system means the
+chip, verdict times, entry widget, and picker all agree. All display times route
+through the seam (`formatTimeOfDay` / `formatClockString`), both of which read
+`systemHour12()`. Collapsed native time fields are replaced by a `TimeField`
+read-only chip (system-format text) that opens the native picker via
+`showPicker()`, so even the folded entry display matches. 12 h renders lowercase
+am/pm (`8:45 am`); noon = `12:00 pm`, midnight = `12:00 am`.
+
 **Duration (locked):** under 1 h → always `«mins» min`. At ≥1 h: (1) `«total mins»
 min`; (2) `«hours» hr «mins, leading zero»` (`1 hr 30`); (3) `«hours»:«mins, leading
-zero»` (`1:30`). Default = form 2. Leading-zero minutes in forms 2 & 3 only.
-
-**Time of day 12 h:** lowercase am/pm — `8:45 am`, `8:45 pm`. Noon = `12:00 pm`,
-midnight = `12:00 am`.
+zero»` (`1:30`). Default = form 2. Leading-zero minutes in forms 2 & 3 only. NOTE:
+this is the DURATION format (ride times, predictions); the live/completed
+STOPWATCH is separate — it keeps seconds (`M:SS`, or `H:MM:SS` past an hour) and
+does not follow this setting.
 
 **Decimal-place rules (locked):**
 - Distance & speed: the SAME dp regardless of unit (mi mirrors km's dp; mph/kt
@@ -34,8 +51,8 @@ midnight = `12:00 am`.
 
 **Date:** OMITTED from 1.4.0 (deferred to full-i18n).
 
-All design questions are resolved (see the decision list at the end); this spec
-is ready to build.
+All design questions were resolved and the feature shipped; the decision list at
+the end records the choices, and the Prose-pass section its completion.
 
 ## Architecture: the format seam
 
@@ -181,29 +198,32 @@ min/max bounds with the step — identical physical range, display unit only).
 **Defaults that differ from today (deliberate):** time-of-day → **12-hour**;
 duration ≥1 h → **form 2** (`1 hr 30`). All other defaults match today's output.
 
-## Prose pass (FINAL threading pass — deferred until all standalone readouts done)
+## Prose pass (FINAL threading pass — COMPLETE)
 Values embedded inside generated sentences, handled together as one pass so the
-lib/component boundary is treated consistently (some originate in lib functions
-that currently return finished strings). Running checklist:
-- `expect.line` (what-to-expect: temp / rain / wind embedded) — plan & ride screens.
-- `windEffectPhrase` — "31% chance headwind: ride for 116 to 154 mins (likely 132
-  mins)"; three durations → formatElapsed. In App.jsx (component), tractable.
-- `countdownPhrase` — "in 2 hours 5 mins" (embedded duration).
-- `exploredHHMM` — Explore picker's custom-time echo ("arrive by 09:15"); a
-  user-entered value at the input/display boundary — decide format handling.
-- "X km away from start/end" and off-route distance — embedded distance.
-- **Example-ride wind caption** (TerrainSlider): "example ride, steady 20 km/h
-  wind from [dir]". RULE: the example wind shows a ROUND value per unit —
-  **20 km/h, 15 mph, 10 kt** — NOT a literal conversion of 20 km/h (which would be
-  12.4 mph / 10.8 kt). Like the speedo dial numbers, it's a nominal round example.
-  **Subtlety to resolve:** the 20 km/h is ALSO the actual wind speed FED INTO the
-  example ride-time calc (headFactor/tailFactor). So either (a) cosmetic label
-  only — times still reflect ~20 km/h regardless of the label shown (mild
-  mismatch, like a rounding), or (b) recompute the example at 15 mph / 10 kt so
-  the shown wind and the shown times agree. Decide during the pass; (b) is the
-  honest choice if the discrepancy is noticeable, (a) is simpler.
+lib/component boundary is treated consistently. Outcomes:
+- `expect.line` (what-to-expect) — DONE. Only `temperatureToken` embedded a unit
+  (°C); all other tokens are word-only. So no lib restructure — `temperatureToken`
+  delegates to `formatTemperature` (seam), same pattern as `hhmm`.
+- `windEffectPhrase` — DONE. The three ride durations → `formatElapsed`; `headPct`
+  stays unitless.
+- `countdownPhrase` — LEFT AS-IS (deliberate). Conversational relative time ("in 2
+  hours 5 mins", "5 mins ago"); not a duration-format candidate — forcing the
+  setting would give awkward "in 2 hr 05".
+- `exploredHHMM` — DONE. Echo ("custom · leave 21:08") → `formatClockString`; the
+  ExplorePicker input itself uses `TimeField`. The `current=` prop stays raw 24h
+  (it feeds a native time input, which requires "HH:MM").
+- "X away from start/end" and off-route distance — DONE via `formatDistanceAdaptive`
+  (m/ft close up, km/mi beyond ~1 km, per the distance setting).
+- **Example-ride wind caption** — DONE, resolved differently from the draft rule.
+  Decision: the example is computed at a FIXED 20 km/h; the caption shows a round,
+  mentally-familiar anchor per unit — **20 km/h / 10 mph / 10 kt** (via
+  `exampleWindLabel`). NOT recomputed per unit (avoids a lib-boundary change), and
+  NOT the exact conversion (12.4 mph / 10.8 kt): a rider pictures "a 10 kt wind",
+  not "10.8 kt", and the illustrative k-factor is the point, not exact minutes.
+  Both rounded down to 10 keeps it honest-enough (mph 10≈16 km/h; kt 10≈18.5 km/h)
+  and gives a clean "10" anchor in both non-metric units.
 
-Rule of thumb: standalone readouts convert at the display point (done per-cluster);
-embedded-prose values either format in the component (if the string is built there)
-or need the lib to return raw values / take formatters (if built in a lib). Keep
-each item fully done, never half.
+Non-conversions across the whole feature (all deliberate): `countdownPhrase`
+(conversational), ±1-min steppers (plain-minute inputs), the live/completed
+stopwatch (keeps seconds — `M:SS`, `H:MM:SS` past 1 h), dates (i18n), and
+SettingsPanel's own option labels (literal "km/h" etc.).

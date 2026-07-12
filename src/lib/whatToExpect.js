@@ -16,6 +16,8 @@
  * point and time — built from windModel.makeWindFn over parsed series.
  */
 
+import { formatTemperature } from "./format.js";
+
 const DEG = Math.PI / 180;
 
 export const TEMP_HOT_C = 26; // at/above this, show the max not the min
@@ -124,7 +126,10 @@ export function temperatureToken(temps) {
   const min = Math.min(...temps);
   const max = Math.max(...temps);
   const show = max >= TEMP_HOT_C ? max : min;
-  return `${Math.round(show)}°C`;
+  // Delegate to the display seam so the what-to-expect line respects the °C/°F
+  // setting. Selection (min vs max-when-hot) stays in canonical °C; only the
+  // rendering converts. TEMP_HOT_C threshold is deliberately compared in °C.
+  return formatTemperature(show);
 }
 
 /**

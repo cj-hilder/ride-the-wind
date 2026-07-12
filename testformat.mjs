@@ -2,6 +2,7 @@ import {
   DEFAULT_UNITS, setFormatSettings, getFormatSettings,
   formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed,
   formatWindSpeed, formatDistance, formatRainfall, formatClockString, formatElevation,
+  rainfallValue, rainfallUnitLabel, formatDistanceAdaptive, exampleWindLabel,
   rideSpeedToCanonicalKmh, canonicalKmhToRideSpeed, rideSpeedStep,
   rideSpeedUnitLabel, rideSpeedBounds, _setSystemHour12,
 } from './src/lib/format.js';
@@ -148,6 +149,34 @@ console.log('Elevation (couples to distance):');
   ok('rounds whole', formatElevation(340.6, S({ distance: 'km' })) === '341 m');
   ok('comma decimal irrelevant (whole)', formatElevation(340, S({ distance: 'km', decimal: 'comma' })) === '340 m');
   ok('null → empty', formatElevation(null) === '');
+}
+
+console.log('Rainfall bare value + unit label (compact lists):');
+{
+  ok('value mm 1dp', rainfallValue(1.75, S({ rainfall: 'mm' })) === '1.8', rainfallValue(1.75, S({ rainfall: 'mm' })));
+  ok('value in +1dp', rainfallValue(1.75, S({ rainfall: 'in' })) === '0.07', rainfallValue(1.75, S({ rainfall: 'in' })));
+  ok('value comma', rainfallValue(3.5, S({ rainfall: 'mm', decimal: 'comma' })) === '3,5');
+  ok('label mm', rainfallUnitLabel(S({ rainfall: 'mm' })) === 'mm');
+  ok('label mm/h', rainfallUnitLabel(S({ rainfall: 'mm' }), { rate: true }) === 'mm/h');
+  ok('label in', rainfallUnitLabel(S({ rainfall: 'in' })) === 'in');
+  ok('label in/h', rainfallUnitLabel(S({ rainfall: 'in' }), { rate: true }) === 'in/h');
+}
+
+console.log('Distance adaptive (prose):');
+{
+  ok('km: under 1km → m', formatDistanceAdaptive(300, S({ distance: 'km' })) === '300 m');
+  ok('km: over 1km → km 1dp', formatDistanceAdaptive(2500, S({ distance: 'km' })) === '2.5 km');
+  ok('km: exactly 1000 → km', formatDistanceAdaptive(1000, S({ distance: 'km' })) === '1.0 km');
+  ok('mi: short → ft', formatDistanceAdaptive(200, S({ distance: 'mi' })) === '656 ft', formatDistanceAdaptive(200, S({ distance: 'mi' })));
+  ok('mi: long → mi', formatDistanceAdaptive(3218.69, S({ distance: 'mi' })) === '2.0 mi', formatDistanceAdaptive(3218.69, S({ distance: 'mi' })));
+  ok('mi: ~1000ft boundary stays ft', formatDistanceAdaptive(250, S({ distance: 'mi' })) === '820 ft', formatDistanceAdaptive(250, S({ distance: 'mi' })));
+}
+
+console.log('Example wind label (round anchors):');
+{
+  ok('km/h → 20 km/h', exampleWindLabel(S({ windSpeed: 'kmh' })) === '20 km/h');
+  ok('mph → 10 mph', exampleWindLabel(S({ windSpeed: 'mph' })) === '10 mph');
+  ok('kt → 10 kt', exampleWindLabel(S({ windSpeed: 'kt' })) === '10 kt');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

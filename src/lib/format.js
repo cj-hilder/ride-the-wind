@@ -192,6 +192,47 @@ export function formatElevation(metres, s) {
   return `${num(metres, 0, st)} m`;
 }
 
+/** Rainfall unit label for the current setting: "mm"/"in" or "mm/h"/"in/h". */
+export function rainfallUnitLabel(s, { rate = false } = {}) {
+  const st = use(s);
+  const base = st.rainfall === "in" ? "in" : "mm";
+  return rate ? `${base}/h` : base;
+}
+/** Bare rainfall NUMBER (no unit) in the display unit, for compact lists where
+ * one shared unit label is appended once. mmDp default 1; in gets mmDp+1. */
+export function rainfallValue(mm, s, { mmDp = 1 } = {}) {
+  const st = use(s);
+  if (mm == null || Number.isNaN(mm)) return "";
+  return st.rainfall === "in" ? num(mm / MM_PER_IN, mmDp + 1, st) : num(mm, mmDp, st);
+}
+
+/** Adaptive distance for prose ("X away"): shows the small unit (m / ft) under a
+ * threshold and the large unit (km / mi) above it, per the distance setting.
+ * metres canonical. Threshold ~1 km (or ~1 mi-worth of feet in imperial). */
+export function formatDistanceAdaptive(metres, s) {
+  const st = use(s);
+  if (metres == null || Number.isNaN(metres)) return "";
+  if (st.distance === "mi") {
+    const feet = metres * 3.28084;
+    if (feet < 1000) return `${num(feet, 0, st)} ft`;
+    return `${num(metres / (KM_PER_MI * 1000), 1, st)} mi`;
+  }
+  if (metres < 1000) return `${num(metres, 0, st)} m`;
+  return `${num(metres / 1000, 1, st)} km`;
+}
+
+/** Label for the ground-effect example's nominal wind. The example is computed
+ * at a fixed 20 km/h; per unit we show a ROUND, mentally-familiar anchor rather
+ * than an exact conversion (a "10 kt / 10 mph wind" is something riders picture;
+ * "10.8 kt" isn't). Illustrative, not a measurement — the k-factor being shown is
+ * the point, not the exact minutes. 20 km/h → 20 / 10 / 10. */
+export function exampleWindLabel(s) {
+  const st = use(s);
+  if (st.windSpeed === "mph") return "10 mph";
+  if (st.windSpeed === "kt") return "10 kt";
+  return "20 km/h";
+}
+
 // ── inverse seam: baseline-speed spinner INPUT (display → canonical) ─────────
 /** Convert a spinner value shown in the ride-speed unit back to canonical km/h. */
 export function rideSpeedToCanonicalKmh(displayVal, s) {

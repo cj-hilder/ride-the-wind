@@ -26,7 +26,8 @@ import {
   needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
-import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatRainfall, formatClockString, formatElevation, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel } from "./lib/format.js";
+import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, rainfallValue, rainfallUnitLabel, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel } from "./lib/format.js";
+import { RAIN_RATE_BANDS, RAIN_TOTAL_BANDS } from "./lib/whatToExpect.js";
 
 /* Error boundary around the active screen. A render error in one screen (e.g. a
  * transient bad shape during a forecast refresh) must NOT tear down the whole
@@ -134,8 +135,8 @@ function windEffectPhrase(we, light = false) {
   const WIND_FLOOR = 7.5; // km/h
   const fast = we.fastMin, slow = we.slowMin, likely = we.likelyMin;
   const ride = fast === slow
-    ? `ride for ${likely} mins`
-    : `ride for ${fast} to ${slow} mins (likely ${likely} mins)`;
+    ? `ride for ${formatElapsed(likely * 60)}`
+    : `ride for ${formatElapsed(fast * 60)} to ${formatElapsed(slow * 60)} (likely ${formatElapsed(likely * 60)})`;
   if (we.direction === "calm") {
     // "No wind" only when the forecast wind is genuinely slight; if there's a
     // real wind that simply has little net along-route effect, say so instead.
@@ -634,7 +635,7 @@ function PlanBody({ verdict, dayVerdict, fetching, routeLon, accent, showDebug, 
               display: "inline-flex", alignItems: "center", gap: 5,
             }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-              {exploredHHMM ? `custom · ${isDepart ? "leave" : "arrive by"} ${exploredHHMM}` : "Explore"}
+              {exploredHHMM ? `custom · ${isDepart ? "leave" : "arrive by"} ${formatClockString(exploredHHMM)}` : "Explore"}
             </button>
           </div>
           {showExplore && (
@@ -722,11 +723,7 @@ function PlanBody({ verdict, dayVerdict, fetching, routeLon, accent, showDebug, 
 /* Tech info panel for the Plan detail — a tidy, labelled readout of the
  * forecast figures behind the prediction. */
 function DebugReadout({ debug }) {
-  const fmtClock = (ms) => {
-    if (ms == null) return "—";
-    const d = new Date(ms);
-    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  };
+  const fmtClock = (ms) => (ms == null ? "—" : formatTimeOfDay(ms));
   const Row = ({ label, children }) => (
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "3px 0" }}>
       <span style={{ color: "rgba(255,255,255,0.5)" }}>{label}</span>
@@ -748,20 +745,20 @@ function DebugReadout({ debug }) {
         background: "rgba(224,164,94,0.14)", border: "1px solid rgba(224,164,94,0.3)",
         color: "#f0d8a8", fontWeight: 600,
       }}>
-        wind: {debug.windSpeedKmh} km/h {debug.windFromLabel} ({debug.windFromDeg}°)
+        wind: {formatWindSpeed(debug.windSpeedKmh)} {debug.windFromLabel} ({debug.windFromDeg}°)
       </div>
       <div style={{ padding: "2px 12px 10px" }}>
         <Row label="route avg bearing">{debug.avgBearingDeg}°</Row>
-        <Row label="mean headwind">{debug.meanHeadwindKmh} km/h ({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</Row>
+        <Row label="mean headwind">{formatWindSpeed(debug.meanHeadwindKmh)} ({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</Row>
         {debug.effortHeadwindKmh != null && (
-          <Row label="effort headwind">{debug.effortHeadwindKmh} km/h</Row>
+          <Row label="effort headwind">{formatWindSpeed(debug.effortHeadwindKmh)}</Row>
         )}
         {debug.effortHeadwindKmh != null && (
           <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "0 0 4px" }}>
             Wind resistance grows with speed², so uneven wind slows you more than the mean suggests — effort captures that.
           </div>
         )}
-        <Row label="mean crosswind">{debug.meanCrosswindKmh} km/h</Row>
+        <Row label="mean crosswind">{formatWindSpeed(debug.meanCrosswindKmh)}</Row>
         <Row label="wind factor">{debug.windFactor} ({debug.windFactor >= 0 ? "slows" : "speeds"})</Row>
         <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
         <Row label="wind tuning">
@@ -775,11 +772,11 @@ function DebugReadout({ debug }) {
         {(debug.rainPeakRateMmH != null || debug.rainTotalMm != null) && (
           <>
             <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
-            <Row label="rain peak rate · total">{debug.rainPeakRateMmH != null ? `${debug.rainPeakRateMmH} mm/h · ${debug.rainTotalMm} mm` : "—"}</Row>
+            <Row label="rain peak rate · total">{debug.rainPeakRateMmH != null ? `${formatRainfall(debug.rainPeakRateMmH, undefined, { rate: true })} · ${formatRainfall(debug.rainTotalMm)}` : "—"}</Row>
             <Row label="rain max prob">{debug.rainMaxProbPct != null ? `${debug.rainMaxProbPct}%` : "—"}</Row>
-            <Row label="wettest forecast">{debug.rainWettestPeakMmH != null ? `${debug.rainWettestPeakMmH} mm/h · ${debug.rainWettestTotalMm} mm` : "—"}</Row>
+            <Row label="wettest forecast">{debug.rainWettestPeakMmH != null ? `${formatRainfall(debug.rainWettestPeakMmH, undefined, { rate: true })} · ${formatRainfall(debug.rainWettestTotalMm)}` : "—"}</Row>
             <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "2px 0 0" }}>
-              bands — rate: 0.1 / 1.75 / 3.5 mm/h · total: 0.1 / 1.25 / 3 mm (a little / wet / very).
+              bands — rate: {RAIN_RATE_BANDS.map((b) => rainfallValue(b)).join(" / ")} {rainfallUnitLabel(undefined, { rate: true })} · total: {RAIN_TOTAL_BANDS.map((b) => rainfallValue(b)).join(" / ")} {rainfallUnitLabel()} (a little / wet / very).
             </div>
           </>
         )}
@@ -1358,7 +1355,7 @@ function TerrainSlider({ title, k, baselineSec, readOnly, sign, showBoth, exampl
       </div>
       <SourceNote mode={mode} source={source} rides={rides} />
       <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 6, lineHeight: 1.4 }}>
-        <span style={{ color: "rgba(255,255,255,0.45)" }}>example ride, steady 20 km/h wind from {dirLabel}</span><br />
+        <span style={{ color: "rgba(255,255,255,0.45)" }}>example ride, steady {exampleWindLabel()} wind from {dirLabel}</span><br />
         {showBoth
           ? <>headwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatElapsed(headSec)}</b> / tailwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatElapsed(tailSec)}</b></>
           : <>{sign === -1 ? "tailwind" : "headwind"} <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatElapsed(oneSec)}</b></>}
@@ -2133,7 +2130,7 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
               ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
               : { text: "Recording new route", color: "#d9534f" })}
           onPause={togglePause} onFinish={finish} finishLabel="Finish"
-          bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
+          bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{formatDistance(live.distanceM / 1000, undefined, { dp: 2 })}</div>}
         />
       </div>
     );
@@ -2296,7 +2293,7 @@ function Setup({ controller, onDone, onCancel }) {
                 fontFamily: "inherit", fontSize: 14.5, fontWeight: 600, color: "#fff",
                 background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.16)",
               }}>{r.name}
-                <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: "rgba(255,255,255,0.5)", marginTop: 3 }}>{(r.totalDistance / 1000).toFixed(1)} km</span>
+                <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: "rgba(255,255,255,0.5)", marginTop: 3 }}>{formatDistance(r.totalDistance / 1000)}</span>
               </button>
             ))
           )}
@@ -2896,7 +2893,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
               Away from the start
             </div>
             <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 18 }}>
-              You are {farConfirm.metres >= 1000 ? `${(farConfirm.metres / 1000).toFixed(1)} km` : `${farConfirm.metres} metres`} away from the start of this route. Record anyway?
+              You are {formatDistanceAdaptive(farConfirm.metres)} away from the start of this route. Record anyway?
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setFarConfirm(null)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>
@@ -2939,12 +2936,12 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
               : (live.initialising
                 ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
                 : (live.offRoute && live.offRouteM != null
-                  ? { text: `Off route by ${(live.offRouteM / 1000).toFixed(1)} km`, color: "#e0a45e" }
+                  ? { text: `Off route by ${formatDistanceAdaptive(live.offRouteM)}`, color: "#e0a45e" }
                   : null))}
             onPause={togglePause} onFinish={finishNow}
             bottom={totalM
               ? <ProgressBar travelledM={alongM} totalM={totalM} />
-              : <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{(live.distanceM / 1000).toFixed(2)} km</div>}
+              : <div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{formatDistance(live.distanceM / 1000, undefined, { dp: 2 })}</div>}
             caption={expectLine}
           />
         );
@@ -2954,7 +2951,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           <div style={{ maxWidth: 320, background: "#1d1b38", borderRadius: 18, padding: "22px 22px", border: "1px solid rgba(255,255,255,0.14)", textAlign: "center" }}>
             <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 8 }}>Away from the end</div>
             <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 18 }}>
-              You are {endConfirm.metres >= 1000 ? `${(endConfirm.metres / 1000).toFixed(1)} km` : `${endConfirm.metres} metres`} from the end of this route. Really stop?
+              You are {formatDistanceAdaptive(endConfirm.metres)} from the end of this route. Really stop?
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setEndConfirm(null)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Keep riding</button>
