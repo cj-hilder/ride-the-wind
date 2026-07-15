@@ -263,11 +263,12 @@ console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRec
     const er = route.endRegion;
     let cbR = null;
     const geoR = { watchPosition: (s) => { cbR = s; return 7; }, clearWatch: () => {} };
-    let finishedEarly = false, ticks = 0;
+    let finishedEarly = false, ticks = 0, arrivedEarly = false;
     await gApp.startRide(route, {
       geo: geoR,
       onTick: () => { ticks++; },
       onFinish: () => { finishedEarly = true; },
+      onArrived: () => { arrivedEarly = true; },
     });
     // Emit ~30 stationary fixes AT the end region (>20s of "stopped near end").
     const base = 1_700_000_000_000;
@@ -275,6 +276,7 @@ console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRec
       cbR({ coords: { latitude: er.lat, longitude: er.lon, accuracy: 6 }, timestamp: base + i * 1000 });
     }
     ok('stationary-at-end during warm-up does NOT finish', finishedEarly === false, `finished=${finishedEarly}`);
+    ok('stationary-at-end during warm-up does NOT auto-arrive', arrivedEarly === false, `arrived=${arrivedEarly}`);
     ok('ticks keep flowing (not frozen)', ticks >= 25, `ticks=${ticks}`);
   }
   // startRide must also surface geolocation errors via onError.

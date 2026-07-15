@@ -2608,6 +2608,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
   const [nowMs, setNowMs] = useState(Date.now());   // ticking clock for the dial
   const [live, setLive] = useState({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0, avgKmh: 0 });
   const [endConfirm, setEndConfirm] = useState(null); // {metres} when far from end on finish
+  const [arrivedConfirm, setArrivedConfirm] = useState(false); // auto-detector reached the end → confirm or keep riding
   const [expectLine, setExpectLine] = useState(null); // what-to-expect for the ride
   const [forecastSec, setForecastSec] = useState(null); // wind+learning-aware duration (leaving now), for first-km arrival
   const [farConfirm, setFarConfirm] = useState(null); // {metres} when far from start
@@ -2815,6 +2816,13 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         setResult({ actualSec: r.actualSec, distance: r.distanceM, startedAt: r.startedAt, endedAt: r.endedAt, pausedSec: r.pausedSec || 0, forecastWind: r.forecastWind });
         setState("done");
       },
+      onArrived: () => {
+        // The detector thinks the ride is finished (reached / stopped-at the end).
+        // Don't end outright — offer the choice, so a rider who's paused at the
+        // end or looping can keep going. "Finish" completes via manualFinish;
+        // dismiss keeps riding (the lib latches this so it won't nag again).
+        setArrivedConfirm(true);
+      },
       onError: (e) => { setGpsError(e || { code: 2 }); },
     }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); });
     ref.current = { handle };
@@ -2984,6 +2992,20 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setEndConfirm(null)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Keep riding</button>
               <button onClick={() => { setEndConfirm(null); doFinish(); }} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 14, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Stop now</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {arrivedConfirm && (
+        <div style={{ position: "absolute", inset: 0, zIndex: 20, display: "grid", placeItems: "center", background: "rgba(0,0,0,0.6)", padding: 28 }}>
+          <div style={{ maxWidth: 320, background: "#1d1b38", borderRadius: 18, padding: "22px 22px", border: "1px solid rgba(255,255,255,0.14)", textAlign: "center" }}>
+            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 8 }}>Reached the end</div>
+            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 18 }}>
+              Looks like you've reached the end of this route. Finish the ride, or keep riding?
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setArrivedConfirm(false)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Keep riding</button>
+              <button onClick={() => { setArrivedConfirm(false); doFinish(); }} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 14, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Finish</button>
             </div>
           </div>
         </div>

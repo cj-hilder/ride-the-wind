@@ -222,9 +222,12 @@ export function createAppController(deps = {}) {
   // a short window. Keyed by rounded lat/lon.
   const forecastCache = new Map();
   const FORECAST_TTL = 30 * 60 * 1000; // 30 min
-  // Distance the rider must cover before finish-detection arms. Must exceed the
-  // end-region "stopped near it" zone (radius×3 = 180m) so a ride that starts
-  // near its own end can't self-finish before actually setting off.
+  // Auto-finish fires only when the rider is within this straight-line distance
+  // of the end point (the sole end-detection rule).
+  const FINISH_RADIUS_M = 50;
+  // Distance the rider must cover before finish-detection arms, so a ride that
+  // starts near its own end (out-and-back / loop / testing from home) can't
+  // self-finish before actually setting off.
   const FINISH_ARM_DIST_M = 200;
   // Percentile across ensemble members for the worst-case wetness upgrade. A high
   // percentile (not the literal wettest member) so one freak run doesn't cry wolf:
@@ -1399,7 +1402,7 @@ export function createAppController(deps = {}) {
     return whatToExpect({ segments: route.segments, times, windFn, departMs: now(), windWord });
   }
 
-  async function startRide(route, { onTick, onFinish, onError, geo } = {}) {
+  async function startRide(route, { onTick, onFinish, onArrived, onError, geo } = {}) {
     const geoApi = geo || (typeof navigator !== "undefined" ? navigator.geolocation : null);
     if (!geoApi) throw new Error("Geolocation unavailable.");
 
@@ -1408,8 +1411,8 @@ export function createAppController(deps = {}) {
     const endRegion = route.endRegion;
     const trace = [];
     let prev = null;
-    let stoppedSince = null;
     let hasLeftStart = false; // finish detection stays disarmed until the rider actually leaves the start
+    let arrivalDeclined = false; // set when the rider chose "keep riding" — auto-finish stays off thereafter
     // Pause support: total paused ms is excluded from the ride time, so a rider
     // can stop (lights, coffee, mechanical) without inflating the learned time.
     let paused = false;
@@ -1441,18 +1444,14 @@ export function createAppController(deps = {}) {
           const dEnd = haversineLocal(fix.lat, fix.lon, endRegion.lat, endRegion.lon);
           const distSoFar = traceDistance(trace);
           if (!hasLeftStart && distSoFar >= FINISH_ARM_DIST_M) hasLeftStart = true;
-          let finished = false;
-          if (hasLeftStart) {
-            if (dEnd <= endRegion.radius) finished = true;
-            else if (dEnd <= endRegion.radius * 3) {
-              const dt = (fix.t - prev.t) / 1000;
-              const speed = dt > 0 ? moved / dt : 0;
-              if (speed < 1.2) {
-                if (stoppedSince == null) stoppedSince = fix.t;
-                if ((fix.t - stoppedSince) / 1000 >= 20) finished = true;
-              } else stoppedSince = null;
-            } else stoppedSince = null;
-          }
+          // Auto-finish has ONE rule: the rider is physically inside the end
+          // region (within FINISH_RADIUS_M of the end point), and the ride has
+          // armed (moved FINISH_ARM_DIST_M from the start first). The old "stopped
+          // within ~180m of the end" heuristic was removed — proximity to the end
+          // POINT while merely near it (a parallel road, a detour, or stopping
+          // short) caused false finishes; entering the region is the only honest
+          // signal. Manual Finish covers ending anywhere else.
+          const finished = hasLeftStart && !arrivalDeclined && dEnd <= FINISH_RADIUS_M;
 
           if (onTick) {
             // Speed dt from the GPS fix timestamps (pos.timestamp), NOT the app
@@ -1484,7 +1483,17 @@ export function createAppController(deps = {}) {
               distanceToEndM: dEnd,     // straight-line metres to the end region
             });
           }
-          if (finished) { stop(); if (onFinish) onFinish(buildResult(fix.t)); }
+          if (finished) {
+            if (onArrived) {
+              // Hand the decision to the app: it confirms ("finish") or the rider
+              // keeps riding. A "keep riding" latches arrivalDeclined so
+              // auto-finish won't fire again for the rest of the ride.
+              arrivalDeclined = true;
+              onArrived(buildResult(fix.t));
+            } else {
+              stop(); if (onFinish) onFinish(buildResult(fix.t));
+            }
+          }
         } else {
           trace.push(fix);
         }
