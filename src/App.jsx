@@ -23,7 +23,7 @@ import { solarTimes } from "./lib/solar.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
-  needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, ARRIVAL_LIVE_AFTER_M, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
+  needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, rainfallValue, rainfallUnitLabel, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel } from "./lib/format.js";
@@ -2660,8 +2660,25 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     // curve-immune); the needle uses raw trace distance (real instantaneous
     // speed, including off-route). Progress/remaining come from along-route
     // projection, so they self-heal after a GPS gap and never need the clamp.
+    // Seed the arrival pace EMA immediately with the route's still-air baseline
+    // pace (always known synchronously), so arrival is a smooth pace-based
+    // projection from the very first fix — no forecast→live switch, no 1 km jump.
+    // The wind-aware forecast pace re-seeds this a moment later when
+    // ridePrediction resolves (below), before any real riding has accrued. Real
+    // speeds then drift the EMA from predicted toward actual over the ride.
+    const baselineSec = route.baselineTimeSec || null;
+    const routeTotalM = route.totalDistance || null;
+    const seedPaceMps = (baselineSec && routeTotalM) ? routeTotalM / baselineSec : null;
+    // Pace EMA time constant = HALF the baseline ride time, so shorter routes
+    // adapt faster (a 20-min route shouldn't cling to its predicted pace as long
+    // as a 2-hour one). CAPPED at 30 min so very long rides don't become sluggish
+    // to real pace changes (half of a 2 h ride would otherwise be a 1 h τ). Falls
+    // back to the legacy ~45 min if baseline is unknown.
+    const PACE_TAU_MAX_MS = 30 * 60000;
+    const paceTauMs = baselineSec ? Math.min((baselineSec * 1000) / 2, PACE_TAU_MAX_MS) : PACE_EMA_TAU_MS;
     emaRef.current = {
-      speedMps: 0, paceMps: null, paceSeeded: false, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null,
+      speedMps: 0, paceMps: seedPaceMps, paceSeeded: seedPaceMps != null, paceTauMs,
+      warmed: false, warmDistM: 0, warmSec: null, bestAccM: null,
       moveDistM: 0, moveSec: 0, lastSpeedAccM: null,
       lastFixT: null, lastAlongM: null, lastAccM: null,
       polyline: routePolyline(route),
@@ -2674,6 +2691,16 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     // it. Shown for every route incl. the example (showcases the feature).
     controller.ridePrediction(route).then((p) => {
       setForecastSec(p && p.predictedSec ? p.predictedSec : null);
+      // Re-seed the pace EMA with the WIND-AFFECTED predicted pace, replacing the
+      // still-air seed — but only if real riding hasn't meaningfully started yet
+      // (giving a slow forecast up to 60 s to land). Past that, the rider's own
+      // accumulated pace is the better signal, so we leave the EMA to drift and
+      // never yank it back to the prediction (which would be a late jump).
+      const em = emaRef.current;
+      if (em && p && p.predictedSec && routeTotalM && (em.moveSec || 0) < 60) {
+        em.paceMps = routeTotalM / p.predictedSec;
+        em.paceSeeded = true;
+      }
       const windWord = p && p.windWord ? p.windWord : null;
       const timeScale = p && p.timeScale ? p.timeScale : 1;
       return controller.rideExpectation(route, windWord, timeScale);
@@ -2750,18 +2777,19 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           if (dt > 0 && goodFix) {
             const instMps = Math.max(0, Math.min(SPEED_SANE_MAX_MPS, speedMps || 0));
             if (instMps >= PACE_MOVING_MIN_MPS) {
-              // Accrue moving distance/time for a stop-free seed.
+              // Accrue moving distance/time (used only to gate the early forecast
+              // re-seed above; no longer a 1 km seed trigger).
               em.moveDistM = (em.moveDistM || 0) + instMps * (Math.min(dt, NEEDLE_MAX_DT_MS) / 1000);
               em.moveSec = (em.moveSec || 0) + Math.min(dt, NEEDLE_MAX_DT_MS) / 1000;
-              if (!em.paceSeeded && em.moveDistM >= ARRIVAL_LIVE_AFTER_M && em.moveSec > 0) {
-                em.paceMps = em.moveDistM / em.moveSec; // moving-only seed
-                em.paceSeeded = true;
-              } else if (em.paceSeeded) {
-                em.paceMps = emaStep(em.paceMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), PACE_EMA_TAU_MS);
-              }
+              // Pace EMA is seeded from the predicted (wind-affected) pace at the
+              // start, so we always just step it — real speeds drift it smoothly
+              // from predicted toward actual. τ is half the baseline ride time.
+              const tauMs = em.paceTauMs || PACE_EMA_TAU_MS;
+              if (em.paceMps == null) em.paceMps = instMps; // safety: unseeded → adopt
+              else em.paceMps = emaStep(em.paceMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), tauMs);
             }
-            // Below the moving threshold: contribute nothing (neither seed nor
-            // EMA), so stops don't affect moving pace.
+            // Below the moving threshold: contribute nothing, so stops don't
+            // affect moving pace.
           }
         }
 
@@ -2917,7 +2945,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
         // defined remaining distance, so arrival is genuinely unknown → no
         // marker; an "Off route" message explains the frozen progress instead).
         const arrivalMs = live.offRoute ? null : expectedArrivalMs({
-          nowMs, estDistanceM: alongM, gpsDistanceM: live.distanceM, routeTotalM: totalM,
+          nowMs, estDistanceM: alongM, routeTotalM: totalM,
           paceMps: emaRef.current.paceMps,
           // Wind + learning-aware predicted duration for leaving now (the same
           // prediction the home screen shows) when the forecast was fetchable;

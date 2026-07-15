@@ -2,7 +2,7 @@ import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   averageSpeedKmh, emaStep, routePolyline, projectToRoute, OFF_ROUTE_M,
   needleTauMs, NEEDLE_TAU_MIN_MS, NEEDLE_TAU_MAX_MS, NEEDLE_ACC_REF_M,
-  SPEEDO_START_DEG, SPEEDO_SWEEP_DEG, SPEEDO_MAX_KMH, ARRIVAL_LIVE_AFTER_M,
+  SPEEDO_START_DEG, SPEEDO_SWEEP_DEG, SPEEDO_MAX_KMH,
 } from './src/lib/rideReadout.js';
 
 let pass = 0, fail = 0;
@@ -60,36 +60,32 @@ console.log('\narrivalBezel (always shows minute; grey ≥1h, amber <1h):');
   ok('at arrival → hoursAway 0', bnow.hoursAway === 0);
 }
 
-console.log('\nexpectedArrivalMs:');
+console.log('\nexpectedArrivalMs (single rule: remaining ÷ seeded pace):');
 {
   const now = 1_000_000_000_000;
-  // before 1 km of REAL gps distance: PROGRESS-SCALED forecast estimate.
-  // est 200 of 5000 → remaining fraction 0.96 → 1200 × 0.96 = 1152 s.
-  const a = expectedArrivalMs({ nowMs: now, estDistanceM: 200, gpsDistanceM: 200, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 1200 });
-  ok('before 1km: progress-scaled forecast', a === now + 1152 * 1000, `${a}`);
-  // scaling refines as you advance: at 800 m along, remaining fraction 0.84 → 1008 s
-  const a2 = expectedArrivalMs({ nowMs: now, estDistanceM: 800, gpsDistanceM: 800, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 1200 });
-  ok('scaling shrinks as rider advances', a2 === now + 1008 * 1000, `${a2}`);
-  // fallback to baseline when no forecast: baseline 1000, est 500 of 5000 → 0.9 → 900 s
-  const a3 = expectedArrivalMs({ nowMs: now, estDistanceM: 500, gpsDistanceM: 500, routeTotalM: 5000, paceMps: 5, baselineRemainingSec: 1000 });
-  ok('before 1km: baseline fallback when no forecast', a3 === now + 900 * 1000, `${a3}`);
-  // forecast preferred over baseline when both present
-  const a4 = expectedArrivalMs({ nowMs: now, estDistanceM: 0, gpsDistanceM: 0, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 1200, baselineRemainingSec: 9999 });
-  ok('forecast preferred over baseline', a4 === now + 1200 * 1000, `${a4}`);
-  // neither estimate → null in the first km
-  ok('no estimate in first km → null', expectedArrivalMs({ nowMs: now, estDistanceM: 200, gpsDistanceM: 200, routeTotalM: 5000, paceMps: 5 }) === null);
-  // after 1 km: remaining (from est) / pace. est 2000 of 5000 → remaining 3000; pace 5 → 600s
-  const b = expectedArrivalMs({ nowMs: now, estDistanceM: 2000, gpsDistanceM: 2000, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 9999 });
-  ok('after 1km uses remaining/pace', b === now + 600 * 1000, `${b}`);
-  // DETOUR case: gps distance large (rode far) but est distance small (clamped);
-  // pace is healthy → arrival stays sensible, NOT blown out.
-  const detour = expectedArrivalMs({ nowMs: now, estDistanceM: 500, gpsDistanceM: 3000, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 9999 });
-  // remaining = 4500 / 5 = 900s — reasonable, not hours
+  // With a valid pace, ALWAYS remaining/pace — no 1 km switch. Pace is seeded at
+  // ride start with the predicted pace and drifts to actual, so it's valid from
+  // the first fix. est 200 of 5000 → remaining 4800; pace 5 → 960 s.
+  const a = expectedArrivalMs({ nowMs: now, estDistanceM: 200, routeTotalM: 5000, paceMps: 5 });
+  ok('early: remaining/pace (no forecast switch)', a === now + 960 * 1000, `${a}`);
+  // advancing shortens remaining: 2000 of 5000 → 3000 → 600 s
+  const b = expectedArrivalMs({ nowMs: now, estDistanceM: 2000, routeTotalM: 5000, paceMps: 5 });
+  ok('advancing shortens arrival', b === now + 600 * 1000, `${b}`);
+  // pace is used even when forecast/baseline present (they're fallback only)
+  const a4 = expectedArrivalMs({ nowMs: now, estDistanceM: 0, routeTotalM: 5000, paceMps: 5, forecastRemainingSec: 9999, baselineRemainingSec: 8888 });
+  ok('pace beats forecast/baseline when present', a4 === now + 1000 * 1000, `${a4}`);
+  // DETOUR: est distance small (clamped) but pace healthy → arrival sensible.
+  const detour = expectedArrivalMs({ nowMs: now, estDistanceM: 500, routeTotalM: 5000, paceMps: 5 });
   ok('detour: healthy pace keeps arrival sensible', detour === now + 900 * 1000, `${detour}`);
-  ok('no total → null', expectedArrivalMs({ nowMs: now, estDistanceM: 2000, gpsDistanceM: 2000, routeTotalM: null, paceMps: 5 }) === null);
-  ok('zero pace after 1km → null', expectedArrivalMs({ nowMs: now, estDistanceM: 2000, gpsDistanceM: 2000, routeTotalM: 5000, paceMps: 0 }) === null);
+  // FALLBACK: no pace yet → progress-scaled forecast (rare; EMA seeded at start).
+  const f = expectedArrivalMs({ nowMs: now, estDistanceM: 200, routeTotalM: 5000, paceMps: null, forecastRemainingSec: 1200 });
+  ok('no pace → progress-scaled forecast fallback', f === now + 1152 * 1000, `${f}`);
+  const f2 = expectedArrivalMs({ nowMs: now, estDistanceM: 500, routeTotalM: 5000, paceMps: 0, baselineRemainingSec: 1000 });
+  ok('no pace → baseline fallback when no forecast', f2 === now + 900 * 1000, `${f2}`);
+  ok('no pace and no estimate → null', expectedArrivalMs({ nowMs: now, estDistanceM: 200, routeTotalM: 5000, paceMps: 0 }) === null);
+  ok('no total → null', expectedArrivalMs({ nowMs: now, estDistanceM: 2000, routeTotalM: null, paceMps: 5 }) === null);
   // overshot est → remaining 0 → arrival now
-  const c = expectedArrivalMs({ nowMs: now, estDistanceM: 5000, gpsDistanceM: 6000, routeTotalM: 5000, paceMps: 5 });
+  const c = expectedArrivalMs({ nowMs: now, estDistanceM: 5000, routeTotalM: 5000, paceMps: 5 });
   ok('reached end → arrival now', c === now, `${c}`);
 }
 
