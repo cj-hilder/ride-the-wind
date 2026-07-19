@@ -1,44 +1,48 @@
 /**
- * Ride the Wind — Learning (refactored)
+ * Ride the Wind — Learning (v2: wind-attenuation k)
  *
  * Resolves, per route, the two quantities the prediction depends on:
  *
- *     predicted_time = baseline × (1 + k · wind_factor)
+ *     predicted_time = baseline × (1 + wind_factor),
+ *     wind_factor = Σ tᵢ·f_branch(k · hᵢ/20)/Σ tᵢ      (k INSIDE the curve)
  *
- * where k is ASYMMETRIC: kHead applies when wind_factor > 0 (headwind, slower)
- * and kTail when wind_factor < 0 (tailwind, faster), with a kink at 0.
+ * where k is the WIND-ATTENUATION of the route: surface along-route wind =
+ * k × forecast (forecast calibration + shelter + rider habit blended). k is
+ * ASYMMETRIC (kHead / kTail) because all three ingredients are wind-direction
+ * dependent. f_branch are the constant-power physics curves in windModel.
  *
  * The model is determined from a CURATED RIDE LOG plus a route CONFIG, not from
  * a persisted regression accumulator. Baseline and k are two independently
  * toggled quantities (manual ↔ learned). Baseline is resolved FIRST; k is then
- * computed CONDITIONAL on a per-ride baseline. There is no recency decay: a
- * ride's k is measured against the baseline contemporaneous with that ride (its
- * own current/historic reference), and the user curates the log by hand.
+ * computed CONDITIONAL on a per-ride baseline. No recency decay; the user
+ * curates the log by hand.
  *
- * ── Ride record shape (the units this module consumes) ────────────────
- *   windFactor       signed, dimensionless (windModel: ≈ (along-route km/h / 20)²)
+ * ── Ride record shape (v2 rides, wfv === 2) ───────────────────────────
+ *   wfv              2 — wind-model version stamp (absent = v1, excluded from
+ *                    k learning; v1 rides with stored klass "still" still feed
+ *                    the baseline — a truly still ride is scale-agnostic)
+ *   rideWindKmh      signed equivalent uniform forecast along-route wind for
+ *                    the ride (+head/−tail), km/h — 20·inv_branch(|wf at k=1|)
  *   actualSec        recorded ride duration (seconds)
  *   included         boolean — user curation include/exclude
  *   baselineRef      "current" | "historic"
  *   savedBaselineSec frozen still-air baseline (used when historic)
  *   startedAt        epoch ms (age, ordering)
- *
- * ── wind_factor scale & classification ───────────────────────────────
- * wind_factor is the signed-square effort normalised to W_REF (20 km/h), so the
- * relationship to the intuitive along-route component h is quadratic:
- * wind_factor ≈ (h/20)². The class thresholds below follow from that mapping.
+ *   klass            classification stored at save time (authoritative for v1)
  */
 
 /* ------------------------------------------------------------------ *
- * Constants (spec §2.10)
+ * Constants (spec: wind model v2)
  * ------------------------------------------------------------------ */
 
-export const WF_STILL = 0.06;                // |wf| below this: still (~<5 km/h)
-export const WF_WINDY = 0.25;                // |wf| at/above this: windy (~>=10 km/h)
-export const WF_SPREAD_MIN = 0.06;           // min wf spread to learn k (per direction)
-export const WF_BASELINE_SPREAD_MIN = 0.20;  // min wf spread to extrapolate baseline
-export const K_MIN = 0.05;
-export const K_MAX = 4.0;
+import { effortNorm, invHead, invTail } from "./windModel.js";
+
+export const KMH_STILL = 5;                 // |wind| below this: still
+export const KMH_WINDY = 10;                // |wind| at/above this: windy
+export const KMH_SPREAD_MIN = 1.2;          // min km/h spread to learn k (per direction)
+export const KMH_BASELINE_SPREAD_MIN = 4;   // min km/h spread to extrapolate baseline
+export const K_MIN = 0.0;                   // THE k range: fraction of forecast
+export const K_MAX = 1.2;                   // wind felt, user-facing as 0%–120%
 export const FREEZE_AGE_DAYS = 14;
 export const FREEZE_AGE_MS = FREEZE_AGE_DAYS * 24 * 60 * 60 * 1000;
 
@@ -46,16 +50,40 @@ export const FREEZE_AGE_MS = FREEZE_AGE_DAYS * 24 * 60 * 60 * 1000;
  * Classification
  * ------------------------------------------------------------------ */
 
+/** True for rides recorded under the v2 wind model. */
+export function isV2Ride(r) {
+  return !!r && r.wfv === 2 && Number.isFinite(r.rideWindKmh);
+}
+
 /**
- * Classify a ride by |wind_factor| into "still" | "gentle" | "windy".
- * @param {number} windFactor
- * @returns {"still"|"gentle"|"windy"}
+ * Classify by equivalent along-route forecast wind (signed km/h) into
+ * "still" | "gentle" | "windy".
  */
-export function classifyRide(windFactor) {
-  const a = Math.abs(windFactor);
-  if (a < WF_STILL) return "still";
-  if (a < WF_WINDY) return "gentle";
+export function classifyRide(rideWindKmh) {
+  const a = Math.abs(rideWindKmh);
+  if (a < KMH_STILL) return "still";
+  if (a < KMH_WINDY) return "gentle";
   return "windy";
+}
+
+/**
+ * Classify a ride RECORD: v2 rides by their rideWindKmh against the km/h
+ * thresholds; v1 rides by their stored windFactor against the FROZEN v1
+ * thresholds (the signed-square scale that value was computed on) — never a
+ * v1 windFactor against v2 thresholds. This is what lets old still rides keep
+ * feeding the baseline (a truly still ride is scale-agnostic).
+ */
+const V1_WF_STILL = 0.06;
+const V1_WF_WINDY = 0.25;
+export function classifyRideRecord(r) {
+  if (isV2Ride(r)) return classifyRide(r.rideWindKmh);
+  if (r && Number.isFinite(r.windFactor)) {
+    const a = Math.abs(r.windFactor);
+    if (a < V1_WF_STILL) return "still";
+    if (a < V1_WF_WINDY) return "gentle";
+    return "windy";
+  }
+  return null;
 }
 
 /** Clamp k to the single fixed physical band. */
@@ -113,29 +141,43 @@ export function effectiveBaseline(ride, liveBaselineSec) {
 }
 
 /**
- * Per-ride k, for display and as the windy-ride contribution to the k fit:
- *   k_ride = (actual / b − 1) / wf
- * where b is the ride's effective baseline. Null for ~zero wind_factor (still).
+ * Per-ride k (v2), for display and as the contribution to the k fit:
+ * invert the ride's time deviation through the branch curve and divide by the
+ * ride's equivalent wind:
+ *
+ *   head:  k = invHead(actual/b − 1) / (w/20)
+ *   tail:  k = invTail(1 − actual/b) / (w/20)      (w = |rideWindKmh|)
+ *
+ * A deviation with the "wrong" sign (e.g. a headwind ride faster than
+ * baseline) inverts to 0 — the ride testifies to zero wind effect; attenuation
+ * cannot be negative. The returned k is UNCLAMPED: values beyond the k range
+ * (0–1.2) are shown as-is, and such rides default to not-used at record time
+ * (app.recordRide), the same mechanism as gentle rides — the user can opt them
+ * back in. Null for still rides, v1 rides, or no usable baseline.
  */
 export function rideK(ride, liveBaselineSec) {
+  if (!isV2Ride(ride)) return null;
   const b = effectiveBaseline(ride, liveBaselineSec);
   if (!(b > 0)) return null;
-  const wf = ride.windFactor;
-  if (!Number.isFinite(wf) || Math.abs(wf) < 1e-9) return null;
-  return (ride.actualSec / b - 1) / wf;
+  const w = ride.rideWindKmh;
+  if (!Number.isFinite(w) || Math.abs(w) < 1e-9) return null;
+  const x = Math.abs(w) / 20;
+  const dev = ride.actualSec / b - 1;
+  const kx = w > 0 ? invHead(dev) : invTail(-dev);
+  return kx / x;
 }
 
 /* ------------------------------------------------------------------ *
  * Spread helper
  * ------------------------------------------------------------------ */
 
-/** Spread (max−min) of wind_factor across a set of rides. */
-function wfSpread(rides) {
+/** Spread (max−min) of rideWindKmh across a set of v2 rides. */
+function kmhSpread(rides) {
   if (rides.length === 0) return 0;
   let lo = Infinity, hi = -Infinity;
   for (const r of rides) {
-    if (r.windFactor < lo) lo = r.windFactor;
-    if (r.windFactor > hi) hi = r.windFactor;
+    if (r.rideWindKmh < lo) lo = r.rideWindKmh;
+    if (r.rideWindKmh > hi) hi = r.rideWindKmh;
   }
   return hi - lo;
 }
@@ -147,16 +189,17 @@ function wfSpread(rides) {
 /**
  * Resolve still-air baseline (seconds) from the curated ride log.
  *   1. >=1 still ride            → mean of still-ride times
- *   2. else windy rides, spread >= WF_BASELINE_SPREAD_MIN
- *                                → intercept of actual ~ wind_factor (extrapolate to wf=0)
+ *      (still rides include v1 rides with STORED klass "still" — the carve-out:
+ *       a truly still ride is scale-agnostic)
+ *   2. else v2 windy rides, km/h spread >= KMH_BASELINE_SPREAD_MIN
+ *                                → intercept of actual ~ f(x) (extrapolate to
+ *                                  zero wind); regressor z = effortNorm(w),
+ *                                  intercept robust to the k-curvature the
+ *                                  slope absorbs
  *   3. else                      → slider fallback
- *
- * @param {Array} rides - included rides only (caller filters), with class info
- * @param {number} sliderBaselineSec
- * @returns {{baselineSec:number, source:"learned"|"slider", branch:1|2|3, ridesUsed:number}}
  */
 export function resolveBaseline(rides, sliderBaselineSec) {
-  const still = rides.filter((r) => classifyRide(r.windFactor) === "still");
+  const still = rides.filter((r) => classifyRideRecord(r) === "still");
   if (still.length >= 1) {
     const mean = still.reduce((s, r) => s + r.actualSec, 0) / still.length;
     if (mean > 0) {
@@ -164,21 +207,42 @@ export function resolveBaseline(rides, sliderBaselineSec) {
     }
   }
 
-  const windy = rides.filter((r) => classifyRide(r.windFactor) === "windy");
-  if (windy.length >= 2 && wfSpread(windy) >= WF_BASELINE_SPREAD_MIN) {
-    // Ordinary least squares actual = A + B·wf; baseline = A (intercept at wf=0).
-    const n = windy.length;
-    let sx = 0, sy = 0, sxx = 0, sxy = 0;
-    for (const r of windy) {
-      sx += r.windFactor; sy += r.actualSec;
-      sxx += r.windFactor * r.windFactor; sxy += r.windFactor * r.actualSec;
-    }
-    const det = n * sxx - sx * sx;
-    if (Math.abs(det) > 1e-12) {
-      const A = (sy * sxx - sx * sxy) / det;
-      if (A > 0) {
-        return { baselineSec: A, source: "learned", branch: 2, ridesUsed: n };
+  const windy = rides.filter((r) => isV2Ride(r) && classifyRide(r.rideWindKmh) === "windy");
+  if (windy.length >= 2 && kmhSpread(windy) >= KMH_BASELINE_SPREAD_MIN) {
+    // Intercept extrapolation to zero wind. The regressor is the curve value,
+    // but the data follows f(k·w) with unknown k, so a single OLS pass carries
+    // a curvature bias (~6% low for mixed directions at k≈0.5). Two refinement
+    // iterations remove it: intercept → implied k (wind-weighted mean of the
+    // per-ride inversion against that intercept) → refit with z = f(k·w)/k.
+    // Verified: 60 noisy mixed rides at k=0.5 converge 940 → 999 (true 1000).
+    const ols = (pts) => {
+      const n = pts.length;
+      let sx = 0, sy = 0, sxx = 0, sxy = 0;
+      for (const p of pts) { sx += p.z; sy += p.y; sxx += p.z * p.z; sxy += p.z * p.y; }
+      const det = n * sxx - sx * sx;
+      if (Math.abs(det) <= 1e-12) return null;
+      return (sy * sxx - sx * sxy) / det;
+    };
+    let A = ols(windy.map((r) => ({ z: effortNorm(r.rideWindKmh), y: r.actualSec })));
+    for (let it = 0; A > 0 && it < 2; it++) {
+      let sw = 0, swk = 0;
+      for (const r of windy) {
+        const dev = r.actualSec / A - 1;
+        const x = Math.abs(r.rideWindKmh) / 20;
+        const kx = r.rideWindKmh > 0 ? invHead(dev) : invTail(-dev);
+        if (!Number.isFinite(kx) || !(x > 0)) continue;
+        sw += Math.abs(r.rideWindKmh);
+        swk += Math.abs(r.rideWindKmh) * (kx / x);
       }
+      if (!(sw > 0)) break;
+      const k = swk / sw;
+      if (!(k > 0)) break;
+      const A2 = ols(windy.map((r) => ({ z: effortNorm(k * r.rideWindKmh) / k, y: r.actualSec })));
+      if (A2 == null || !(A2 > 0)) break;
+      A = A2;
+    }
+    if (A != null && A > 0) {
+      return { baselineSec: A, source: "learned", branch: 2, ridesUsed: windy.length };
     }
   }
 
@@ -190,32 +254,31 @@ export function resolveBaseline(rides, sliderBaselineSec) {
  * ------------------------------------------------------------------ */
 
 /**
- * Fit k for a set of windy rides via least-squares through the origin of
- *   (actualᵢ/bᵢ − 1) = k·wfᵢ
- * each ride using its own effective baseline bᵢ. Returns null if the gate fails
- * (need >=2 rides AND spread >= WF_SPREAD_MIN) or the fit is degenerate.
- *
- * @param {Array} windyRides
- * @param {number} liveBaselineSec
- * @returns {{k:number, ridesUsed:number}|null}
+ * Fit k for a set of v2 rides in one direction: the |wind|-weighted mean of
+ * per-ride inverted k (stronger-wind rides pin k more precisely — the
+ * inversion's sensitivity to time noise falls with wind). Returns null if the
+ * gate fails (need >=2 rides AND km/h spread >= KMH_SPREAD_MIN) or no ride
+ * yields a usable k.
  */
-function fitKThroughOrigin(windyRides, liveBaselineSec) {
-  if (windyRides.length < 2) return null;
-  if (wfSpread(windyRides) < WF_SPREAD_MIN) return null;
-  // origin LS: k = Σ(wf·y) / Σ(wf²), y = actual/b − 1
-  let sxy = 0, sxx = 0;
-  for (const r of windyRides) {
-    const b = effectiveBaseline(r, liveBaselineSec);
-    if (!(b > 0)) continue;
-    const y = r.actualSec / b - 1;
-    const wf = r.windFactor;
-    sxy += wf * y;
-    sxx += wf * wf;
+function fitKWeighted(dirRides, liveBaselineSec) {
+  if (dirRides.length < 2) return null;
+  if (kmhSpread(dirRides) < KMH_SPREAD_MIN) return null;
+  let sw = 0, swk = 0, used = 0;
+  for (const r of dirRides) {
+    const k = rideK(r, liveBaselineSec);
+    if (k == null) continue;
+    const w = Math.abs(r.rideWindKmh);
+    sw += w;
+    swk += w * k;
+    used += 1;
   }
-  if (!(sxx > 1e-12)) return null;
-  const k = clampK(sxy / sxx);
-  if (k == null) return null;
-  return { k, ridesUsed: windyRides.length };
+  if (!(sw > 0) || used < 2) return null;
+  const k = swk / sw;
+  // Acceptance, not clamping: a fitted k is only trusted as "learned" when it
+  // lands inside THE k range (0–1.2). Outside, something is off (baseline,
+  // anomalous rides) — return null so the route keeps using the slider setting.
+  if (!Number.isFinite(k) || k < K_MIN || k > K_MAX) return null;
+  return { k, ridesUsed: used };
 }
 
 /**
@@ -246,18 +309,18 @@ export function resolveK(rides, liveBaselineSec, config) {
   const sH = clampK(sliderKHead) ?? sliderKHead;
   const sT = clampK(sliderKTail) ?? sliderKTail;
 
-  // k is learned from windy rides, PLUS any gentle rides the user has
-  // explicitly opted in. Gentle rides default to not-used (filtered out before
-  // this point in resolveModel), so the only gentle rides here are ones the user
-  // deliberately marked used — honour that by letting them feed k. Still rides
-  // never feed k (they carry no usable wind signal). Gentle rides have small
-  // wind_factor, so they're naturally low-leverage in the origin fit.
+  // k is learned from v2 windy rides, PLUS any v2 gentle rides the user has
+  // explicitly opted in (gentle defaults to not-used; filtered before this
+  // point in resolveModel). v1 rides never feed k — their stored windFactor is
+  // on the old scale. Still rides never feed k (no usable wind signal). Gentle
+  // rides have small wind, so their weight in the fit is naturally low.
   const forK = rides.filter((r) => {
-    const c = classifyRide(r.windFactor);
+    if (!isV2Ride(r)) return false;
+    const c = classifyRide(r.rideWindKmh);
     return c === "windy" || c === "gentle";
   });
-  const head = forK.filter((r) => r.windFactor > 0);
-  const tail = forK.filter((r) => r.windFactor < 0);
+  const head = forK.filter((r) => r.rideWindKmh > 0);
+  const tail = forK.filter((r) => r.rideWindKmh < 0);
 
   if (kMode !== "learn") {
     // Manual: slider values, split exactly as the user set it.
@@ -269,8 +332,8 @@ export function resolveK(rides, liveBaselineSec, config) {
     };
   }
 
-  const headFit = fitKThroughOrigin(head, liveBaselineSec);
-  const tailFit = fitKThroughOrigin(tail, liveBaselineSec);
+  const headFit = fitKWeighted(head, liveBaselineSec);
+  const tailFit = fitKWeighted(tail, liveBaselineSec);
   const bothQualify = !!headFit && !!tailFit;
 
   // Effective split: forced when both qualify (auto-split); otherwise honour
@@ -291,7 +354,7 @@ export function resolveK(rides, liveBaselineSec, config) {
   }
 
   // Combined learn: pool all contributing rides (both directions) into one fit.
-  const pooled = fitKThroughOrigin(forK, liveBaselineSec);
+  const pooled = fitKWeighted(forK, liveBaselineSec);
   if (pooled) {
     return {
       kHead: pooled.k, kTail: pooled.k,
@@ -423,8 +486,11 @@ export function predictFromModel(model, windFactor, opts = {}) {
   const { distanceM = null, walkPaceKmh = 5, speedCapMult = 3, multMaxFallback = 6 } = opts;
   const baselineSec = model.baselineSec;
   const kHead = model.kHead, kTail = model.kTail;
+  // v2: windFactor arrives with the route's k already applied INSIDE the
+  // branch curves (per segment sign), so it IS the fractional time change.
+  // `k` is returned for display only, picked by the aggregate's sign.
   const k = windFactor >= 0 ? kHead : kTail;
-  const raw = 1 + k * windFactor;
+  const raw = 1 + windFactor;
 
   const multMin = 1 / speedCapMult;
   let multMax = multMaxFallback;

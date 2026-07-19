@@ -17,6 +17,10 @@
 import { processGpx, processTrace, reverseRoute } from "./gpxRoute.js";
 import {
   seedKSplit as computeSeedKSplit,
+  effortNorm,
+  invHead,
+  invTail,
+  windComponent,
   fetchForecast as realFetchForecast,
   fetchEnsemble as realFetchEnsemble,
   parseForecast,
@@ -157,8 +161,10 @@ export function createAppController(deps = {}) {
       endRegion: { lat: p.end.lat, lon: p.end.lon, radius: 60 },
       baselineTimeSec: baselineSec,
       seedStillAirSec: baselineSec,
-      seedHeadwind20Sec: Math.round(baselineSec * (1 + EXAMPLE_DEFAULT_K)),
-      seedTailwind20Sec: Math.round(baselineSec * (1 - EXAMPLE_DEFAULT_K)),
+      // v2 forward map: seed time = still·(1 + f_branch(k·w_ref)) — the exact
+      // counterpart of seedKSplit's inverse, so k round-trips through seed times.
+      seedHeadwind20Sec: Math.round(baselineSec * (1 + effortNorm(EXAMPLE_DEFAULT_K * 20))),
+      seedTailwind20Sec: Math.round(baselineSec * (1 + effortNorm(-EXAMPLE_DEFAULT_K * 20))),
       // Mirror the default new-route experience; toggleable in-memory so the
       // demo illustrates the difference between manual and learn.
       baselineMode: "learn",
@@ -207,8 +213,8 @@ export function createAppController(deps = {}) {
     }
     const kH = kHead != null ? kHead : null;
     const kT = kTail != null ? kTail : null;
-    if (kH != null) r.seedHeadwind20Sec = Math.round(r.seedStillAirSec * (1 + kH));
-    if (kT != null) r.seedTailwind20Sec = Math.round(r.seedStillAirSec * (1 - kT));
+    if (kH != null) r.seedHeadwind20Sec = Math.round(r.seedStillAirSec * (1 + effortNorm(kH * 20)));
+    if (kT != null) r.seedTailwind20Sec = Math.round(r.seedStillAirSec * (1 + effortNorm(-kT * 20)));
     if (targetArrival != null) r.targetArrival = targetArrival;
     if (activeDays != null) r.activeDays = activeDays;
     if (timeMode != null) r.timeMode = timeMode === "depart" ? "depart" : "arrive";
@@ -363,12 +369,22 @@ export function createAppController(deps = {}) {
     const meanBearing = (Math.atan2(by / segments.length, bx / segments.length) / DEG + 360) % 360;
     const w = segments.map((s) => s.distance || 1);
     const steady = (fromDeg) => () => ({ speed: 20, fromDeg });
+    // Per-segment along-route components (km/h) under the steady 20 km/h
+    // example winds, with distance weights — the UI evaluates the v2 model
+    // live as baseline·(1 + Σw·effortNorm(k·hᵢ)/Σw) with the slider's k
+    // INSIDE the curve (there is no outer k multiply in v2).
+    const comps = (fromDeg) => segments.map((s, i) => ({
+      h: windComponent(20, fromDeg, s.bearing), w: w[i],
+    }));
     return {
       meanBearingDeg: Math.round(meanBearing),
       headBearingLabel: compass16(meanBearing),
       tailBearingLabel: compass16((meanBearing + 180) % 360),
+      // k=1 factors (reference; the sliders use the components below)
       headFactor: computeWindFactor(segments, steady(meanBearing), w),
       tailFactor: computeWindFactor(segments, steady((meanBearing + 180) % 360), w),
+      headComponents: comps(meanBearing),
+      tailComponents: comps((meanBearing + 180) % 360),
     };
   }
 
@@ -546,7 +562,10 @@ export function createAppController(deps = {}) {
     }
     const rides = (await store.listRides(route.id)).map((r) => ({
       id: r.id,
-      windFactor: r.windFactor,
+      wfv: r.wfv,
+      rideWindKmh: r.rideWindKmh,
+      windFactor: r.windFactor, // v1 legacy, display-only
+      klass: r.klass ?? null,   // stored class (authoritative for v1 rides)
       actualSec: r.actualTimeSec,
       startedAt: r.startedAt,
       included: r.included != null ? r.included : (r.usable != null ? !!r.usable : true),
@@ -596,7 +615,37 @@ export function createAppController(deps = {}) {
     // summary), default to today's configured time. There is no scheduler: PWAs
     // can't reliably wake to notify when closed, so the app shows a live
     // countdown beside the time instead of dispatching alerts.
-    const next = arrivalOnDate(route, dayMs != null ? dayMs : nowMs, exploredHHMM || undefined);
+    const entered = arrivalOnDate(route, dayMs != null ? dayMs : nowMs, exploredHHMM || undefined);
+
+    const predictForArrival = makePredictor({
+      route, rides, config, stationSeries, opts: { nowMs },
+    });
+    // The model is resolved once inside makePredictor; reuse it for confidence,
+    // dots and freeze persistence.
+    const resolved = predictForArrival.resolved;
+    await persistResolved(route, resolved);
+
+    // DEPART mode ("leave at HH:MM" / Go-now): the configured time is the
+    // DEPARTURE, but arrivalOnDate — and the whole prediction stack — anchor on
+    // an ARRIVAL. Anchoring the prediction on the entered time as if it were
+    // the arrival samples the wind one ride-length EARLY (e.g. 7:43–8:00 for an
+    // 8:00 departure), so tech info disagreed with a ride actually ridden
+    // 8:00–8:17 under a changing forecast. Fix: converge the arrival for the
+    // fixed departure (arrival = departure + predicted, two passes — same
+    // fixed-point style as the predictor itself) and evaluate there. Display
+    // still shows the entered time as the departure (see the depart block).
+    const isDepartMode = forceDepart || route.timeMode === "depart";
+    const enteredDepartMs = isDepartMode && entered ? entered.arrivalMs : null;
+    let next = entered;
+    if (isDepartMode && entered) {
+      let arrMs = enteredDepartMs + (resolved.baselineSec > 0 ? resolved.baselineSec : 1800) * 1000;
+      for (let i = 0; i < 2; i++) {
+        const p = predictForArrival(arrMs);
+        if (!p || !(p.predictedSec > 0)) break;
+        arrMs = enteredDepartMs + p.predictedSec * 1000;
+      }
+      next = { ...entered, arrivalMs: arrMs };
+    }
 
     // Guard: does the fetched forecast actually reach the ride day? A ride up to
     // a week out must not silently use clamped (stale) end-of-forecast data. If
@@ -606,14 +655,6 @@ export function createAppController(deps = {}) {
       next &&
       stationSeries.length > 0 &&
       stationSeries.every((st) => seriesCovers(st.series, next.arrivalMs));
-
-    const predictForArrival = makePredictor({
-      route, rides, config, stationSeries, opts: { nowMs },
-    });
-    // The model is resolved once inside makePredictor; reuse it for confidence,
-    // dots and freeze persistence.
-    const resolved = predictForArrival.resolved;
-    await persistResolved(route, resolved);
 
     const verdict = evaluateAlert(route, predictForArrival, {
       nowMs,
@@ -708,9 +749,11 @@ export function createAppController(deps = {}) {
     // Go now (Explore) forces this one instance to be treated as a departure at
     // the given time, regardless of the route's configured mode.
     const timeMode = forceDepart ? "depart" : (route.timeMode === "depart" ? "depart" : "arrive");
-    // `next.arrivalMs` is the entered-time instant: an arrival in arrive mode,
-    // a departure in depart mode. Baseline departure uses the whole-minute
-    // baseline ride time, to stay consistent with the displayed still-air time.
+    // In arrive mode `next.arrivalMs` is the entered arrival. In depart mode
+    // the entered time is the DEPARTURE (enteredDepartMs); next.arrivalMs is
+    // the converged arrival the prediction anchored on. Baseline departure uses
+    // the whole-minute baseline ride time, to stay consistent with the
+    // displayed still-air time.
     const baselineDepartureMs =
       next && timeMode === "arrive"
         ? next.arrivalMs - Math.round(route.baselineTimeSec / 60) * 60 * 1000
@@ -720,7 +763,7 @@ export function createAppController(deps = {}) {
       // Fixed departure: the rider leaves at the entered time; we show the
       // arrival RANGE. arrival = departure + rideTime. The caution percentile
       // already widened range.highSec, so the latest-arrival reflects it.
-      const departureMs = next.arrivalMs; // entered time = departure
+      const departureMs = enteredDepartMs; // the entered leave-at time
       // Compute arrivals from WHOLE-MINUTE ride times so the displayed numbers
       // are self-consistent with integer mental arithmetic (departure + shown
       // minutes = shown arrival). Round the ride durations first, then derive.
@@ -829,7 +872,7 @@ export function createAppController(deps = {}) {
       };
     } else if (next && rangeUnavailable && timeMode === "depart") {
       // Fixed departure, no forecast range: single central arrival estimate.
-      const departureMs = next.arrivalMs;
+      const departureMs = enteredDepartMs;
       const arrivalMs = departureMs + Math.round(verdict.predictedSec / 60) * 60 * 1000;
       conservative = {
         mode: "depart",
@@ -920,14 +963,15 @@ export function createAppController(deps = {}) {
       const w = firstW || windFn(route.segments[0].lat, route.segments[0].lon, departMs);
       const avgBearing = (Math.atan2(sy / route.segments.length, sx / route.segments.length) / DEG + 360) % 360;
       const meanHead = head / tt;
-      // Effort headwind: the single equivalent headwind that, run through the
-      // signed effort law, reproduces wind_factor exactly —
-      // wind_factor = sign · (effortHead/20)², so effortHead = sign·√|wf|·20.
-      // Defined as the inverse of the factor (not an RMS of segment headwinds),
-      // so it reconciles in every case, including a near-perpendicular wind on a
-      // winding route where head and tail segments largely cancel.
-      const wf = verdict.windFactor ?? 0;
-      const effortHead = Math.sign(wf) * Math.sqrt(Math.abs(wf)) * 20;
+      // Effort headwind: the single equivalent uniform forecast wind that
+      // reproduces the k=1 wind factor exactly, via the v2 branch inverses —
+      // the same quantity rides store as rideWindKmh. Defined as the inverse
+      // of the factor (not an RMS of segment headwinds), so it reconciles in
+      // every case, including a near-perpendicular wind on a winding route
+      // where head and tail segments largely cancel.
+      const wf1 = verdict.windFactorK1 ?? 0;
+      const effortHead = wf1 === 0 ? 0
+        : (wf1 > 0 ? 20 * invHead(wf1) : -20 * invTail(-wf1));
       const fetchedAt = forecastFetchedAt(route);
       debug = {
         windFromDeg: Math.round(w.fromDeg),
@@ -935,9 +979,10 @@ export function createAppController(deps = {}) {
         windSpeedKmh: Math.round(spd / tt),
         avgBearingDeg: Math.round(avgBearing),
         meanHeadwindKmh: +meanHead.toFixed(1),      // linear time-weighted mean
-        effortHeadwindKmh: +effortHead.toFixed(1),  // equivalent headwind behind wind_factor
+        effortHeadwindKmh: +effortHead.toFixed(2),  // equivalent wind (2dp, same precision as stored rideWindKmh so the two display identically at record time)
         meanCrosswindKmh: +(cross / tt).toFixed(1),
         windFactor: +(verdict.windFactor ?? 0).toFixed(3),
+        windFactorK1: +(verdict.windFactorK1 ?? 0).toFixed(3), // k=1 factor (effortHead inverts this)
         baselineSec: Math.round(route.baselineTimeSec),
         predictedSec: Math.round(verdict.predictedSec),
         slowSec: range ? Math.round(range.highSec) : null,
@@ -1027,20 +1072,60 @@ export function createAppController(deps = {}) {
     // Reconstruct the wind_factor for this ride from the forecast it carried.
     let windFactor = capture.windFactor;
     let predictedTimeSec = capture.predictedTimeSec ?? null;
+    if (windFactor == null && !Number.isFinite(capture.endedAt)) {
+      // Surface bad state rather than silently storing rideWindKmh 0 (which
+      // would misclassify the ride as still): the capture should always carry
+      // a finite end time from the ride/manual flows.
+      console.warn("recordRide: non-finite endedAt; ride will record zero wind", capture.endedAt);
+    }
     if (windFactor == null && capture.forecastWind && capture.forecastWind.length) {
       const stationSeries = capture.forecastWind; // [{lat,lon,series}]
       const predictForArrival = makePredictor({
         route, rides, config, stationSeries, opts: { nowMs: now() },
       });
       const p = predictForArrival(capture.endedAt);
-      windFactor = p.windFactor;
+      // v2: invert the k=1 factor (forecast-equivalent), NEVER the k-applied
+      // time factor — rideWindKmh must be independent of the learned k.
+      windFactor = p.windFactorK1 ?? p.windFactor;
       predictedTimeSec = p.predictedSec;
+    }
+
+    // v2 ride record: store the equivalent uniform forecast along-route wind
+    // (signed km/h) recovered from the K=1 wind factor via the branch inverses.
+    // IMPORTANT (prediction plumbing): the factor inverted here MUST stay the
+    // k=1 factor. When the predictor moves k inside the curve for time
+    // prediction, it must keep exposing the k=1 factor for this record,
+    // plus the wind-model version stamp. windFactor itself is not stored on new
+    // rides — rideWindKmh is the canonical, scale-stable summary.
+    const wf1 = Number.isFinite(windFactor) ? windFactor : 0;
+    const rideWindKmh = wf1 === 0 ? 0
+      : (wf1 > 0 ? 20 * invHead(wf1) : -20 * invTail(-wf1));
+
+    // Per-ride k sanity (v2): compute the UNCLAMPED implied k against the
+    // route's current resolved baseline. If it lands outside THE k range
+    // (0–1.2), the ride defaults to not-used — same mechanism as gentle rides;
+    // the user can opt it back in from the Rides Manager. An out-of-range k
+    // means the ride contradicts the model (baseline drift, stop-heavy ride,
+    // anomaly), so it shouldn't silently steer learning.
+    let included = capture.included;
+    if (included == null) {
+      const resolved = learning.resolveModel(rides, config, now());
+      const kRide = learning.rideK(
+        { wfv: 2, rideWindKmh, actualSec: capture.actualTimeSec, baselineRef: "current" },
+        resolved.baselineSec
+      );
+      if (kRide != null && (kRide < learning.K_MIN || kRide > learning.K_MAX)) {
+        included = false;
+      }
     }
 
     return store.recordRide({
       ...capture,
-      windFactor,
+      wfv: 2,
+      rideWindKmh: +rideWindKmh.toFixed(2),
+      windFactor: null,
       predictedTimeSec,
+      included,
     });
   }
 
@@ -1094,13 +1179,16 @@ export function createAppController(deps = {}) {
 
     // Map resolved (freeze-applied) rides back, decorate for display.
     const decorated = resolved.rides.map((r) => {
-      const cls = learning.classifyRide(r.windFactor);
-      const k = cls === "still" ? null : learning.rideK(r, liveBaseline);
+      const cls = learning.classifyRideRecord(r);
+      const k = cls === "still" ? null : learning.rideK(r, liveBaseline); // null for v1 rides
       return {
         id: r.id,
         startedAt: r.startedAt,
         actualTimeSec: r.actualSec,
-        windFactor: r.windFactor,
+        wfv: r.wfv,
+        rideWindKmh: r.rideWindKmh,
+        windFactor: r.windFactor, // v1 legacy (mean-wind display uses v1 inverse)
+        liveBaselineSec: liveBaseline, // lets the editor recompute k live as duration/baseline-ref change
         klass: cls,
         rideK: k,
         included: r.included !== false,

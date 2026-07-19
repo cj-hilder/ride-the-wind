@@ -32,23 +32,27 @@ const DB_NAME = "ride-the-wind";
 const DB_VERSION = 1;
 
 // Default k when a direction has no usable setup estimate. Mirrors
-// windModel.DEFAULT_K; duplicated here to avoid a cross-module dependency in
-// the storage layer (which otherwise knows no regression/wind math).
-const MIGRATION_DEFAULT_K = 0.33;
+// windModel.DEFAULT_K (v2: k = fraction of forecast wind felt); duplicated
+// here to avoid a cross-module dependency in the storage layer.
+const MIGRATION_DEFAULT_K = 0.7;
 
 /**
  * Derive { kHead, kTail } from a route's stored setup estimates, for migrating
- * pre-split models. Same formula as windModel.seedKSplit: kHead from the
- * headwind estimate, kTail from the tailwind estimate, each defaulting to
- * MIGRATION_DEFAULT_K and clamped to the full physical range 0.05–4.0.
+ * pre-split models. v2: seed times encode k via the branch curves, so the
+ * migration inverts them with the same closed forms as windModel.invHead /
+ * invTail (formulas duplicated by design, constants A=0.715, B=0.30), each
+ * side defaulting to MIGRATION_DEFAULT_K and clamped to the K range 0–1.2.
  */
 function splitSeedFromRoute(route) {
-  const clamp = (x) => Math.max(0.05, Math.min(4.0, x));
+  const A = 0.715, B = 0.30;
+  const invHead = (w) => (w > 0 ? (-1 + Math.sqrt(1 + 4 * A * (1 + A) * w)) / (2 * A) : 0);
+  const invTail = (w) => (w > 0 ? ((1 - B) * w) / (1 - B * w) : 0);
+  const clamp = (x) => Math.max(0.0, Math.min(1.2, x));
   let kHead = MIGRATION_DEFAULT_K, kTail = MIGRATION_DEFAULT_K;
   const still = route?.seedStillAirSec;
   if (still > 0) {
-    if (route.seedHeadwind20Sec > 0) kHead = clamp(route.seedHeadwind20Sec / still - 1);
-    if (route.seedTailwind20Sec > 0) kTail = clamp(1 - route.seedTailwind20Sec / still);
+    if (route.seedHeadwind20Sec > 0) kHead = clamp(invHead(route.seedHeadwind20Sec / still - 1));
+    if (route.seedTailwind20Sec > 0) kTail = clamp(invTail(1 - route.seedTailwind20Sec / still));
   }
   return { kHead, kTail };
 }
@@ -64,7 +68,9 @@ function splitSeedFromRoute(route) {
 function normalizeRides(rides) {
   return rides.map((r) => ({
     id: r.id,
-    windFactor: r.windFactor,
+    wfv: r.wfv,
+    rideWindKmh: r.rideWindKmh,
+    windFactor: r.windFactor, // v1 legacy (classification on frozen v1 scale)
     actualSec: r.actualTimeSec,
     startedAt: r.startedAt,
     included: r.included != null ? r.included : (r.usable != null ? !!r.usable : true),
@@ -456,11 +462,12 @@ export class Store {
     let includedDefault;
     if (capture.included != null) includedDefault = !!capture.included;
     else if (capture.usable != null) includedDefault = !!capture.usable;
-    else if (!Number.isFinite(capture.windFactor)) includedDefault = true;
-    else {
-      const klass = this.learning.classifyRide(capture.windFactor);
+    else if (capture.wfv === 2 && Number.isFinite(capture.rideWindKmh)) {
+      const klass = this.learning.classifyRide(capture.rideWindKmh);
       includedDefault = klass !== "gentle"; // still & windy used; gentle not
     }
+    else if (!Number.isFinite(capture.windFactor)) includedDefault = true;
+    else includedDefault = true; // v1 legacy capture (restore path): default used
     const ride = {
       id: this.uuid(),
       routeId: capture.routeId,
@@ -469,7 +476,11 @@ export class Store {
       actualTimeSec: capture.actualTimeSec,
       trace: capture.trace ?? [],
       forecastWind: capture.forecastWind ?? [],
-      windFactor: capture.windFactor,
+      // v2 wind-model fields; windFactor retained for v1 records passing
+      // through restore/import.
+      wfv: capture.wfv ?? null,
+      rideWindKmh: capture.rideWindKmh ?? null,
+      windFactor: capture.windFactor ?? null,
       predictedTimeSec: capture.predictedTimeSec ?? null,
       autoFlagged: !!capture.autoFlagged,
       // New curation / baseline-reference fields.

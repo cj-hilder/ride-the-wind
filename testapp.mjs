@@ -53,8 +53,10 @@ let app, route;
   ok('processed segments present', route.segments.length>0);
   ok('baseline seeded', route.baselineTimeSec===1000);
   // split seed: kHead from 1300/1000-1=0.3, kTail from 1-760/1000=0.24
-  ok('kHead slider seeded ~0.3', near(route.sliderKHead,0.3,0.02), `${route.sliderKHead.toFixed(3)}`);
-  ok('kTail slider seeded ~0.24', near(route.sliderKTail,0.24,0.02), `${route.sliderKTail.toFixed(3)}`);
+  // v2: seed times invert through the PHYSICAL branch curves (k = wind attenuation):
+  // head excess 0.3 → invHead ≈ 0.528; tail saving 0.24 → invTail ≈ 0.604
+  ok('kHead slider seeded ~invHead(0.3)', near(route.sliderKHead,0.528,0.005), `${route.sliderKHead.toFixed(3)}`);
+  ok('kTail slider seeded ~invTail(0.24)', near(route.sliderKTail,0.604,0.005), `${route.sliderKTail.toFixed(3)}`);
   ok('config learn by default', route.baselineMode==='learn' && route.kMode==='learn');
 }
 
@@ -109,11 +111,19 @@ console.log('\nCapture rides -> resolver learns (real recordRide path, learn mod
   }
   const rides=await app.listRides(route.id);
   ok('all rides stored', rides.length===conditions.length, `${rides.length}`);
-  ok('rides stored with computed windFactor', rides.every(r=>r.windFactor!=null));
+  ok('rides stored with v2 wind fields', rides.every(r=>r.wfv===2 && Number.isFinite(r.rideWindKmh)));
   ok('rides default included', rides.every(r=>r.included===true));
   const t=await app.routeTuning(route.id);
-  ok('learned kHead in bounds', t.learned.kHead>=0.05 && t.learned.kHead<=4.0, `${t.learned.kHead}`);
-  ok('learned kTail in bounds', t.learned.kTail>=0.05 && t.learned.kTail<=4.0, `${t.learned.kTail}`);
+  // All fixture rides ran at exactly baseline time, so the honest learned k is
+  // 0 ("no wind effect observed") — legitimate in THE k range 0–1.2.
+  ok('learned kHead in bounds', t.learned.kHead>=0 && t.learned.kHead<=1.2, `${t.learned.kHead}`);
+  ok('learned kTail in bounds', t.learned.kTail>=0 && t.learned.kTail<=1.2, `${t.learned.kTail}`);
+  // Out-of-range per-ride k (v2): a ride wildly slower than the model allows
+  // (implied k > 1.2) defaults to NOT used at record time, like gentle rides.
+  const anomStart=new Date(2026,5,20,8,0).getTime();
+  const {ride:anom}=await app.recordRide({ routeId:route.id, startedAt:anomStart, endedAt:anomStart+3000*1000,
+    actualTimeSec:3000, forecastWind:station(90,15) });
+  ok('out-of-range k ride defaults to not-used', anom.included===false, `included=${anom.included} wind=${anom.rideWindKmh}`);
   ok('learned baseline positive', t.learned.baselineSec>0);
 }
 
@@ -130,17 +140,17 @@ console.log('\nCapture path sets used/not-used from classification (no forced us
   const start=new Date(2026,5,2,8,0).getTime();
   const {ride}=await app.recordRide({ routeId:r2.id, startedAt:start, endedAt:start+1000*1000,
     actualTimeSec:1000, forecastWind:lightStation });
-  const cls = Math.abs(ride.windFactor) < 0.06 ? 'still' : Math.abs(ride.windFactor) < 0.25 ? 'gentle' : 'windy';
-  ok('recorded ride carries windFactor', ride.windFactor!=null);
-  if (cls==='gentle') ok('gentle ride recorded as NOT used', ride.included===false, `wf=${ride.windFactor}`);
-  else ok(`non-gentle (${cls}) ride recorded as used`, ride.included===true, `wf=${ride.windFactor}`);
+  const cls = Math.abs(ride.rideWindKmh) < 5 ? 'still' : Math.abs(ride.rideWindKmh) < 10 ? 'gentle' : 'windy'; // v2 km/h bands
+  ok('recorded ride carries v2 wind fields', ride.wfv===2 && Number.isFinite(ride.rideWindKmh));
+  if (cls==='gentle') ok('gentle ride recorded as NOT used', ride.included===false, `wind=${ride.rideWindKmh}`);
+  else ok(`non-gentle (${cls}) ride recorded as used`, ride.included===true, `wind=${ride.rideWindKmh}`);
   // And a strong headwind ride → windy → used
   const strongStation=[{lat:0,lon:0.0225,series:
     parseForecast({hourly:{time:[Math.floor(new Date(2026,5,1,8,0).getTime()/1000)],
       wind_speed_10m:[30], wind_direction_10m:[90]}})}];
   const {ride:windyRide}=await app.recordRide({ routeId:r2.id, startedAt:start+1, endedAt:start+1+1000*1000,
     actualTimeSec:1200, forecastWind:strongStation });
-  ok('windy ride recorded as used', windyRide.included===true, `wf=${windyRide.windFactor}`);
+  ok('windy ride recorded as used', windyRide.included===true, `wind=${windyRide.rideWindKmh}`);
   await app.deleteRoute(r2.id); // clean up so later export-count assertions hold
 }
 
@@ -154,9 +164,9 @@ console.log('\nManual ride entry (recordManualRide):');
   const startMs = new Date(2026,5,1,8,0).getTime();
   const endMs = new Date(2026,5,1,8,20).getTime(); // 20 min ride, both before 09:00
   const { ride } = await mApp.recordManualRide(mRoute.id, { startMs, endMs });
-  ok('manual ride recorded with windFactor', ride.windFactor != null, `${ride.windFactor}`);
+  ok('manual ride recorded with v2 wind fields', ride.wfv===2 && Number.isFinite(ride.rideWindKmh), `${ride.rideWindKmh}`);
   ok('actualTimeSec = finish − start (1200s)', ride.actualTimeSec === 1200, `${ride.actualTimeSec}`);
-  ok('windy manual ride → used', ride.included === true, `wf=${ride.windFactor}`);
+  ok('windy manual ride → used', ride.included === true, `wind=${ride.rideWindKmh}`);
   ok('startedAt preserved', ride.startedAt === startMs);
 
   // Validation: finish before start → throws
@@ -187,7 +197,8 @@ console.log('\nReverse route (createReverseRoute):');
   ok('inherits baseline seed', rev.seedStillAirSec === 1200);
   // createRoute derives sliders from seed times (0.3 head, 0.25 tail here), and
   // the reverse inherits those stored sliders verbatim.
-  ok('inherits k sliders', Math.abs(rev.sliderKHead - 0.3) < 1e-6 && Math.abs(rev.sliderKTail - 0.25) < 1e-6, `${rev.sliderKHead}/${rev.sliderKTail}`);
+  // v2 physical inverses: invHead(0.3)≈0.5276, invTail(0.25)≈0.6364
+  ok('inherits k sliders', Math.abs(rev.sliderKHead - 0.527638) < 1e-4 && Math.abs(rev.sliderKTail - 0.636364) < 1e-4, `${rev.sliderKHead}/${rev.sliderKTail}`);
   ok('modes learn/learn', rev.baselineMode === 'learn' && rev.kMode === 'learn');
   const revRides = await rApp.listRides(rev.id);
   ok('reverse starts with no rides', revRides.length === 0);
@@ -329,7 +340,7 @@ console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRec
   // First traversal logged as the route's first ride
   const rides = await gApp.listRides(res.route.id);
   ok('route arrives with exactly one ride', rides.length === 1, `${rides.length}`);
-  ok('first ride has a windFactor', rides[0].windFactor != null);
+  ok('first ride has v2 wind fields', rides[0].wfv===2 && Number.isFinite(rides[0].rideWindKmh));
 
   // A too-short recording is blocked with a reason (no route created)
   const geo2 = makeGeo(4);

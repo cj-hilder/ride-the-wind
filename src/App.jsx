@@ -28,6 +28,8 @@ import {
 import HelpPanel from "./HelpPanel.jsx";
 import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, rainfallValue, rainfallUnitLabel, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel } from "./lib/format.js";
 import { RAIN_RATE_BANDS, RAIN_TOTAL_BANDS } from "./lib/whatToExpect.js";
+import { effortNorm } from "./lib/windModel.js";
+import { rideK as computeRideK } from "./lib/learning.js";
 
 /* Error boundary around the active screen. A render error in one screen (e.g. a
  * transient bad shape during a forecast refresh) must NOT tear down the whole
@@ -702,13 +704,13 @@ function PlanBody({ verdict, dayVerdict, fetching, routeLon, accent, showDebug, 
           <ConfidenceDots confidence={confidence} />
           {verdict.kHead != null && verdict.kTail != null ? (
             Math.abs(verdict.kHead - verdict.kTail) < 0.005 ? (
-              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>k {verdict.kHead.toFixed(2)}</span>
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>k {kPct(verdict.kHead)}</span>
             ) : (
               <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
                 {/* headwind slows you → down arrow; tailwind speeds you → up arrow */}
-                k <span style={{ color: verdict.windFactor >= 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor >= 0 ? 600 : 400 }}>↓{verdict.kHead.toFixed(2)}</span>
+                k <span style={{ color: verdict.windFactor >= 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor >= 0 ? 600 : 400 }}>↓{kPct(verdict.kHead)}</span>
                 {" / "}
-                <span style={{ color: verdict.windFactor < 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor < 0 ? 600 : 400 }}>↑{verdict.kTail.toFixed(2)}</span>
+                <span style={{ color: verdict.windFactor < 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor < 0 ? 600 : 400 }}>↑{kPct(verdict.kTail)}</span>
               </span>
             )
           ) : (
@@ -751,11 +753,11 @@ function DebugReadout({ debug }) {
         <Row label="route avg bearing">{debug.avgBearingDeg}°</Row>
         <Row label="mean headwind">{formatWindSpeed(debug.meanHeadwindKmh)} ({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</Row>
         {debug.effortHeadwindKmh != null && (
-          <Row label="effort headwind">{formatWindSpeed(debug.effortHeadwindKmh)}</Row>
+          <Row label="equivalent wind">{formatWindSpeed(debug.effortHeadwindKmh)}</Row>
         )}
         {debug.effortHeadwindKmh != null && (
           <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "0 0 4px" }}>
-            Wind resistance grows with speed², so uneven wind slows you more than the mean suggests — effort captures that.
+            The single steady wind that would cost the same time as the actual wind. Headwinds cost more than tailwinds save, so this is different from the mean.
           </div>
         )}
         <Row label="mean crosswind">{formatWindSpeed(debug.meanCrosswindKmh)}</Row>
@@ -1079,7 +1081,11 @@ function RouteMap({ polyline }) {
  * Maps to the existing seeds (no model change): baselineSec = D / speed;
  * head = baseline·(1+kHead), tail = baseline·(1−kTail).
  * ========================================================================== */
-const TERRAIN_MIN = 0.10, TERRAIN_MAX = 0.8;
+// v2 k semantics: fraction of the forecast wind felt on the route (surface =
+// k × forecast). 0 = fully sheltered, 1 = full forecast wind at the nominal
+// rider, up to 1.2 for exposed routes / slower riders (learned k may reach
+// K_MAX 1.5; the ◄► off-scale markers show when it sits beyond the slider).
+const TERRAIN_MIN = 0.0, TERRAIN_MAX = 1.2;
 const kClampUI = (k) => Math.max(TERRAIN_MIN, Math.min(TERRAIN_MAX, k));
 
 /* Two-segment Manual | Learn pill. Compact, matches the day/time-mode buttons. */
@@ -1320,11 +1326,17 @@ function TerrainSlider({ title, k, baselineSec, readOnly, sign, showBoth, exampl
   const offHigh = readOnly && k > TERRAIN_MAX;
   const shownK = readOnly ? effK : local;
   // Example times come from the real route geometry: a steady 20 km/h wind from
-  // the route's mean bearing (headward) or its opposite (tailward).
-  const hf = example ? example.headFactor : 1;
-  const tf = example ? example.tailFactor : -1;
-  const headSec = baselineSec * (1 + shownK * hf);
-  const tailSec = baselineSec * (1 + shownK * tf);
+  // the route's mean bearing (headward) or its opposite (tailward), evaluated
+  // through the v2 model with the slider's k INSIDE the physics curve:
+  //   time = baseline·(1 + Σw·effortNorm(k·hᵢ)/Σw)
+  const wfWith = (comps, kk) => {
+    if (!comps || !comps.length) return 0;
+    let num = 0, den = 0;
+    for (const c of comps) { num += c.w * effortNorm(kk * c.h); den += c.w; }
+    return den > 0 ? num / den : 0;
+  };
+  const headSec = baselineSec * (1 + (example ? wfWith(example.headComponents, shownK) : effortNorm(shownK * 20)));
+  const tailSec = baselineSec * (1 + (example ? wfWith(example.tailComponents, shownK) : effortNorm(-shownK * 20)));
   const oneSec = sign === -1 ? tailSec : headSec;
   const headLabel = example ? example.headBearingLabel : "";
   const tailLabel = example ? example.tailBearingLabel : "";
@@ -1351,7 +1363,7 @@ function TerrainSlider({ title, k, baselineSec, readOnly, sign, showBoth, exampl
         <span style={{ textAlign: "center" }}>Exposed<br />flat</span>
       </div>
       <div style={{ fontSize: 11.5, color: "#e0a45e", marginTop: 6 }}>
-        ground effect factor k={shownK.toFixed(2)}
+        ground effect: {kPct(shownK)} of forecast wind felt
       </div>
       <SourceNote mode={mode} source={source} rides={rides} />
       <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 6, lineHeight: 1.4 }}>
@@ -1397,7 +1409,24 @@ const fmtStopwatch = (s) => {
   const p2 = (n) => String(n).padStart(2, "0");
   return hh > 0 ? `${hh}:${p2(mm)}:${p2(ss)}` : `${mm}:${p2(ss)}`;
 };
-const CLASS_COLOR = { windy: "#e0a45e", gentle: "rgba(255,255,255,0.45)", still: "rgba(140,190,255,0.85)" };
+const CLASS_COLOR = {
+  windy: "#e0a45e", // legacy key (windy now displays as headwind|tailwind)
+  headwind: "#5b8fc7", tailwind: "#e0a45e", // verdict accent colours
+  gentle: "rgba(255,255,255,0.45)", still: "rgba(140,190,255,0.85)",
+};
+// Windy rides display as "headwind" | "tailwind" by the sign of their wind:
+// v2 rides from rideWindKmh; v1 rides from their stored (old-scale) windFactor,
+// whose SIGN is still meaningful.
+// k is user-facing as a PERCENTAGE (fraction of forecast wind felt): 0%–120%.
+const kPct = (k) => `${Math.round(k * 100)}%`;
+const rideWindSign = (r) => (r.wfv === 2 ? Math.sign(r.rideWindKmh ?? 0) : Math.sign(r.windFactor ?? 0));
+const rideClassLabel = (r) => (r.klass === "windy" ? (rideWindSign(r) < 0 ? "tailwind" : "headwind") : r.klass);
+// Mean along-route forecast wind for display: v2 rides store it directly;
+// v1 rides recover it through the v1 inverse (20·√|wf|), honest to the scale
+// that ride's factor was computed on.
+const rideMeanWindKmh = (r) => (r.wfv === 2
+  ? (Number.isFinite(r.rideWindKmh) ? Math.abs(r.rideWindKmh) : null)
+  : (Number.isFinite(r.windFactor) ? 20 * Math.sqrt(Math.abs(r.windFactor)) : null));
 
 function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
   const [rides, setRides] = useState(null);
@@ -1462,11 +1491,11 @@ function RidesManager({ route, controller, reloadKey, onRidesChanged }) {
               }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 13.5, fontWeight: 600 }}>{fmtRideDate(r.startedAt)} <span style={{ color: "rgba(255,255,255,0.5)", fontWeight: 400 }}>{fmtRideTime(r.startedAt)}</span></div>
-                  <div style={{ fontSize: 11, color: CLASS_COLOR[r.klass] }}>{r.klass}</div>
+                  <div style={{ fontSize: 11, color: CLASS_COLOR[rideClassLabel(r)] }}>{rideClassLabel(r)}</div>
                 </div>
                 <div style={{ textAlign: "right", fontSize: 13, fontFamily: "'Fraunces',serif" }}>{fmtLen(r.actualTimeSec)}</div>
                 <div style={{ textAlign: "right", fontSize: 12.5, color: r.klass === "gentle" ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.85)" }}>
-                  {r.klass === "still" ? "still" : (r.rideK == null ? "—" : r.rideK.toFixed(2))}
+                  {r.klass === "still" ? "still" : (r.rideK == null ? "—" : kPct(r.rideK))}
                 </div>
                 <div style={{ textAlign: "center" }}>
                   <input type="checkbox" checked={r.included}
@@ -1604,6 +1633,15 @@ function RideEditor({ ride, controller, onClose }) {
   const [confirmDel, setConfirmDel] = useState(false);
   const [bulkAsk, setBulkAsk] = useState(false);
   const locked = ride.locked; // age >= 14 days → current/historic frozen
+  // Live k: recomputed from the EDITED duration and baseline-reference choice,
+  // through the same inversion the model uses, so the headline updates as the
+  // user adjusts — not only after save. Null (hidden) when not computable.
+  const liveK = ride.wfv === 2 && ride.klass !== "still"
+    ? computeRideK(
+        { wfv: 2, rideWindKmh: ride.rideWindKmh, actualSec: durMin * 60,
+          baselineRef: ref, savedBaselineSec: ride.savedBaselineSec },
+        ride.liveBaselineSec)
+    : ride.rideK;
 
   const save = async () => {
     await controller.updateRide(ride.id, {
@@ -1625,8 +1663,9 @@ function RideEditor({ ride, controller, onClose }) {
         </div>
 
         <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginBottom: 18 }}>
-          {fmtRideDate(ride.startedAt)} · {fmtRideTime(ride.startedAt)} · <span style={{ color: CLASS_COLOR[ride.klass] }}>{ride.klass}</span>
-          {ride.klass !== "still" && ride.rideK != null && <> · k={ride.rideK.toFixed(2)}</>}
+          {fmtRideDate(ride.startedAt)} · {fmtRideTime(ride.startedAt)} · <span style={{ color: CLASS_COLOR[rideClassLabel(ride)] }}>{rideClassLabel(ride)}</span>
+          {ride.klass !== "still" && liveK != null && <> · k={kPct(liveK)}</>}
+          {ride.klass !== "still" && rideMeanWindKmh(ride) != null && <> · equivalent wind {formatWindSpeed(rideMeanWindKmh(ride))}</>}
         </div>
 
         {/* Duration */}
@@ -2226,8 +2265,10 @@ function Setup({ controller, onDone, onCancel }) {
     const setup = {
       name: form.name.trim(),
       seedStillAirSec: Math.round(baselineSec),
-      seedHeadwind20Sec: Math.round(baselineSec * (1 + form.kHead)),
-      seedTailwind20Sec: Math.round(baselineSec * (1 - form.kTail)),
+      // v2 forward map: seed time = still·(1 + f_branch(k·20)); exact
+      // counterpart of seedKSplit's inverse so slider k round-trips.
+      seedHeadwind20Sec: Math.round(baselineSec * (1 + effortNorm(form.kHead * 20))),
+      seedTailwind20Sec: Math.round(baselineSec * (1 + effortNorm(-form.kTail * 20))),
       baselineMode: modes.baselineMode, kMode: modes.kMode, split: form.split,
       targetArrival: form.arrival, timeMode: form.timeMode, activeDays: form.days,
     };

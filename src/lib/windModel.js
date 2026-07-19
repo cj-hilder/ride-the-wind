@@ -51,21 +51,64 @@ export function windComponent(windSpeed, windFromDeg, bearingDeg) {
 }
 
 /**
- * Normalised signed-square effort contribution of a headwind.
+ * Normalised time-effect of a signed headwind, per the solved constant-power
+ * physics (NOT the old signed square, and NOT speed-addition).
  *
- *   f_norm(h) = sign(h) · (h / w_ref)²
+ * Derivation: at constant rider power P = a·v·(v+h)² + c·v (a = aero, c =
+ * rolling), solve for ground speed v and convert to time (t ∝ 1/v). Note
+ * power = force × GROUND speed — a bicycle's propulsion reacts against the
+ * ground, so wind does not add/subtract speed directly (that would be true of
+ * an aircraft): a 24 km/h headwind leaves a 24 km/h rider at ~12.5 km/h, not
+ * stationary, and a 24 km/h tailwind yields ~40 km/h, not 48.
  *
- * The square encodes that drag rises with the square of air speed, so a
- * headwind costs more than an equal tailwind saves; the sign preserves the
- * helping/hurting direction. This asymmetry is what makes "leave early" and
- * "sleep in" non-symmetric, which is the whole point of the product.
+ * The resulting time-excess curves, normalised to ±1 at w_ref, fitted least-
+ * squares over 2–32 km/h at a nominal commuter (CdA 0.45, Crr 0.006, 90 kg,
+ * 24 km/h still-air; the normalised shape is insensitive to rider speed
+ * 18–30 km/h, so no per-rider parameters are needed):
  *
- * @param {number} headwind   - signed headwind (km/h)
+ *   head (h>0): f_H(x) = x·(1 + A·x)/(1 + A)   — super-linear: strong
+ *               headwinds hurt disproportionately
+ *   tail (h<0): f_T(x) = x/(1 + B·(x − 1))     — concave, saturating at 1/B:
+ *               ever-stronger tailwinds help less and less
+ *
+ * with x = |h|/w_ref. f(±w_ref) = ±1 exactly, so k keeps its anchor meaning.
+ * The head/tail SHAPE asymmetry lives here; residual MAGNITUDE asymmetry
+ * (shelter and rider habit are direction-dependent) lives in split kHead/kTail.
+ *
+ * @param {number} headwind   - signed headwind (km/h); the caller pre-scales
+ *                              by k (surface = k × forecast) under the v2 model
  * @param {number} [wRef=20]  - reference wind (km/h)
  */
+export const WF_HEAD_A = 0.715;
+export const WF_TAIL_B = 0.30;
+// PHYSICAL magnitudes at the reference wind (nominal rider, from the solved
+// constant-power model): a full 20 km/h effective headwind costs +70.8% time;
+// a 20 km/h effective tailwind saves 35.0%. These make effortNorm the TIME
+// EXCESS directly, so k = 1 genuinely means "the route feels the full forecast
+// wind at the nominal rider". Rider-speed magnitude differences (~±20% over
+// 18–30 km/h) are absorbed by the learned k, as shelter is.
+export const WF_HEAD_C = 0.708;
+export const WF_TAIL_C = 0.350;
+
 export function effortNorm(headwind, wRef = W_REF_KMH) {
-  const r = headwind / wRef;
-  return Math.sign(headwind) * r * r;
+  const x = Math.abs(headwind) / wRef;
+  if (headwind > 0) return (WF_HEAD_C * x * (1 + WF_HEAD_A * x)) / (1 + WF_HEAD_A);
+  if (headwind < 0) return -((WF_TAIL_C * x) / (1 + WF_TAIL_B * (x - 1)));
+  return 0;
+}
+
+/** Exact inverses of the branch curves: given a non-negative PHYSICAL time
+ * deviation w (excess for head, saving for tail), return x = |h|/w_ref.
+ * Verified round-trip to machine precision. */
+export function invHead(w) {
+  if (!(w > 0)) return 0;
+  const u = w / WF_HEAD_C;
+  return (-1 + Math.sqrt(1 + 4 * WF_HEAD_A * (1 + WF_HEAD_A) * u)) / (2 * WF_HEAD_A);
+}
+export function invTail(w) {
+  if (!(w > 0)) return 0;
+  const u = w / WF_TAIL_C;
+  return ((1 - WF_TAIL_B) * u) / (1 - WF_TAIL_B * u);
 }
 
 /**
@@ -116,81 +159,82 @@ export function segmentTimes(segments, baseSpeedKmh, opts = {}) {
  * @param {number} [wRef=20]
  * @returns {number} signed, dimensionless wind_factor
  */
-export function computeWindFactor(segments, windAt, times, wRef = W_REF_KMH) {
+export function computeWindFactor(segments, windAt, times, k = 1, wRef = W_REF_KMH) {
+  // k is the WIND-ATTENUATION multiplier (surface = k × forecast), applied
+  // INSIDE the curve. Accepts a single number or {kHead, kTail}: shelter and
+  // habit are direction-dependent, so each segment's along-route component
+  // uses the k of ITS OWN sign (head segments kHead, tail segments kTail).
+  // predicted_time = baseline·(1 + wind_factor); no outer k multiply exists.
+  const kHead = typeof k === "object" ? (k.kHead ?? 1) : k;
+  const kTail = typeof k === "object" ? (k.kTail ?? 1) : k;
   let num = 0;
   let den = 0;
   for (let i = 0; i < segments.length; i++) {
     const w = windAt(i);
     const h = windComponent(w.speed, w.fromDeg, segments[i].bearing);
     const t = times[i];
-    num += t * effortNorm(h, wRef);
+    num += t * effortNorm((h > 0 ? kHead : kTail) * h, wRef);
     den += t;
   }
   return den > 0 ? num / den : 0;
 }
 
 /**
- * Seed the route wind sensitivity `k` from the optional setup estimates.
+ * Seed the route wind-attenuation `k` from the optional setup estimates.
  *
- * The user may give still-air, 20 km/h-headwind, and 20 km/h-tailwind times.
- * Under the model predicted_time = baseline·(1 + k·wind_factor), a pure
- * head/tailwind at exactly w_ref over the whole route gives wind_factor = ±1
- * (since f_norm(±w_ref) = ±1 and the time-weighting cancels). So:
+ * v2 semantics: k is the fraction of the FORECAST wind felt on the route
+ * (surface = k × forecast; calibration + shelter + rider habit blended).
+ * At the 20 km/h seed wind, x = 1, so predicted excess = f_branch(k) and each
+ * seed time inverts in closed form:
  *
- *   t_head = t_still · (1 + k)      →  k_head = t_head/t_still − 1
- *   t_tail = t_still · (1 − k)      →  k_tail = 1 − t_tail/t_still
+ *   k_head = invHead(t_head/t_still − 1)
+ *   k_tail = invTail(1 − t_tail/t_still)
  *
  * We average the two implied estimates when both are present, use whichever
  * is present alone, and fall back to DEFAULT_K if neither is given.
- *
- * @param {number} stillAirSec
- * @param {number|null} headwind20Sec
- * @param {number|null} tailwind20Sec
- * @returns {number} seeded k (>0)
  */
 /**
- * Default wind sensitivity when the user gives no directional seed estimate.
- * Set from real data: a measured k ≈ 0.5 on an exposed Otago Harbour route is
- * an upper anchor (harbour edges are windier than sheltered streets), so a
- * typical commute with some urban shelter sits below it. 0.33 lands the default
- * in typical-sheltered territory — a third under the one exposed-route
- * measurement — and is far more realistic than the old 1.0. Tune as more
- * routes' learned k values accumulate.
+ * Default wind attenuation when the user gives no directional seed estimate:
+ * the route feels 70% of the forecast along-route wind. Typical suburban
+ * shelter sits below full exposure (k ≈ 1); fully open coastal routes may
+ * reach ~1; heavy tree/building shelter can halve it. Tune as learned k
+ * values accumulate.
  */
-export const DEFAULT_K = 0.33;
+export const DEFAULT_K = 0.7;
+/** THE k range (fraction of forecast wind felt, user-facing as 0%–120%).
+ * The single range used everywhere: sliders, seeds, learned-fit acceptance,
+ * and per-ride sanity (out-of-range rides default to not-used). */
+export const K_MIN = 0.0;
+export const K_MAX = 1.2;
 
 export function seedK(stillAirSec, headwind20Sec, tailwind20Sec) {
   if (!(stillAirSec > 0)) return DEFAULT_K;
   const estimates = [];
   if (headwind20Sec != null && headwind20Sec > 0) {
-    estimates.push(headwind20Sec / stillAirSec - 1);
+    estimates.push(invHead(headwind20Sec / stillAirSec - 1));
   }
   if (tailwind20Sec != null && tailwind20Sec > 0) {
-    estimates.push(1 - tailwind20Sec / stillAirSec);
+    estimates.push(invTail(1 - tailwind20Sec / stillAirSec));
   }
   if (estimates.length === 0) return DEFAULT_K;
   const k = estimates.reduce((a, b) => a + b, 0) / estimates.length;
-  // Keep within the same sane band the learning update enforces.
-  return Math.max(0.05, Math.min(4.0, k));
+  return Math.max(K_MIN, Math.min(K_MAX, k));
 }
 
 /**
  * Asymmetric seed: independent kHead and kTail from the directional setup
- * estimates. kHead from the headwind estimate (headwind20Sec/stillAir − 1),
- * kTail from the tailwind estimate (1 − tailwind20Sec/stillAir). Each side
- * defaults to DEFAULT_K if its estimate is absent. Both clamped to 0.2–3.0.
+ * estimates via the branch inverses. Each side defaults to DEFAULT_K if its
+ * estimate is absent. Both clamped to the K range (0–1.2).
  */
 export function seedKSplit(stillAirSec, headwind20Sec, tailwind20Sec) {
-  // User setup estimates are explicit prior knowledge, not a noisy fit, so we
-  // clamp only to the full physical range (0.05–4.0), not the tight early band.
-  const clamp = (x) => Math.max(0.05, Math.min(4.0, x));
+  const clamp = (x) => Math.max(K_MIN, Math.min(K_MAX, x));
   let kHead = DEFAULT_K, kTail = DEFAULT_K;
   if (stillAirSec > 0) {
     if (headwind20Sec != null && headwind20Sec > 0) {
-      kHead = clamp(headwind20Sec / stillAirSec - 1);
+      kHead = clamp(invHead(headwind20Sec / stillAirSec - 1));
     }
     if (tailwind20Sec != null && tailwind20Sec > 0) {
-      kTail = clamp(1 - tailwind20Sec / stillAirSec);
+      kTail = clamp(invTail(1 - tailwind20Sec / stillAirSec));
     }
   }
   return { kHead, kTail };
@@ -280,6 +324,7 @@ export function windFactorTimed({
   times,
   windFn,
   departMs,
+  k = 1,
   wRef = W_REF_KMH,
   passes = 2,
 }) {
@@ -287,8 +332,9 @@ export function windFactorTimed({
   // Initial guess: wind sampled at departure for all segments.
   let factor = 0;
   for (let p = 0; p < passes; p++) {
-    // ride-time multiplier from current factor estimate
-    const mult = 1 + /*k folded out*/ factor; // k applied by caller; weighting only
+    // ride-time multiplier from current factor estimate. v2: the factor IS the
+    // fractional time effect (k already inside), so no outer k here either.
+    const mult = 1 + factor;
     let clock = departMs;
     const windAt = (i) => {
       const s = segments[i];
@@ -297,7 +343,7 @@ export function windFactorTimed({
       clock += times[i] * Math.max(0.5, mult) * 1000;
       return w;
     };
-    factor = computeWindFactor(segments, windAt, times, wRef);
+    factor = computeWindFactor(segments, windAt, times, k, wRef);
     void totalStill;
   }
   return factor;

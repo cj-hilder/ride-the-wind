@@ -1,8 +1,10 @@
 import {
-  WF_STILL, WF_WINDY, FREEZE_AGE_MS,
-  classifyRide, clampK, isFrozenByAge, applyFreeze, effectiveBaseline, rideK,
+  KMH_STILL, KMH_WINDY, K_MIN, K_MAX, FREEZE_AGE_MS,
+  classifyRide, classifyRideRecord, isV2Ride, clampK, isFrozenByAge, applyFreeze,
+  effectiveBaseline, rideK,
   resolveBaseline, resolveK, resolveModel, dotCount, predictFromModel, predict,
 } from './src/lib/learning.js';
+import { effortNorm, invHead, invTail } from './src/lib/windModel.js';
 
 let pass = 0, fail = 0;
 const ok = (n, c, d = '') => { c ? (pass++, console.log(`  PASS  ${n}`)) : (fail++, console.log(`  FAIL  ${n}  ${d}`)); };
@@ -10,29 +12,48 @@ const near = (a, b, t) => Math.abs(a - b) <= t;
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_700_000_000_000;
-// Build a ride. age in days back from NOW.
-function ride(wf, actualSec, { ageDays = 0, included = true, ref = 'current', saved = null } = {}) {
+// Build a v2 ride: wind in signed km/h (+head/−tail). age in days back from NOW.
+function ride(windKmh, actualSec, { ageDays = 0, included = true, ref = 'current', saved = null } = {}) {
+  return {
+    wfv: 2, rideWindKmh: windKmh, actualSec,
+    included, baselineRef: ref, savedBaselineSec: saved,
+    startedAt: NOW - ageDays * DAY,
+  };
+}
+// Build a v1 legacy ride (old signed-square windFactor, no v2 fields).
+function rideV1(wf, actualSec, { ageDays = 0, included = true, ref = 'current', saved = null } = {}) {
   return {
     windFactor: wf, actualSec,
     included, baselineRef: ref, savedBaselineSec: saved,
     startedAt: NOW - ageDays * DAY,
   };
 }
+// Synthetic actual for a true attenuation k at wind w (v2 forward model).
+const synth = (b, k, windKmh) => b * (1 + effortNorm(k * windKmh));
 
-console.log('Classification (quadratic wf scale):');
+console.log('Classification (equivalent km/h scale):');
 {
-  ok('crosswind/calm -> still', classifyRide(0.0) === 'still');
-  ok('just below WF_STILL -> still', classifyRide(WF_STILL - 0.001) === 'still');
-  ok('between -> gentle', classifyRide(0.15) === 'gentle');
-  ok('at WF_WINDY -> windy', classifyRide(WF_WINDY) === 'windy');
-  ok('negative windy -> windy', classifyRide(-0.4) === 'windy');
-  ok('strong crosswind (wf~0) reads still', classifyRide(0.01) === 'still');
+  ok('calm -> still', classifyRide(0) === 'still');
+  ok('just below KMH_STILL -> still', classifyRide(KMH_STILL - 0.01) === 'still');
+  ok('between -> gentle', classifyRide(7) === 'gentle');
+  ok('at KMH_WINDY -> windy', classifyRide(KMH_WINDY) === 'windy');
+  ok('negative windy -> windy', classifyRide(-15) === 'windy');
+  ok('strong crosswind (along ~0) reads still', classifyRide(0.5) === 'still');
 }
 
-console.log('\nClamp:');
+console.log('\nRecord classification (v1 carve-out uses frozen v1 thresholds):');
 {
-  ok('huge k clamps to 4.0', clampK(99) === 4.0);
-  ok('tiny k clamps to 0.05', clampK(0.001) === 0.05);
+  ok('v2 record classifies by rideWindKmh', classifyRideRecord(ride(12, 1000)) === 'windy');
+  ok('v1 still (wf 0.02) -> still', classifyRideRecord(rideV1(0.02, 1000)) === 'still');
+  ok('v1 gentle (wf 0.15) -> gentle', classifyRideRecord(rideV1(0.15, 1000)) === 'gentle');
+  ok('v1 windy (wf 0.5) -> windy', classifyRideRecord(rideV1(0.5, 1000)) === 'windy');
+  ok('isV2Ride false for v1', isV2Ride(rideV1(0.5, 1000)) === false);
+}
+
+console.log('\nClamp (THE k range 0-1.2, user-facing 0%-120%):');
+{
+  ok('huge k clamps to K_MAX 1.2', clampK(99) === K_MAX && K_MAX === 1.2);
+  ok('K_MIN is 0 (tiny k passes through)', clampK(0.001) === 0.001 && K_MIN === 0);
   ok('NaN -> null', clampK(NaN) === null);
 }
 
@@ -41,60 +62,68 @@ console.log('\nFreeze by age + applyFreeze:');
   ok('young ride not frozen by age', isFrozenByAge(ride(0, 1000, { ageDays: 5 }), NOW) === false);
   ok('old ride frozen by age', isFrozenByAge(ride(0, 1000, { ageDays: 15 }), NOW) === true);
 
-  const young = ride(0.3, 1100, { ageDays: 5 });
+  const young = ride(12, 1100, { ageDays: 5 });
   ok('young current ride passes through unchanged', applyFreeze(young, 1000, NOW) === young);
 
-  const old = ride(0.3, 1100, { ageDays: 20 });
+  const old = ride(12, 1100, { ageDays: 20 });
   const frozen = applyFreeze(old, 1234, NOW);
   ok('old current ride flips to historic', frozen.baselineRef === 'historic');
   ok('freeze snapshots LIVE baseline at freeze instant', frozen.savedBaselineSec === 1234);
 
-  const alreadyHist = ride(0.3, 1100, { ageDays: 20, ref: 'historic', saved: 900 });
+  const alreadyHist = ride(12, 1100, { ageDays: 20, ref: 'historic', saved: 900 });
   ok('already-historic untouched', applyFreeze(alreadyHist, 1234, NOW) === alreadyHist);
 }
 
-console.log('\nEffective baseline & per-ride k:');
+console.log('\nEffective baseline & per-ride k (inversion through the curve):');
 {
-  const cur = ride(0.5, 1200, { ref: 'current' });
+  const cur = ride(10, synth(1000, 0.5, 10), { ref: 'current' });
   ok('current uses live baseline', effectiveBaseline(cur, 1000) === 1000);
-  const hist = ride(0.5, 1200, { ref: 'historic', saved: 950 });
+  const hist = ride(10, synth(950, 0.5, 10), { ref: 'historic', saved: 950 });
   ok('historic uses frozen baseline', effectiveBaseline(hist, 1000) === 950);
 
-  // k_ride = (actual/b − 1)/wf ; for current b=1000, actual=1200, wf=0.5 → 0.4
-  ok('rideK current', near(rideK(cur, 1000), (1200 / 1000 - 1) / 0.5, 1e-9));
-  // historic uses 950 → (1200/950 −1)/0.5
-  ok('rideK historic uses frozen b', near(rideK(hist, 1000), (1200 / 950 - 1) / 0.5, 1e-9));
-  ok('still ride (wf~0) -> null k', rideK(ride(0, 1000), 1000) === null);
+  ok('rideK inverts to true k (head)', near(rideK(cur, 1000), 0.5, 1e-9), `${rideK(cur, 1000)}`);
+  ok('rideK historic uses frozen b', near(rideK(hist, 1000), 0.5, 1e-9), `${rideK(hist, 1000)}`);
+  const tailRide = ride(-14, synth(1000, 0.6, -14));
+  ok('rideK inverts to true k (tail)', near(rideK(tailRide, 1000), 0.6, 1e-9), `${rideK(tailRide, 1000)}`);
+  ok('still ride (wind 0) -> null k', rideK(ride(0, 1000), 1000) === null);
+  ok('v1 ride -> null k', rideK(rideV1(0.5, 1200), 1000) === null);
+  // wrong-sign deviation: head ride FASTER than baseline testifies zero effect
+  ok('head ride faster than baseline -> k 0', rideK(ride(10, 950), 1000) === 0);
 }
 
 console.log('\nBaseline resolution:');
 {
-  // Branch 1: a still ride present → mean of still rides, windy ignored.
-  const r1 = resolveBaseline([ride(0.0, 1000), ride(0.02, 1040), ride(0.5, 5000)], 1500);
-  ok('branch1 mean of still rides', near(r1.baselineSec, 1020, 1e-9), `${r1.baselineSec}`);
+  // Branch 1: still rides (incl. a v1 still via the carve-out) → mean.
+  const r1 = resolveBaseline([ride(0, 1000), rideV1(0.02, 1040), ride(12, 5000)], 1500);
+  ok('branch1 mean of still rides (v1 carve-out counts)', near(r1.baselineSec, 1020, 1e-9), `${r1.baselineSec}`);
   ok('branch1 source learned', r1.source === 'learned' && r1.branch === 1);
 
-  // Branch 2: no still, windy with enough spread → intercept ≈ true baseline.
-  // synth windy from baseline 1000, k 0.5: actual = 1000(1+0.5 wf)
-  const wf2 = [0.25, 0.4, 0.5, 0.7, 0.9];
-  const windy = wf2.map((w) => ride(w, 1000 * (1 + 0.5 * w)));
+  // Branch 2: no still, v2 windy with spread → intercept near true baseline.
+  // KNOWN BIAS: the regressor is f(w) while data follows f(k·w); at k=0.5 the
+  // curvature mismatch overestimates by ~3% (shrinks as k→1). Fallback branch.
+  const windy = [10, 13, 16, 20, 25].map((w) => ride(w, synth(1000, 0.5, w)));
   const r2 = resolveBaseline(windy, 1500);
-  ok('branch2 extrapolates baseline ~1000', near(r2.baselineSec, 1000, 1.0), `${r2.baselineSec}`);
+  ok('branch2 extrapolates baseline ~1000 (±40)', near(r2.baselineSec, 1000, 40), `${r2.baselineSec}`);
   ok('branch2 source learned', r2.source === 'learned' && r2.branch === 2);
 
-  // Branch 2 gate: windy but too little spread → fall through to slider.
-  const tight = [0.30, 0.31, 0.32].map((w) => ride(w, 1000 * (1 + 0.5 * w)));
+  // Branch 2 excludes v1 windy rides entirely (garbage-scale wf).
+  const withV1 = [...windy.slice(0, 1), rideV1(0.5, 9999), rideV1(0.9, 9999)];
+  const r2v1 = resolveBaseline(withV1, 1500);
+  ok('v1 windy rides never feed branch2', r2v1.source === 'slider', `${r2v1.source}`);
+
+  // Branch 2 gate: too little km/h spread → slider.
+  const tight = [11, 11.5, 12].map((w) => ride(w, synth(1000, 0.5, w)));
   const r2b = resolveBaseline(tight, 1500);
   ok('branch2 insufficient spread -> slider', r2b.source === 'slider' && r2b.baselineSec === 1500);
 
   // Branch 3: nothing usable → slider.
-  const r3 = resolveBaseline([ride(0.15, 1100)], 1500); // only a gentle ride
+  const r3 = resolveBaseline([ride(7, 1100)], 1500); // only a gentle ride
   ok('branch3 slider fallback', r3.source === 'slider' && r3.baselineSec === 1500);
 }
 
 console.log('\nk resolution — manual mode:');
 {
-  const k = resolveK([ride(0.5, 1500)], 1000,
+  const k = resolveK([ride(12, 1500)], 1000,
     { kMode: 'manual', split: false, sliderKHead: 0.8, sliderKTail: 0.3 });
   ok('manual uses slider', k.kHead === 0.8 && k.kTail === 0.3);
   ok('manual sources slider', k.sourceHead === 'slider' && k.sourceTail === 'slider');
@@ -103,11 +132,10 @@ console.log('\nk resolution — manual mode:');
 
 console.log('\nk resolution — learn, combined (one direction only):');
 {
-  // Only headwind windy rides → cannot split (tail has none) → combined pooled.
   const b = 1000;
-  const head = [0.3, 0.5, 0.7].map((w) => ride(w, b * (1 + 0.6 * w)));
+  const head = [12, 16, 20].map((w) => ride(w, synth(b, 0.6, w)));
   const k = resolveK(head, b, { kMode: 'learn', split: false, sliderKHead: 1.0, sliderKTail: 1.0 });
-  ok('combined (no tail data) learns pooled k', near(k.kHead, 0.6, 0.02), `${k.kHead}`);
+  ok('combined (no tail data) learns pooled k', near(k.kHead, 0.6, 1e-6), `${k.kHead}`);
   ok('combined: head==tail (single value)', k.kHead === k.kTail);
   ok('combined: not split, not autosplit', k.split === false && k.autoSplit === false);
 }
@@ -115,90 +143,94 @@ console.log('\nk resolution — learn, combined (one direction only):');
 console.log('\nk resolution — learn, AUTO-SPLIT when both directions qualify:');
 {
   const b = 1000;
-  const head = [0.3, 0.5, 0.7].map((w) => ride(w, b * (1 + 0.8 * w)));
-  const tail = [-0.3, -0.5, -0.7].map((w) => ride(w, b * (1 + 0.3 * w)));
+  const head = [12, 16, 20].map((w) => ride(w, synth(b, 0.8, w)));
+  const tail = [-12, -16, -20].map((w) => ride(w, synth(b, 0.3, w)));
   const k = resolveK([...head, ...tail], b,
     { kMode: 'learn', split: false, sliderKHead: 1.0, sliderKTail: 1.0 });
   ok('auto-splits when both qualify', k.autoSplit === true && k.split === true);
-  ok('learns kHead ~0.8', near(k.kHead, 0.8, 0.02), `${k.kHead}`);
-  ok('learns kTail ~0.3', near(k.kTail, 0.3, 0.02), `${k.kTail}`);
+  ok('learns kHead ~0.8', near(k.kHead, 0.8, 1e-6), `${k.kHead}`);
+  ok('learns kTail ~0.3', near(k.kTail, 0.3, 1e-6), `${k.kTail}`);
   ok('both sources learned', k.sourceHead === 'learned' && k.sourceTail === 'learned');
 }
 
 console.log('\nk resolution — learn, manual split with one side short:');
 {
   const b = 1000;
-  const head = [0.3, 0.5, 0.7].map((w) => ride(w, b * (1 + 0.9 * w)));
-  const tail = [-0.4].map((w) => ride(w, b * (1 + 0.3 * w))); // only 1 tail → gate fails
+  const head = [12, 16, 20].map((w) => ride(w, synth(b, 0.9, w)));
+  const tail = [ride(-14, synth(b, 0.3, -14))]; // only 1 tail → gate fails
   const k = resolveK([...head, ...tail], b,
     { kMode: 'learn', split: true, sliderKHead: 1.0, sliderKTail: 0.5 });
   ok('manual split honoured', k.split === true);
-  ok('head learned', k.sourceHead === 'learned' && near(k.kHead, 0.9, 0.03));
+  ok('head learned', k.sourceHead === 'learned' && near(k.kHead, 0.9, 1e-6));
   ok('tail falls back to slider', k.sourceTail === 'slider' && k.kTail === 0.5);
+}
+
+console.log('\nk resolution — v1 rides never feed k:');
+{
+  const b = 1000;
+  const v1s = [0.3, 0.5, 0.7].map((wf) => rideV1(wf, b * (1 + 0.6 * wf)));
+  const k = resolveK(v1s, b, { kMode: 'learn', split: false, sliderKHead: 1.0, sliderKTail: 1.0 });
+  ok('v1-only log resolves slider', k.sourceHead === 'slider' && k.kHead === 1.0);
 }
 
 console.log('\nk resolution — gentle rides contribute to k (option A):');
 {
   const b = 1000;
-  // gentle wf in [0.06,0.25): a couple of gentle headwind rides reaching resolveK
-  // (i.e. user opted them in) should feed k. Use k=0.5 synthetic.
-  const gentleHead = [0.1, 0.2].map((w) => ride(w, b * (1 + 0.5 * w)));
+  // gentle winds [5,10): opted-in gentle rides feed k.
+  const gentleHead = [6, 9].map((w) => ride(w, synth(b, 0.5, w)));
   const k = resolveK(gentleHead, b, { kMode: 'learn', split: false, sliderKHead: 1, sliderKTail: 1 });
-  ok('opted-in gentle rides feed k', k.sourceHead === 'learned' && near(k.kHead, 0.5, 0.05), `${k.kHead}`);
+  ok('opted-in gentle rides feed k', k.sourceHead === 'learned' && near(k.kHead, 0.5, 1e-6), `${k.kHead}`);
 }
 
 console.log('\nresolveModel — gentle gating: default excluded, used → feeds k:');
 {
   const b = 1000;
-  // Two gentle headwind rides. Default included=false (gentle) → must NOT feed k.
-  const def = [0.1, 0.2].map((w) => ride(w, b * (1 + 0.5 * w), { included: false }));
-  // Plus a still ride to pin baseline so we isolate k behaviour.
-  const still = ride(0.0, b, { ageDays: 1 });
+  const def = [6, 9].map((w) => ride(w, synth(b, 0.5, w), { included: false }));
+  const still = ride(0, b, { ageDays: 1 });
   const mDefault = resolveModel([still, ...def], {
     baselineMode: 'learn', sliderBaselineSec: 1500,
     kMode: 'learn', split: false, sliderKHead: 1, sliderKTail: 1,
   }, NOW);
   ok('default (unused) gentle rides do NOT feed k', mDefault.kHeadSource === 'slider' && mDefault.kHead === 1);
 
-  // Same rides but user opted them in → now feed k.
-  const used = [0.1, 0.2].map((w) => ride(w, b * (1 + 0.5 * w), { included: true }));
+  const used = [6, 9].map((w) => ride(w, synth(b, 0.5, w), { included: true }));
   const mUsed = resolveModel([still, ...used], {
     baselineMode: 'learn', sliderBaselineSec: 1500,
     kMode: 'learn', split: false, sliderKHead: 1, sliderKTail: 1,
   }, NOW);
-  ok('used gentle rides feed k', mUsed.kHeadSource === 'learned' && near(mUsed.kHead, 0.5, 0.05), `${mUsed.kHead}`);
-  ok('baseline still from the still ride (gentle never feeds baseline)', near(mUsed.baselineSec, b, 1));
+  ok('used gentle rides feed k', mUsed.kHeadSource === 'learned' && near(mUsed.kHead, 0.5, 1e-6), `${mUsed.kHead}`);
+  ok('baseline still from the still ride', near(mUsed.baselineSec, b, 1));
 }
 
-console.log('\nclampK applied in k fit (extreme slope):');
+console.log('\nfit ACCEPTANCE: out-of-range learned k rejected (slider kept):');
 {
   const b = 1000;
-  const head = [0.3, 0.5, 0.7].map((w) => ride(w, b * (1 + 9 * w))); // k=9 → clamp 4
+  const head = [12, 16, 20].map((w) => ride(w, synth(b, 9, w))); // absurd k=9
   const k = resolveK(head, b, { kMode: 'learn', split: false, sliderKHead: 1, sliderKTail: 1 });
-  ok('learned k clamped to 4.0', k.kHead <= 4.0 + 1e-9 && k.kHead === 4.0, `${k.kHead}`);
+  ok('out-of-range fit rejected -> slider', k.sourceHead === 'slider' && k.kHead === 1, `${k.kHead} (${k.sourceHead})`);
+  // in-range fit at the edge still accepted
+  const edge = [12, 16, 20].map((w) => ride(w, synth(b, 1.15, w)));
+  const ke = resolveK(edge, b, { kMode: 'learn', split: false, sliderKHead: 0.5, sliderKTail: 0.5 });
+  ok('k=1.15 accepted as learned', ke.sourceHead === 'learned' && Math.abs(ke.kHead - 1.15) < 1e-6, `${ke.kHead}`);
 }
 
 console.log('\nresolveModel — per-ride baseline in k fit (historic frozen):');
 {
-  // A historic ride should use its frozen baseline, not the live learned one.
-  // Live baseline learned from a still ride at 1000. A historic windy ride was
-  // ridden when baseline was 1200 (frozen), actual reflects k=0.5 on 1200.
-  const still = ride(0.0, 1000, { ageDays: 1 });
-  const histWindy = ride(0.5, 1200 * (1 + 0.5 * 0.5), { ageDays: 30, ref: 'historic', saved: 1200 });
-  const histWindy2 = ride(0.8, 1200 * (1 + 0.5 * 0.8), { ageDays: 30, ref: 'historic', saved: 1200 });
+  const still = ride(0, 1000, { ageDays: 1 });
+  const histWindy = ride(10, synth(1200, 0.5, 10), { ageDays: 30, ref: 'historic', saved: 1200 });
+  const histWindy2 = ride(16, synth(1200, 0.5, 16), { ageDays: 30, ref: 'historic', saved: 1200 });
   const m = resolveModel([still, histWindy, histWindy2], {
     baselineMode: 'learn', sliderBaselineSec: 1500,
     kMode: 'learn', split: false, sliderKHead: 1, sliderKTail: 1,
   }, NOW);
   ok('baseline learned from still ride', near(m.baselineSec, 1000, 1e-6), `${m.baselineSec}`);
-  // k computed against frozen 1200 (not live 1000) recovers 0.5
-  ok('k uses frozen per-ride baseline -> 0.5', near(m.kHead, 0.5, 0.02), `${m.kHead}`);
+  ok('k uses frozen per-ride baseline -> 0.5', near(m.kHead, 0.5, 1e-6), `${m.kHead}`);
 }
 
 console.log('\nresolveModel — freeze transitions returned for persistence:');
 {
-  const young = ride(0.3, 1100, { ageDays: 3 });
-  const old = ride(0.4, 1150, { ageDays: 20 });
+  const young = ride(12, 1100, { ageDays: 3 });
+  const old = ride(14, 1150, { ageDays: 20 });
   const m = resolveModel([young, old], {
     baselineMode: 'manual', sliderBaselineSec: 1000,
     kMode: 'manual', split: false, sliderKHead: 0.5, sliderKTail: 0.5,
@@ -212,34 +244,30 @@ console.log('\nresolveModel — freeze transitions returned for persistence:');
 
 console.log('\nDot count:');
 {
-  // all manual → 0
-  const allManual = resolveModel([ride(0.5, 1500)], {
+  const allManual = resolveModel([ride(12, 1500)], {
     baselineMode: 'manual', sliderBaselineSec: 1000,
     kMode: 'manual', split: false, sliderKHead: 0.5, sliderKTail: 0.5,
   }, NOW);
   ok('all manual -> 0 dots', dotCount(allManual) === 0);
 
-  // learn but starved (one gentle ride) → 0
-  const starved = resolveModel([ride(0.15, 1100)], {
+  const starved = resolveModel([ride(7, 1100)], {
     baselineMode: 'learn', sliderBaselineSec: 1000,
     kMode: 'learn', split: false, sliderKHead: 0.5, sliderKTail: 0.5,
   }, NOW);
   ok('learn but starved -> 0 dots', dotCount(starved) === 0);
 
-  // baseline learned (still ride) + combined k learned → 2 dots (1 baseline + 1 combined k)
   const b = 1000;
-  const ridesC = [ride(0.0, 1000, { ageDays: 1 }),
-    ...[0.3, 0.5, 0.7].map((w) => ride(w, b * (1 + 0.6 * w), { ageDays: 1 }))];
+  const ridesC = [ride(0, 1000, { ageDays: 1 }),
+    ...[12, 16, 20].map((w) => ride(w, synth(b, 0.6, w), { ageDays: 1 }))];
   const combined = resolveModel(ridesC, {
     baselineMode: 'learn', sliderBaselineSec: 1500,
     kMode: 'learn', split: false, sliderKHead: 1, sliderKTail: 1,
   }, NOW);
-  ok('baseline + combined k -> 2 dots', dotCount(combined) === 2, JSON.stringify({b:combined.baselineSource,h:combined.kHeadSource,t:combined.kTailSource,split:combined.split}));
+  ok('baseline + combined k -> 2 dots', dotCount(combined) === 2, JSON.stringify({b:combined.baselineSource,h:combined.kHeadSource,split:combined.split}));
 
-  // full split both learned + baseline → 3 dots
-  const ridesF = [ride(0.0, 1000, { ageDays: 1 }),
-    ...[0.3, 0.5, 0.7].map((w) => ride(w, b * (1 + 0.8 * w), { ageDays: 1 })),
-    ...[-0.3, -0.5, -0.7].map((w) => ride(w, b * (1 + 0.3 * w), { ageDays: 1 }))];
+  const ridesF = [ride(0, 1000, { ageDays: 1 }),
+    ...[12, 16, 20].map((w) => ride(w, synth(b, 0.8, w), { ageDays: 1 })),
+    ...[-12, -16, -20].map((w) => ride(w, synth(b, 0.3, w), { ageDays: 1 }))];
   const full = resolveModel(ridesF, {
     baselineMode: 'learn', sliderBaselineSec: 1500,
     kMode: 'learn', split: false, sliderKHead: 1, sliderKTail: 1,
@@ -247,21 +275,20 @@ console.log('\nDot count:');
   ok('baseline + split kHead + kTail -> 3 dots', dotCount(full) === 3, JSON.stringify({split:full.split,auto:full.autoSplit}));
 }
 
-console.log('\nPrediction + speed clamp:');
+console.log('\nPrediction + speed clamp (NOTE: predictFromModel is reworked in the prediction-plumbing cluster):');
 {
   const model = { baselineSec: 1000, kHead: 0.8, kTail: 0.3 };
   const ph = predictFromModel(model, 0.5, { distanceM: 5000 });
   ok('headwind slower', ph.predictedSec > 1000 && ph.k === 0.8);
   const pt = predictFromModel(model, -0.5, { distanceM: 5000 });
   ok('tailwind faster', pt.predictedSec < 1000 && pt.k === 0.3);
-  // tailwind ceiling: multiplier >= 1/3
   const pbig = predictFromModel(model, -5, { distanceM: 5000 });
   ok('tailwind clamped to 1/3 floor', near(pbig.multiplier, 1 / 3, 1e-9) && pbig.clamped);
 }
 
 console.log('\npredict() convenience (provisional flag):');
 {
-  const p = predict([ride(0.15, 1100)], {
+  const p = predict([ride(7, 1100)], {
     baselineMode: 'learn', sliderBaselineSec: 1000,
     kMode: 'learn', split: false, sliderKHead: 0.5, sliderKTail: 0.5,
   }, 0.3, { distanceM: 5000 }, NOW);
