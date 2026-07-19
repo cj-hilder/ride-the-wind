@@ -1,4 +1,5 @@
 import { Store, MemoryBackend, requestPersistentStorage, STORES } from './src/lib/storage.js';
+import { effortNorm } from './src/lib/windModel.js';
 import * as learning from './src/lib/learning.js';
 
 let pass=0,fail=0;
@@ -50,15 +51,15 @@ console.log('\nRides persist with curation fields; model resolves from log (lear
   await s.updateRoute(route.id, { baselineMode:'learn', kMode:'learn' });
   // a still ride pins baseline at 1000; windy rides both directions learn k=0.5
   const day=24*60*60*1000; const t0=Date.now();
-  const wfs=[0, -0.5, 0.5, -0.7, 0.7, -0.3, 0.3, -0.9];
-  for(let i=0;i<wfs.length;i++){
+  const winds=[0, -12, 12, -16, 16, -11, 11, -20]; // signed km/h, v2
+  for(let i=0;i<winds.length;i++){
     await s.recordRide({
-      routeId:route.id, startedAt:t0 - (wfs.length-i)*60000, endedAt:t0,
-      actualTimeSec:1000*(1+0.5*wfs[i]), windFactor:wfs[i],
+      routeId:route.id, startedAt:t0 - (winds.length-i)*60000, endedAt:t0,
+      actualTimeSec:1000*(1+effortNorm(0.5*winds[i])), wfv:2, rideWindKmh:winds[i],
     });
   }
   const rides=await s.listRides(route.id);
-  ok('all rides stored', rides.length===wfs.length);
+  ok('all rides stored', rides.length===winds.length);
   ok('still & windy rides default used', rides.every(r=>r.included===true));
   ok('rides default current ref', rides.every(r=>r.baselineRef==='current'));
   const resolved=await s.resolveRouteModel(route.id, t0);
@@ -76,14 +77,14 @@ console.log('\nNew ride used/unused set from classification at record time:');
   const route=await s.createRoute(processed, setup, {kHead:1,kTail:1});
   const t0=Date.now();
   // still (wf~0), gentle (|wf| in 0.06..0.25), windy (|wf|>=0.25)
-  const {ride:stillR}=await s.recordRide({routeId:route.id, startedAt:t0, endedAt:t0+60, actualTimeSec:1000, windFactor:0.0});
-  const {ride:gentleR}=await s.recordRide({routeId:route.id, startedAt:t0+1, endedAt:t0+61, actualTimeSec:1050, windFactor:0.12});
-  const {ride:windyR}=await s.recordRide({routeId:route.id, startedAt:t0+2, endedAt:t0+62, actualTimeSec:1300, windFactor:0.5});
+  const {ride:stillR}=await s.recordRide({routeId:route.id, startedAt:t0, endedAt:t0+60, actualTimeSec:1000, wfv:2, rideWindKmh:0});
+  const {ride:gentleR}=await s.recordRide({routeId:route.id, startedAt:t0+1, endedAt:t0+61, actualTimeSec:1050, wfv:2, rideWindKmh:7});
+  const {ride:windyR}=await s.recordRide({routeId:route.id, startedAt:t0+2, endedAt:t0+62, actualTimeSec:1300, wfv:2, rideWindKmh:14});
   ok('still ride defaults used', stillR.included===true);
   ok('gentle ride defaults UNUSED', gentleR.included===false);
   ok('windy ride defaults used', windyR.included===true);
   // explicit override still honoured
-  const {ride:forced}=await s.recordRide({routeId:route.id, startedAt:t0+3, endedAt:t0+63, actualTimeSec:1050, windFactor:0.12, included:true});
+  const {ride:forced}=await s.recordRide({routeId:route.id, startedAt:t0+3, endedAt:t0+63, actualTimeSec:1050, wfv:2, rideWindKmh:7, included:true});
   ok('explicit included overrides class default', forced.included===true);
 }
 
@@ -92,7 +93,7 @@ console.log('\nManual mode ignores rides (uses sliders):');
   uid=0; const s=mkStore();
   const route=await s.createRoute(processed, setup, {kHead:0.8,kTail:0.3});
   // default manual; record a wild ride — should not move the resolved model
-  await s.recordRide({routeId:route.id, startedAt:Date.now(), endedAt:Date.now(), actualTimeSec:9999, windFactor:0.5});
+  await s.recordRide({routeId:route.id, startedAt:Date.now(), endedAt:Date.now(), actualTimeSec:9999, wfv:2, rideWindKmh:14});
   const resolved=await s.resolveRouteModel(route.id);
   ok('manual baseline = slider', resolved.baselineSec===1000 && resolved.baselineSource==='slider');
   ok('manual k = sliders', resolved.kHead===0.8 && resolved.kTail===0.3);
@@ -105,7 +106,7 @@ console.log('\nCuration: exclude, edit duration, exclude-and-earlier:');
   const t0=Date.now();
   const ids=[];
   for(let i=0;i<4;i++){
-    const {ride}=await s.recordRide({routeId:route.id, startedAt:t0+i*1000, endedAt:t0+i*1000+60, actualTimeSec:1000+i, windFactor:0.3});
+    const {ride}=await s.recordRide({routeId:route.id, startedAt:t0+i*1000, endedAt:t0+i*1000+60, actualTimeSec:1000+i, wfv:2, rideWindKmh:11});
     ids.push(ride.id);
   }
   await s.updateRide(ids[3], { included:false });
@@ -126,7 +127,7 @@ console.log('\nFreeze: ride older than 14 days flips to historic, snapshots base
   const route=await s.createRoute(processed, setup, {kHead:1,kTail:1});
   const t0=Date.now();
   const old=t0 - 20*24*60*60*1000; // 20 days ago
-  const {ride}=await s.recordRide({routeId:route.id, startedAt:old, endedAt:old+60, actualTimeSec:1100, windFactor:0.4});
+  const {ride}=await s.recordRide({routeId:route.id, startedAt:old, endedAt:old+60, actualTimeSec:1100, wfv:2, rideWindKmh:12});
   // manual baseline 1000 → freeze should snapshot 1000
   await s.resolveRouteModel(route.id, t0);
   const after=await s.getRide(ride.id);

@@ -17,9 +17,11 @@
  *     and iterate departure ← arrival − predicted a couple of times. This
  *     converges fast (hourly forecast, short trips).
  *
- *  2. k applied once. windFactorTimed deliberately leaves k out (it weights by
- *     still-air time only). Here we apply the learned k exactly once, in the
- *     prediction step, so it never leaks into the convergence.
+ *  2. k applied INSIDE the curve (v2). The learned wind-attenuation
+ *     {kHead, kTail} is passed into windFactorTimed, which applies it per
+ *     segment sign inside the physics branches; the resulting wind_factor IS
+ *     the fractional time change and no outer multiply exists. A separate
+ *     k=1 factor (windFactorK1) is exposed for ride records.
  *
  * This module performs no storage and no scheduling; it is handed a processed
  * route, a model state, a seed, and forecast stations, and returns a callback
@@ -114,20 +116,37 @@ export function makePredictor({ route, rides, config, stationSeries, opts = {} }
     // Fixed-point: anchor on arrival, iterate departure ← arrival − predicted.
     let predictedSec = baselineSec; // first guess: still-air
     let windFactor = 0;
+    let departMs = arrivalMs - predictedSec * 1000;
     let pr = predictFromModel(resolved, 0, { distanceM: route.totalDistance });
 
     for (let p = 0; p < passes; p++) {
-      const departMs = arrivalMs - predictedSec * 1000;
+      departMs = arrivalMs - predictedSec * 1000;
+      // v2: the route's learned wind-attenuation goes INSIDE the curve, per
+      // segment sign (head segments kHead, tail segments kTail). windFactor is
+      // then the fractional time effect directly.
       windFactor = windFactorTimed({
         segments: route.segments,
         times,
         windFn,
         departMs,
+        k: { kHead: resolved.kHead, kTail: resolved.kTail },
         passes: 1, // inner single pass; outer loop here drives convergence
       });
       pr = predictFromModel(resolved, windFactor, { distanceM: route.totalDistance });
       predictedSec = pr.predictedSec;
     }
+
+    // k=1 factor at the converged departure: the forecast-equivalent wind
+    // summary, independent of the learned k. Ride records invert THIS (never
+    // the k-applied factor) into rideWindKmh — see app.recordRide.
+    const windFactorK1 = windFactorTimed({
+      segments: route.segments,
+      times,
+      windFn,
+      departMs,
+      k: 1,
+      passes: 1,
+    });
 
     return {
       predictedSec,
@@ -137,6 +156,7 @@ export function makePredictor({ route, rides, config, stationSeries, opts = {} }
       kTail: pr.kTail,
       provisional,
       windFactor,
+      windFactorK1,
     };
   }
   predictForArrival.resolved = resolved;

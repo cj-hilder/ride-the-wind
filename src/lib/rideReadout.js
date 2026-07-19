@@ -156,38 +156,29 @@ export function arrivalBezel(nowMs, arrivalMs, { windowMin = ARRIVAL_BEZEL_WINDO
 
 /**
  * Expected arrival instant (ms). `estDistanceM` is the along-route distance
- * (drives *remaining*). `gpsDistanceM` is the real distance ridden (drives the
- * forecast→live switch). `paceMps` is the smoothed live pace.
- *
- * Three stages:
- *  - **On-route, first km** (before live pace is trustworthy): a *progress-scaled*
- *    estimate — the whole-ride estimate times the fraction of the route still
- *    ahead, `estimate × remaining/total`. This refines as the rider advances
- *    instead of sitting flat until 1 km. The estimate scaled is the wind-aware
- *    `forecastRemainingSec` when available, else the still-air `baselineRemainingSec`.
- *  - **After 1 km of real distance:** `remaining ÷ live pace`.
- *  - **No estimate available / off-route (caller passes null):** null.
+ * (drives *remaining*). `paceMps` is the smoothed live pace — an EMA that is
+ * SEEDED at ride start with the predicted wind-affected pace and then drifts
+ * toward the rider's actual pace. So a single continuous rule applies from the
+ * first fix: `remaining ÷ pace`, with no forecast→live switch and no 1 km jump.
  *
  * `remaining` uses along-route distance (so a detour keeps remaining near true
  * route length) while pace comes from real GPS distance (so a detour doesn't
- * crater pace).
+ * crater pace). Returns null with no total, no pace, or off-route (caller passes
+ * paceMps null). The forecast/baseline remaining args are retained for callers
+ * as a last-resort fallback before any pace exists.
  */
 export function expectedArrivalMs({
-  nowMs, estDistanceM, gpsDistanceM, routeTotalM, paceMps, forecastRemainingSec, baselineRemainingSec,
+  nowMs, estDistanceM, routeTotalM, paceMps, forecastRemainingSec, baselineRemainingSec,
 }) {
   if (routeTotalM == null || routeTotalM <= 0) return null; // new-route recording: no total
   const remaining = Math.max(0, routeTotalM - (estDistanceM || 0));
-  if ((gpsDistanceM || 0) < ARRIVAL_LIVE_AFTER_M) {
-    // Progress-scaled whole-ride estimate: prefer the wind-aware forecast, fall
-    // back to the still-air baseline. Scale by the fraction of route remaining.
-    const wholeRideSec = forecastRemainingSec != null ? forecastRemainingSec
-      : (baselineRemainingSec != null ? baselineRemainingSec : null);
-    if (wholeRideSec == null) return null;
-    const remainingFraction = remaining / routeTotalM;
-    return nowMs + wholeRideSec * remainingFraction * 1000;
-  }
-  if (!(paceMps > 0)) return null;
-  return nowMs + (remaining / paceMps) * 1000;
+  if (paceMps > 0) return nowMs + (remaining / paceMps) * 1000;
+  // No pace yet (should be rare — the EMA is seeded at start): fall back to the
+  // progress-scaled whole-ride estimate so arrival isn't blank.
+  const wholeRideSec = forecastRemainingSec != null ? forecastRemainingSec
+    : (baselineRemainingSec != null ? baselineRemainingSec : null);
+  if (wholeRideSec == null) return null;
+  return nowMs + wholeRideSec * (remaining / routeTotalM) * 1000;
 }
 
 /** Average speed (km/h) so far = distance / moving-time (pauses excluded). */
