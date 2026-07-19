@@ -1283,7 +1283,7 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
       </div>
 
       {!value.split ? (
-        <TerrainSlider title="Ground effect" k={headK} baselineSec={baselineSec}
+        <TerrainSlider title="Ground effect" k={headK} baselineSec={dispBaselineSec}
           readOnly={headLearned} showBoth example={example}
           mode={modes.kMode}
           source={learned && (learned.kHeadSource === "learned" || learned.kTailSource === "learned") ? "learned" : "slider"}
@@ -1291,13 +1291,13 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
           onCommit={(k) => setK("kHead", k)} />
       ) : (
         <>
-          <TerrainSlider title="Ground effect on headwind" k={headK} baselineSec={baselineSec}
+          <TerrainSlider title="Ground effect on headwind" k={headK} baselineSec={dispBaselineSec}
             readOnly={headLearned} sign={+1} example={example}
             mode={modes.kMode}
             source={learned && learned.kHeadSource === "learned" ? "learned" : "slider"}
             rides={learned ? learned.ridesHead : 0}
             onCommit={(k) => setK("kHead", k)} />
-          <TerrainSlider title="Ground effect on tailwind" k={tailK} baselineSec={baselineSec}
+          <TerrainSlider title="Ground effect on tailwind" k={tailK} baselineSec={dispBaselineSec}
             readOnly={tailLearned} sign={-1} example={example}
             mode={modes.kMode}
             source={learned && learned.kTailSource === "learned" ? "learned" : "slider"}
