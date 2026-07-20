@@ -53,7 +53,7 @@ const tHeadSeed = 1000 * (1 + effortNorm(0.5 * 20));
 const tTailSeed = 1000 * (1 + effortNorm(-0.5 * 20));
 ok('recovers k=0.5 from both', near(seedK(1000, tHeadSeed, tTailSeed), 0.5, 1e-9), `${seedK(1000, tHeadSeed, tTailSeed)}`);
 ok('recovers k from headwind only', near(seedK(1000, tHeadSeed, null), 0.5, 1e-9), `${seedK(1000, tHeadSeed, null)}`);
-ok('defaults to DEFAULT_K (0.7) when none', seedK(1000, null, null) === 0.7);
+ok('defaults to DEFAULT_K (0.5) when none', seedK(1000, null, null) === 0.5);
 ok('clamps absurd seed to K_MAX 1.2', seedK(1000, 9000, null) === 1.2);
 
 console.log('\ncomputeWindFactor end-to-end:');

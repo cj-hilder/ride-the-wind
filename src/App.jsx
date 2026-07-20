@@ -29,6 +29,7 @@ import HelpPanel from "./HelpPanel.jsx";
 import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, rainfallValue, rainfallUnitLabel, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel } from "./lib/format.js";
 import { RAIN_RATE_BANDS, RAIN_TOTAL_BANDS } from "./lib/whatToExpect.js";
 import { effortNorm } from "./lib/windModel.js";
+import { DEFAULT_K } from "./lib/windModel.js";
 import { rideK as computeRideK } from "./lib/learning.js";
 
 /* Error boundary around the active screen. A render error in one screen (e.g. a
@@ -2073,11 +2074,11 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
   const begin = async () => {
     setState("recording"); setElapsed(0); setPaused(false); setGpsError(null);
     setLive({ distanceM: 0, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
-    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null };
+    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, lastSpeedAccM: null, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null };
     acquireWake();
     const handle = await controller.recordRoute({
       onError: (e) => { setGpsError(e || { code: 2 }); },
-      onTick: ({ elapsedSec, distanceM, speedMps, fixT, accuracyM }) => {
+      onTick: ({ elapsedSec, distanceM, speedMps, gpsSpeedMps, speedAccMps, fixT, accuracyM }) => {
         setElapsed(elapsedSec);
         setGpsError(null); // a fix arrived → clear any prior error (no-op if already null)
         // Needle smoothing identical to ride capture: smooth the controller's
@@ -2096,11 +2097,23 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
             em.warmSec = elapsedSec;
           }
           if (dt > 0 && em.warmed) {
-            let instMps = Math.max(0, speedMps || 0);
-            if (instMps > SPEED_SANE_MAX_MPS) instMps = 0;
+            const useDoppler = gpsSpeedMps != null && gpsSpeedMps >= 0;
+            // 1) instantaneous sample — device Doppler speed when available,
+            //    else position-derived. Same needle pipeline as ride capture.
+            let instMps = useDoppler ? gpsSpeedMps : Math.max(0, speedMps || 0);
+            if (instMps > SPEED_SANE_MAX_MPS) instMps = useDoppler ? SPEED_SANE_MAX_MPS : 0;
+            // 2) acceleration clamp (source-agnostic physical bound)
             const maxDelta = NEEDLE_MAX_ACCEL_MPS2 * (dt / 1000);
             instMps = Math.max(em.speedMps - maxDelta, Math.min(em.speedMps + maxDelta, instMps));
-            em.speedMps = emaStep(em.speedMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), needleTauMs(em.lastAccM, accuracyM));
+            // 3) adaptive τ from the source-appropriate accuracy, ×NEEDLE_TAU_SCALE
+            const baseTau = useDoppler
+              ? ((speedAccMps != null || em.lastSpeedAccM != null)
+                  ? needleTauMsFromSpeedAcc(em.lastSpeedAccM, speedAccMps)
+                  : needleTauMs(em.lastAccM, accuracyM))
+              : needleTauMs(em.lastAccM, accuracyM);
+            const tau = baseTau * NEEDLE_TAU_SCALE;
+            em.speedMps = emaStep(em.speedMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), tau);
+            em.lastSpeedAccM = speedAccMps != null ? speedAccMps : em.lastSpeedAccM;
           }
         }
         if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; }
@@ -2215,7 +2228,7 @@ function Setup({ controller, onDone, onCancel }) {
   const [preview, setPreview] = useState(null);
   const [err, setErr] = useState(null);
   const [routeList, setRouteList] = useState(null); // for the reverse picker
-  const [form, setForm] = useState({ name: "", speedKmh: 16, kHead: 0.35, kTail: 0.35, split: false, arrival: "08:45", timeMode: "arrive", days: ["MO", "TU", "WE", "TH", "FR"] });
+  const [form, setForm] = useState({ name: "", speedKmh: 16, kHead: DEFAULT_K, kTail: DEFAULT_K, split: false, arrival: "08:45", timeMode: "arrive", days: ["MO", "TU", "WE", "TH", "FR"] });
   // Tuning modes default to learn/learn (the new-route default), toggleable here
   // for consistency with the route editor. At setup there are no rides, so learn
   // controls fall back to the sliders and read "using your setting until enough

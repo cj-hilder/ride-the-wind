@@ -32,9 +32,9 @@ const DB_NAME = "ride-the-wind";
 const DB_VERSION = 1;
 
 // Default k when a direction has no usable setup estimate. Mirrors
-// windModel.DEFAULT_K (v2: k = fraction of forecast wind felt); duplicated
+// windModel.DEFAULT_K (0.5; v2 = fraction of forecast wind felt); duplicated
 // here to avoid a cross-module dependency in the storage layer.
-const MIGRATION_DEFAULT_K = 0.7;
+const MIGRATION_DEFAULT_K = 0.5;
 
 /**
  * Derive { kHead, kTail } from a route's stored setup estimates, for migrating

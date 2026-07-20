@@ -21,6 +21,7 @@ import {
   invHead,
   invTail,
   windComponent,
+  DEFAULT_K,
   fetchForecast as realFetchForecast,
   fetchEnsemble as realFetchEnsemble,
   parseForecast,
@@ -142,7 +143,9 @@ export function createAppController(deps = {}) {
   // actual distance with the identical formula Setup uses, so the example
   // models exactly the starting point a user would create.
   const EXAMPLE_DEFAULT_SPEED_KMH = 16;
-  const EXAMPLE_DEFAULT_K = 0.35;
+  // The example ride uses the SAME wind-attenuation default as a brand-new
+  // route (DEFAULT_K) — it models exactly the starting prior a user would get,
+  // with no separate demo value.
 
   let _exampleRoute = null;
   function exampleRoute() {
@@ -163,8 +166,8 @@ export function createAppController(deps = {}) {
       seedStillAirSec: baselineSec,
       // v2 forward map: seed time = still·(1 + f_branch(k·w_ref)) — the exact
       // counterpart of seedKSplit's inverse, so k round-trips through seed times.
-      seedHeadwind20Sec: Math.round(baselineSec * (1 + effortNorm(EXAMPLE_DEFAULT_K * 20))),
-      seedTailwind20Sec: Math.round(baselineSec * (1 + effortNorm(-EXAMPLE_DEFAULT_K * 20))),
+      seedHeadwind20Sec: Math.round(baselineSec * (1 + effortNorm(DEFAULT_K * 20))),
+      seedTailwind20Sec: Math.round(baselineSec * (1 + effortNorm(-DEFAULT_K * 20))),
       // Mirror the default new-route experience; toggleable in-memory so the
       // demo illustrates the difference between manual and learn.
       baselineMode: "learn",
@@ -1233,7 +1236,9 @@ export function createAppController(deps = {}) {
       (pos) => {
         const fix = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: now(),
           gpsT: (typeof pos.timestamp === "number" && pos.timestamp > 0) ? pos.timestamp : null,
-          accuracyM: (typeof pos.coords.accuracy === "number" && pos.coords.accuracy >= 0) ? pos.coords.accuracy : null };
+          accuracyM: (typeof pos.coords.accuracy === "number" && pos.coords.accuracy >= 0) ? pos.coords.accuracy : null,
+          gpsSpeedMps: (typeof pos.coords.speed === "number" && pos.coords.speed >= 0) ? pos.coords.speed : null,
+          speedAccMps: (typeof pos.coords.speedAccuracy === "number" && pos.coords.speedAccuracy >= 0) ? pos.coords.speedAccuracy : null };
         if (paused) { prev = fix; return; }
         trace.push(fix);
         if (prev && onTick) {
@@ -1250,6 +1255,8 @@ export function createAppController(deps = {}) {
             elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000,
             distanceM: traceDistance(trace),
             speedMps: dt > 0 ? moved / dt : 0,
+            gpsSpeedMps: fix.gpsSpeedMps, // device Doppler speed if available (m/s) — preferred needle source
+            speedAccMps: fix.speedAccMps, // device speed accuracy (m/s), for Doppler-appropriate τ
             fixT: fix.gpsT ?? fix.t,
             accuracyM: fix.accuracyM,
           });

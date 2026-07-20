@@ -195,12 +195,18 @@ export function computeWindFactor(segments, windAt, times, k = 1, wRef = W_REF_K
  */
 /**
  * Default wind attenuation when the user gives no directional seed estimate:
- * the route feels 70% of the forecast along-route wind. Typical suburban
- * shelter sits below full exposure (k ≈ 1); fully open coastal routes may
- * reach ~1; heavy tree/building shelter can halve it. Tune as learned k
- * values accumulate.
+ * the route feels 50% of the forecast along-route wind. This is a deliberately
+ * CAUTIOUS starting prior, not a claim about typical terrain: the log wind
+ * profile puts the pure 10 m→surface ratio at rider height around 0.3–0.4 for
+ * suburban commuting (higher on exposed/open routes, lower in dense
+ * residential), and rider effort on windy days pulls the learned effective k
+ * further down. 0.5 sits at the top of the suburban physical range — it
+ * slightly over-warns until real rides pull it toward the route's true value,
+ * which is the safer direction for a "leave early?" tool. It also matches the
+ * exposed harbour-route k≈0.5 measured in testing. The single default used
+ * everywhere (new routes AND the example ride). Tune as learned k accumulates.
  */
-export const DEFAULT_K = 0.7;
+export const DEFAULT_K = 0.5;
 /** THE k range (fraction of forecast wind felt, user-facing as 0%–120%).
  * The single range used everywhere: sliders, seeds, learned-fit acceptance,
  * and per-ride sanity (out-of-range rides default to not-used). */

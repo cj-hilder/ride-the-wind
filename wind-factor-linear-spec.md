@@ -91,9 +91,9 @@ segments — no approximation there.
   z = f(k·w)/k) remove it — verified 940 → 999 on 60 noisy rides (true 1000).
 - seedK: from the 20 km/h seed times, per branch: k = inv_branch(seed/still −1)
   (x = 1 at the seed wind, so the inverse alone gives k).
-- DEFAULT_K = 0.7; slider (ground-effect) range 0.0–1.2, semantics "fraction
+- DEFAULT_K = 0.5; slider (ground-effect) range 0.0–1.2, semantics "fraction
   of forecast wind felt on this route", clamp learned k to 0.1–1.5.
-  [DECIDED: 0.7 default, 0–1.2 slider range]
+  [DECIDED: 0.5 default, 0–1.2 slider range]
 
 ## Ground-effect example (TerrainSlider)
 

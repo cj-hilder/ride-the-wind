@@ -27,7 +27,7 @@ ok('example gone once a real route exists', list2.length===1 && !list2[0].route.
 {
   const a=mk();
   let t=await a.routeTuning('__example__');
-  ok('example defaults speed 16 / k 0.35', t.manual.speedKmh===16 && Math.abs(t.manual.kHead-0.35)<0.001);
+  ok('example defaults speed 16 / k = DEFAULT_K 0.5', t.manual.speedKmh===16 && Math.abs(t.manual.kHead-0.5)<0.001, `${t.manual.kHead}`);
   a.updateExampleSeeds({speedKmh:24, kHead:0.5, kTail:0.2});
   t=await a.routeTuning('__example__');
   ok('in-memory edit sticks (speed 24, k 0.5/0.2)', t.manual.speedKmh===24 && Math.abs(t.manual.kHead-0.5)<0.01 && Math.abs(t.manual.kTail-0.2)<0.01);

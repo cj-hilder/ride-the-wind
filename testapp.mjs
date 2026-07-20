@@ -314,15 +314,21 @@ console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRec
       clearWatch: () => {},
     };
     const speeds = [];
-    const h2 = await gApp2.recordRoute({ geo: geo2, onTick: ({ speedMps }) => speeds.push(speedMps) });
+    const dopplerSeen = [];
+    const h2 = await gApp2.recordRoute({ geo: geo2, onTick: ({ speedMps, gpsSpeedMps, speedAccMps }) => {
+      speeds.push(speedMps);
+      if (gpsSpeedMps != null) dopplerSeen.push({ gpsSpeedMps, speedAccMps });
+    } });
     for (let i = 0; i < 5; i++) {
       clock += 5000;        // callback/app clock jumps 5 s (batched delivery)
       gpsClock += 1000;     // true GPS time advances 1 s
-      cb2({ coords: { latitude: 0, longitude: i * dLon, accuracy: 5 }, timestamp: gpsClock });
+      cb2({ coords: { latitude: 0, longitude: i * dLon, accuracy: 5, speed: 6.2, speedAccuracy: 0.4 }, timestamp: gpsClock });
     }
     h2.manualFinish();
     const last = speeds[speeds.length - 1];
     ok('speed uses GPS-interval dt (≈5 m/s not ≈1)', last > 3.5 && last < 6.5, `${last?.toFixed(2)} m/s`);
+    ok('recordRoute forwards Doppler speed to onTick', dopplerSeen.length >= 4 && dopplerSeen.every((d) => d.gpsSpeedMps === 6.2), `${dopplerSeen.length} seen`);
+    ok('recordRoute forwards speed accuracy to onTick', dopplerSeen.every((d) => d.speedAccMps === 0.4));
   }
 
   // previewTrace: gate + process without creating
@@ -402,7 +408,7 @@ console.log('\nExport / import through controller:');
 console.log('\nTailwind forecast flips the verdict:');
 {
   clock=new Date(2026,4,31,21,30).getTime();
-  const appT=mkApp(stubForecast(270,25)); // wind from west, east route -> tailwind
+  const appT=mkApp(stubForecast(270,32)); // wind from west, east route -> tailwind (32 km/h clears the 4-min threshold at the conservative default k=0.5)
   const rT=await appT.createRoute(gpx, {name:'E', seedStillAirSec:1000, targetArrival:'08:45', activeDays:['MO','TU','WE','TH','FR']});
   const hv=await appT.getHomeVerdict(rT.id, new Date(2026,5,1,12,0).getTime());
   ok('tailwind verdict', hv.verdict.verdict==='tailwind', hv.verdict.verdict);
