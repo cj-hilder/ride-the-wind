@@ -13,9 +13,9 @@ ok('returns distanceM', t.distanceM>0);
 ok('manual speed derived', t.manual.speedKmh>0, t.manual.speedKmh);
 // v2 PHYSICAL inversion: excess 0.5 → invHead ≈ 0.778. A 50% saving at the
 // 20 km/h seed exceeds nominal physics (max 35%), so invTail gives 1.75 →
-// clamped to K_MAX 1.2 — the clamp catching an over-optimistic seed.
+// clamped to K_MAX 1.4 — the clamp catching an over-optimistic seed.
 ok('manual kHead ~invHead(0.5)', Math.abs(t.manual.kHead-0.778)<0.005, t.manual.kHead);
-ok('manual kTail clamped to 1.2', t.manual.kTail===1.2, t.manual.kTail);
+ok('manual kTail clamped to 1.4', t.manual.kTail===1.4, t.manual.kTail);
 ok('nothing learned (0 rides)', t.learned.baselineSource==='slider' && t.learned.kHeadSource==='slider' && t.learned.kTailSource==='slider' && t.dots===0);
 ok('stats present', t.stats && t.stats.totalDistance>0 && t.stats.pointCount>1, JSON.stringify(t.stats));
 ok('example present', t.example && typeof t.example.headFactor==='number');

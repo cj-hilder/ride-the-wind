@@ -54,7 +54,7 @@ const tTailSeed = 1000 * (1 + effortNorm(-0.5 * 20));
 ok('recovers k=0.5 from both', near(seedK(1000, tHeadSeed, tTailSeed), 0.5, 1e-9), `${seedK(1000, tHeadSeed, tTailSeed)}`);
 ok('recovers k from headwind only', near(seedK(1000, tHeadSeed, null), 0.5, 1e-9), `${seedK(1000, tHeadSeed, null)}`);
 ok('defaults to DEFAULT_K (0.5) when none', seedK(1000, null, null) === 0.5);
-ok('clamps absurd seed to K_MAX 1.2', seedK(1000, 9000, null) === 1.2);
+ok('clamps absurd seed to K_MAX 1.4', seedK(1000, 9000, null) === 1.4);
 
 console.log('\ncomputeWindFactor end-to-end:');
 // 4 segments all heading north, uniform 20km/h headwind from north -> factor +1

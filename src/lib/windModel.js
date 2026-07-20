@@ -211,7 +211,10 @@ export const DEFAULT_K = 0.5;
  * The single range used everywhere: sliders, seeds, learned-fit acceptance,
  * and per-ride sanity (out-of-range rides default to not-used). */
 export const K_MIN = 0.0;
-export const K_MAX = 1.2;
+export const K_MAX = 1.4;   // slider max AND the clamp ceiling: values in
+                            // (K_MAX, K_LEARN_REJECT] are stored/used AS K_MAX
+export const K_LEARN_REJECT = 1.6; // a learned fit above this is discarded as
+                            // implausible (fall back to the setting/default)
 
 export function seedK(stillAirSec, headwind20Sec, tailwind20Sec) {
   if (!(stillAirSec > 0)) return DEFAULT_K;

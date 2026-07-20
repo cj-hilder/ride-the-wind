@@ -1084,9 +1084,10 @@ function RouteMap({ polyline }) {
  * ========================================================================== */
 // v2 k semantics: fraction of the forecast wind felt on the route (surface =
 // k × forecast). 0 = fully sheltered, 1 = full forecast wind at the nominal
-// rider, up to 1.2 for exposed routes / slower riders (learned k may reach
-// K_MAX 1.5; the ◄► off-scale markers show when it sits beyond the slider).
-const TERRAIN_MIN = 0.0, TERRAIN_MAX = 1.2;
+// rider, up to 1.4 for exposed / wind-funnelling routes (forecast under-
+// prediction on gullies, coastal gaps, ridgelines can push the felt wind above
+// the model-cell forecast). Slider and the learned clamp share the 1.4 max.
+const TERRAIN_MIN = 0.0, TERRAIN_MAX = 1.4;
 const kClampUI = (k) => Math.max(TERRAIN_MIN, Math.min(TERRAIN_MAX, k));
 
 /* Two-segment Manual | Learn pill. Compact, matches the day/time-mode buttons. */
@@ -1357,11 +1358,21 @@ function TerrainSlider({ title, k, baselineSec, readOnly, sign, showBoth, exampl
         onMouseUp={(e) => { if (!readOnly) onCommit(Number(e.target.value)); }}
         onTouchEnd={(e) => { if (!readOnly) onCommit(Number(e.target.value)); }}
         style={{ width: "100%", accentColor: "#e0a45e", opacity: readOnly ? 0.7 : 1 }} />
+      {/* Top line: wind-EXPOSURE progression, evenly spaced. Positions are
+          approximate — the terms just walk from most-sheltered to wind-
+          amplifying (Funnelled is the >100% region terrain that accelerates
+          wind above forecast, the reason the scale runs past 100%). */}
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "rgba(255,255,255,0.4)", marginTop: 2 }}>
-        <span style={{ textAlign: "center" }}>Sheltered<br />steep</span>
+        <span>Sheltered</span>
         <span>Urban</span>
-        <span>Open</span>
-        <span style={{ textAlign: "center" }}>Exposed<br />flat</span>
+        <span>Exposed</span>
+        <span>Funnelled</span>
+      </div>
+      {/* Bottom line: gradient hint (independent of exposure). Steeper routes
+          feel less wind effect for a given exposure; flatter feel more. */}
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "rgba(255,255,255,0.32)", marginTop: 1 }}>
+        <span>◄ steeper</span>
+        <span>flatter ►</span>
       </div>
       <div style={{ fontSize: 11.5, color: "#e0a45e", marginTop: 6 }}>
         ground effect: {kPct(shownK)} of forecast wind felt

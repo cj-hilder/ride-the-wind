@@ -1117,7 +1117,11 @@ export function createAppController(deps = {}) {
         { wfv: 2, rideWindKmh, actualSec: capture.actualTimeSec, baselineRef: "current" },
         resolved.baselineSec
       );
-      if (kRide != null && (kRide < learning.K_MIN || kRide > learning.K_MAX)) {
+      // Quarantine a ride only when its implied k is genuinely implausible
+      // (below 0 can't happen for attenuation; above K_LEARN_REJECT means the
+      // ride contradicts the model). Values in (K_MAX, K_LEARN_REJECT] are a
+      // legitimate strong-wind route and get clamped in the fit, not excluded.
+      if (kRide != null && (kRide < learning.K_MIN || kRide > learning.K_LEARN_REJECT)) {
         included = false;
       }
     }

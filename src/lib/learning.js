@@ -41,8 +41,14 @@ export const KMH_STILL = 5;                 // |wind| below this: still
 export const KMH_WINDY = 10;                // |wind| at/above this: windy
 export const KMH_SPREAD_MIN = 1.2;          // min km/h spread to learn k (per direction)
 export const KMH_BASELINE_SPREAD_MIN = 4;   // min km/h spread to extrapolate baseline
-export const K_MIN = 0.0;                   // THE k range: fraction of forecast
-export const K_MAX = 1.2;                   // wind felt, user-facing as 0%–120%
+export const K_MIN = 0.0;                   // THE k range (fraction of forecast
+export const K_MAX = 1.4;                   // wind felt, user-facing 0%–140%).
+export const K_LEARN_REJECT = 1.6;          // Three zones for a LEARNED k:
+                                            //   0–1.4   : used as-is
+                                            //   1.4–1.6 : clamped to 1.4 (stored
+                                            //             & computed as 1.4, not
+                                            //             merely displayed)
+                                            //   > 1.6   : rejected → use setting
 export const FREEZE_AGE_DAYS = 14;
 export const FREEZE_AGE_MS = FREEZE_AGE_DAYS * 24 * 60 * 60 * 1000;
 
@@ -273,11 +279,14 @@ function fitKWeighted(dirRides, liveBaselineSec) {
     used += 1;
   }
   if (!(sw > 0) || used < 2) return null;
-  const k = swk / sw;
-  // Acceptance, not clamping: a fitted k is only trusted as "learned" when it
-  // lands inside THE k range (0–1.2). Outside, something is off (baseline,
-  // anomalous rides) — return null so the route keeps using the slider setting.
-  if (!Number.isFinite(k) || k < K_MIN || k > K_MAX) return null;
+  const kRaw = swk / sw;
+  if (!Number.isFinite(kRaw) || kRaw < K_MIN) return null;
+  // Three-zone acceptance: a fit above K_LEARN_REJECT (1.6) is implausible —
+  // reject so the route keeps its slider setting. A fit in (K_MAX, K_LEARN_REJECT]
+  // is trusted to exist but its MAGNITUDE is capped at K_MAX (1.4): the clamped
+  // value is what we store and compute with, not just what we display.
+  if (kRaw > K_LEARN_REJECT) return null;
+  const k = Math.min(kRaw, K_MAX);
   return { k, ridesUsed: used };
 }
 

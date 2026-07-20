@@ -41,13 +41,13 @@ const MIGRATION_DEFAULT_K = 0.5;
  * pre-split models. v2: seed times encode k via the branch curves, so the
  * migration inverts them with the same closed forms as windModel.invHead /
  * invTail (formulas duplicated by design, constants A=0.715, B=0.30), each
- * side defaulting to MIGRATION_DEFAULT_K and clamped to the K range 0–1.2.
+ * side defaulting to MIGRATION_DEFAULT_K and clamped to the K range 0–1.4.
  */
 function splitSeedFromRoute(route) {
   const A = 0.715, B = 0.30;
   const invHead = (w) => (w > 0 ? (-1 + Math.sqrt(1 + 4 * A * (1 + A) * w)) / (2 * A) : 0);
   const invTail = (w) => (w > 0 ? ((1 - B) * w) / (1 - B * w) : 0);
-  const clamp = (x) => Math.max(0.0, Math.min(1.2, x));
+  const clamp = (x) => Math.max(0.0, Math.min(1.4, x));
   let kHead = MIGRATION_DEFAULT_K, kTail = MIGRATION_DEFAULT_K;
   const still = route?.seedStillAirSec;
   if (still > 0) {

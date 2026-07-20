@@ -1,5 +1,5 @@
 import {
-  KMH_STILL, KMH_WINDY, K_MIN, K_MAX, FREEZE_AGE_MS,
+  KMH_STILL, KMH_WINDY, K_MIN, K_MAX, K_LEARN_REJECT, FREEZE_AGE_MS,
   classifyRide, classifyRideRecord, isV2Ride, clampK, isFrozenByAge, applyFreeze,
   effectiveBaseline, rideK,
   resolveBaseline, resolveK, resolveModel, dotCount, predictFromModel, predict,
@@ -50,9 +50,9 @@ console.log('\nRecord classification (v1 carve-out uses frozen v1 thresholds):')
   ok('isV2Ride false for v1', isV2Ride(rideV1(0.5, 1000)) === false);
 }
 
-console.log('\nClamp (THE k range 0-1.2, user-facing 0%-120%):');
+console.log('\nClamp (slider band 0-1.4, user-facing 0%-140%):');
 {
-  ok('huge k clamps to K_MAX 1.2', clampK(99) === K_MAX && K_MAX === 1.2);
+  ok('huge k clamps to K_MAX 1.4', clampK(99) === K_MAX && K_MAX === 1.4);
   ok('K_MIN is 0 (tiny k passes through)', clampK(0.001) === 0.001 && K_MIN === 0);
   ok('NaN -> null', clampK(NaN) === null);
 }
@@ -202,16 +202,25 @@ console.log('\nresolveModel — gentle gating: default excluded, used → feeds 
   ok('baseline still from the still ride', near(mUsed.baselineSec, b, 1));
 }
 
-console.log('\nfit ACCEPTANCE: out-of-range learned k rejected (slider kept):');
+console.log('\nfit ACCEPTANCE — three zones (0-1.4 as-is, 1.4-1.6 clamped, >1.6 rejected):');
 {
   const b = 1000;
-  const head = [12, 16, 20].map((w) => ride(w, synth(b, 9, w))); // absurd k=9
-  const k = resolveK(head, b, { kMode: 'learn', split: false, sliderKHead: 1, sliderKTail: 1 });
-  ok('out-of-range fit rejected -> slider', k.sourceHead === 'slider' && k.kHead === 1, `${k.kHead} (${k.sourceHead})`);
-  // in-range fit at the edge still accepted
-  const edge = [12, 16, 20].map((w) => ride(w, synth(b, 1.15, w)));
-  const ke = resolveK(edge, b, { kMode: 'learn', split: false, sliderKHead: 0.5, sliderKTail: 0.5 });
-  ok('k=1.15 accepted as learned', ke.sourceHead === 'learned' && Math.abs(ke.kHead - 1.15) < 1e-6, `${ke.kHead}`);
+  // zone 1: an in-range fit is used exactly.
+  const z1 = [12, 16, 20].map((w) => ride(w, synth(b, 1.2, w)));
+  const k1 = resolveK(z1, b, { kMode: 'learn', split: false, sliderKHead: 0.5, sliderKTail: 0.5 });
+  ok('k=1.2 accepted as-is', k1.sourceHead === 'learned' && Math.abs(k1.kHead - 1.2) < 1e-6, `${k1.kHead}`);
+  // zone 2: a fit of ~1.5 is trusted-but-clamped to exactly K_MAX 1.4 (stored/used, not just shown).
+  const z2 = [12, 16, 20].map((w) => ride(w, synth(b, 1.5, w)));
+  const k2 = resolveK(z2, b, { kMode: 'learn', split: false, sliderKHead: 0.5, sliderKTail: 0.5 });
+  ok('k=1.5 clamped to K_MAX 1.4 (learned)', k2.sourceHead === 'learned' && k2.kHead === 1.4, `${k2.kHead} (${k2.sourceHead})`);
+  // zone 3: a fit above K_LEARN_REJECT 1.6 is discarded → slider kept.
+  const z3 = [12, 16, 20].map((w) => ride(w, synth(b, 1.9, w)));
+  const k3 = resolveK(z3, b, { kMode: 'learn', split: false, sliderKHead: 0.5, sliderKTail: 0.5 });
+  ok('k=1.9 rejected -> slider', k3.sourceHead === 'slider' && k3.kHead === 0.5, `${k3.kHead} (${k3.sourceHead})`);
+  // boundary: exactly at the reject ceiling is still accepted (then clamped).
+  const zb = [12, 16, 20].map((w) => ride(w, synth(b, 1.55, w)));
+  const kb = resolveK(zb, b, { kMode: 'learn', split: false, sliderKHead: 0.5, sliderKTail: 0.5 });
+  ok('k=1.55 (<1.6) accepted then clamped to 1.4', kb.sourceHead === 'learned' && kb.kHead === 1.4, `${kb.kHead}`);
 }
 
 console.log('\nresolveModel — per-ride baseline in k fit (historic frozen):');

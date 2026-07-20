@@ -91,9 +91,15 @@ segments — no approximation there.
   z = f(k·w)/k) remove it — verified 940 → 999 on 60 noisy rides (true 1000).
 - seedK: from the 20 km/h seed times, per branch: k = inv_branch(seed/still −1)
   (x = 1 at the seed wind, so the inverse alone gives k).
-- DEFAULT_K = 0.5; slider (ground-effect) range 0.0–1.2, semantics "fraction
+- DEFAULT_K = 0.5; slider (ground-effect) range 0.0–1.4, semantics "fraction
   of forecast wind felt on this route", clamp learned k to 0.1–1.5.
-  [DECIDED: 0.5 default, 0–1.2 slider range]
+  [DECIDED: 0.5 default, 0–1.4 slider range]
+- k acceptance has THREE zones (forecast under-prediction on funnelling
+  terrain — gullies, coastal gaps, ridgelines — legitimately pushes felt wind
+  above the model-cell forecast, so k > 1 is real, not an edge case):
+  0–1.4 used as-is; (1.4, 1.6] trusted but clamped to 1.4 (stored AND computed
+  as 1.4, not merely displayed); > 1.6 rejected as implausible → keep setting.
+  K_MAX = 1.4 (slider max + clamp ceiling), K_LEARN_REJECT = 1.6.
 
 ## Ground-effect example (TerrainSlider)
 
