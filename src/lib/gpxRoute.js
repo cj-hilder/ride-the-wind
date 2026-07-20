@@ -316,19 +316,42 @@ export function processGpx(gpxText, options = {}) {
  * Used by both processGpx (after parsing) and processTrace (recorded GPS).
  */
 export function processPoints(raw, options = {}) {
-  const { spacing = 75, minDistance = 200, maxGapWarn = 500 } = options;
+  const { spacing = 75, minDistance = 200, maxGapWarn = 500, rawGapWarnM = null } = options;
+  // Distance-gap detection runs on the RAW trace, before resampling — resample
+  // interpolates a synthetic straight line across a dropout, which would mask
+  // the very gap we want to flag. A "gap" here is purely a distance jump
+  // between consecutive raw fixes: a large jump means the GPS dropped out (or
+  // the app was backgrounded) and the route between is unknown. Time-only gaps
+  // (the rider paused at a light, a fix was late) produce little or no distance
+  // between fixes, so they never trip this — exactly as intended: ignored.
+  //
+  // Only GPS RECORDING passes rawGapWarnM (via processTrace). GPX IMPORT leaves
+  // it null: sparse, widely-spaced waypoints are a legitimate way to author a
+  // GPX and must not be flagged as dropouts.
+  let rawMaxGapM = 0;
+  for (let i = 1; i < raw.length; i++) {
+    const g = haversine(raw[i - 1].lat, raw[i - 1].lon, raw[i].lat, raw[i].lon);
+    if (g > rawMaxGapM) rawMaxGapM = g;
+  }
   const sampled = resample(raw, spacing);
   const { segments, totalDistance, maxGap, hasElevation } = buildSegments(sampled);
   const warnings = [];
   if (totalDistance < minDistance) warnings.push(`Track is very short (${Math.round(totalDistance)} m).`);
-  if (maxGap > maxGapWarn) warnings.push(`Track has a large gap (${Math.round(maxGap)} m) — recording may have paused.`);
+  if (rawGapWarnM != null && rawMaxGapM > rawGapWarnM) {
+    warnings.push(
+      `There are gaps in the GPS data (the largest spans about ${Math.round(rawMaxGapM)} m). ` +
+      `Please review the recorded route, and delete and re-record it if the path looks wrong.`
+    );
+  } else if (maxGap > maxGapWarn) {
+    warnings.push(`Track has a large gap (${Math.round(maxGap)} m) — recording may have paused.`);
+  }
   return {
     segments,
     totalDistance,
     start: { lat: sampled[0].lat, lon: sampled[0].lon },
     end: { lat: sampled[sampled.length - 1].lat, lon: sampled[sampled.length - 1].lon },
     hasElevation,
-    diagnostics: { maxGap, pointCount: sampled.length },
+    diagnostics: { maxGap, rawMaxGapM, pointCount: sampled.length },
     warnings,
   };
 }
@@ -337,7 +360,11 @@ export function processPoints(raw, options = {}) {
 // treatment differs by purpose"). Tunable.
 export const REC_MIN_DISTANCE_M = 200;   // shorter → probably an accidental start
 export const REC_MIN_FIXES = 10;         // fewer usable fixes → can't form a route
-export const REC_MAX_GAP_FRACTION = 0.25; // one gap covering >25% of elapsed → incomplete
+// DEPRECATED (unused): the recording gate no longer rejects on a time-gap
+// fraction — time-only gaps are tolerated, distance gaps warn. Kept only so any
+// external import doesn't break; safe to remove once confirmed unreferenced.
+export const REC_MAX_GAP_FRACTION = 0.25;
+export const REC_RAW_GAP_WARN_M = 50;    // raw distance jump above this → GPS-dropout warning
 export const REC_MAX_SPEED_MPS = 22;     // ~80 km/h: a fix implying more is a GPS spike
 
 /**
@@ -371,19 +398,26 @@ export function gpsQualityGate(trace) {
   if (pts.length < REC_MIN_FIXES) {
     return { ok: false, reason: "Not enough GPS fixes to form a route. Try recording again with a clear view of the sky." };
   }
-  let dist = 0, maxGap = 0, span = 0;
+  let dist = 0, maxTimeGap = 0, maxDistGapM = 0, span = 0;
   for (let i = 1; i < pts.length; i++) {
-    dist += haversine(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
+    const d = haversine(pts[i - 1].lat, pts[i - 1].lon, pts[i].lat, pts[i].lon);
+    dist += d;
+    if (d > maxDistGapM) maxDistGapM = d;
     const gap = pts[i].t - pts[i - 1].t;
-    if (gap > maxGap) maxGap = gap;
+    if (gap > maxTimeGap) maxTimeGap = gap;
   }
   span = pts[pts.length - 1].t - pts[0].t;
+  void maxTimeGap; void span; // time-only gaps are intentionally tolerated (see below)
   if (dist < REC_MIN_DISTANCE_M) {
     return { ok: false, reason: `That recording was very short (${Math.round(dist)} m). Please record the whole route.` };
   }
-  if (span > 0 && maxGap / span > REC_MAX_GAP_FRACTION) {
-    return { ok: false, reason: "The recording has a large gap where GPS dropped out. Please record it again." };
-  }
+  // Gaps are judged by DISTANCE, not time. A long time gap where the rider
+  // simply stopped (café, lights, a pause) leaves consecutive fixes close
+  // together and is completely tolerated. A large DISTANCE jump between
+  // consecutive fixes means GPS dropped out and the path between is unknown —
+  // but that's a WARNING (surfaced by processPoints so the user can review and
+  // re-record), not a hard rejection, so a single dropout doesn't throw away
+  // an otherwise-good recording.
   return { ok: true, points: pts };
 }
 
@@ -395,7 +429,10 @@ export function gpsQualityGate(trace) {
 export function processTrace(trace, options = {}) {
   const gate = gpsQualityGate(trace);
   if (!gate.ok) return gate;
-  return { ok: true, processed: processPoints(gate.points, options) };
+  // Recording path: enable the raw distance-gap (dropout) warning at 50 m,
+  // unless the caller overrides. GPX import calls processPoints directly and
+  // leaves rawGapWarnM null, so sparse authored waypoints aren't flagged.
+  return { ok: true, processed: processPoints(gate.points, { rawGapWarnM: REC_RAW_GAP_WARN_M, ...options }) };
 }
 
 /* ------------------------------------------------------------------ *

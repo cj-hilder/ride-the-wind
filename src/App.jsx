@@ -2030,6 +2030,7 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
   const [state, setState] = useState("armed"); // armed | recording | blocked
   const [blocked, setBlocked] = useState(null); // gate-failure message
   const [gpsError, setGpsError] = useState(null); // {code,message} when geolocation fails
+  const [confirmFinish, setConfirmFinish] = useState(false); // guard against an accidental Finish tap
   const [elapsed, setElapsed] = useState(0);
   const [paused, setPaused] = useState(false);
   const [live, setLive] = useState({ distanceM: 0, speedKmh: 0, avgKmh: 0 });
@@ -2148,7 +2149,8 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
     if (paused) { h.resume?.(); setPaused(false); acquireWake(); }
     else { h.pause?.(); setPaused(true); releaseWake(); }
   };
-  const finish = () => ref.current.handle?.manualFinish?.();
+  const finish = () => setConfirmFinish(true);
+  const doFinish = () => { setConfirmFinish(false); ref.current.handle?.manualFinish?.(); };
   const avg = Math.round((live.avgKmh || 0) * 2) / 2;
 
   if (state === "blocked") {
@@ -2184,6 +2186,20 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
           onPause={togglePause} onFinish={finish} finishLabel="Finish"
           bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{formatDistance(live.distanceM / 1000, undefined, { dp: 2 })}</div>}
         />
+        {confirmFinish && (
+          <div style={{ position: "absolute", inset: 0, zIndex: 60, display: "grid", placeItems: "center", background: "rgba(0,0,0,0.6)", padding: 28 }}>
+            <div style={{ maxWidth: 320, background: "#1d1b38", borderRadius: 18, padding: "22px 22px", border: "1px solid rgba(255,255,255,0.14)", textAlign: "center" }}>
+              <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 8 }}>Finish recording?</div>
+              <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: 18 }}>
+                Stop recording and use this route? Only do this once you've reached the end of your route.
+              </div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={() => setConfirmFinish(false)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Keep recording</button>
+                <button onClick={doFinish} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 14, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>Finish</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

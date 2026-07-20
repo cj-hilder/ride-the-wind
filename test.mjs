@@ -107,10 +107,11 @@ console.log('\nGPS recording: denoise + quality gate + processTrace:');
   ok('gate passes a good trace', good.ok === true, JSON.stringify(good.reason));
   // too short in distance → block (12 fixes × 5 m = 55 m < 200)
   ok('gate blocks too-short distance', gpsQualityGate(mkTrace(12)).ok === false);
-  // dominant gap → block: 60 fixes then one with a huge time gap covering >25%
+  // dominant TIME gap → now TOLERATED (rider paused): gate passes, no rejection.
+  // (Time-only gaps are ignored per spec; distance gaps warn downstream.)
   const gappy = mkTrace(60);
   gappy[30].t += 10 * 60 * 1000; for (let i = 31; i < gappy.length; i++) gappy[i].t += 10 * 60 * 1000;
-  ok('gate blocks a dominant time gap', gpsQualityGate(gappy).ok === false);
+  ok('gate tolerates a dominant time-only gap', gpsQualityGate(gappy).ok === true);
 
   // processTrace end-to-end → processed route shape like GPX
   const pt = processTrace(mkTrace(120)); // ~595 m
@@ -125,6 +126,40 @@ console.log('\nGPS recording: denoise + quality gate + processTrace:');
   // processPoints matches the GPX path shape (start/end/segments/warnings)
   const pp = processPoints([{lat:0,lon:0},{lat:0,lon:dLon*100}]);
   ok('processPoints returns route shape', !!pp.segments && !!pp.start && !!pp.end && Array.isArray(pp.warnings));
+}
+
+console.log('\nGPS gap handling (v1.5: distance-gaps warn, time-only gaps ignored):');
+{
+  const mk=(lat,lon,t)=>({lat,lon,t,ele:10});
+  // (a) time-only gap: rider pauses 8 min mid-ride (fixes at same spot), then
+  // continues. Must be tolerated — no rejection, no gap warning.
+  let lat=0,t=1e12; const paused=[];
+  for(let i=0;i<20;i++){paused.push(mk(lat,0,t));lat+=0.00018;t+=5000;}
+  paused.push(mk(lat,0,t+480000)); t+=480000; // 8-min stationary gap
+  for(let i=0;i<20;i++){lat+=0.00018;t+=5000;paused.push(mk(lat,0,t));}
+  const rp=processTrace(paused);
+  ok('time-only gap: recording accepted', rp.ok, rp.ok?'':rp.reason);
+  ok('time-only gap: no gap warning', rp.ok && !rp.processed.warnings.some(w=>/gaps in the GPS data/.test(w)), JSON.stringify(rp.ok&&rp.processed.warnings));
+
+  // (b) distance gap: a ~90 m jump between consecutive fixes (GPS dropout).
+  // Must be accepted (not rejected) but carry the review/re-record warning.
+  let lat2=0,t2=1e12; const jump=[];
+  for(let i=0;i<20;i++){jump.push(mk(lat2,0,t2));lat2+=0.00018;t2+=5000;}
+  lat2+=0.00081; t2+=5000; // ~90 m jump, one fix later
+  for(let i=0;i<20;i++){jump.push(mk(lat2,0,t2));lat2+=0.00018;t2+=5000;}
+  const rj=processTrace(jump);
+  ok('distance gap: recording still accepted', rj.ok, rj.ok?'':rj.reason);
+  ok('distance gap: raises review/re-record warning',
+    rj.ok && rj.processed.warnings.some(w=>/gaps in the GPS data.*delete and re-record/i.test(w)),
+    JSON.stringify(rj.ok&&rj.processed.warnings));
+  ok('distance gap: reported size is the raw jump (~90-110 m)',
+    rj.ok && rj.processed.diagnostics.rawMaxGapM > 60 && rj.processed.diagnostics.rawMaxGapM < 130, `${rj.ok&&rj.processed.diagnostics.rawMaxGapM?.toFixed(1)}`);
+
+  // (c) sub-threshold spacing: normal ~20 m fixes never warn.
+  let lat3=0,t3=1e12; const normal=[];
+  for(let i=0;i<40;i++){normal.push(mk(lat3,0,t3));lat3+=0.00018;t3+=5000;}
+  const rn=processTrace(normal);
+  ok('normal spacing: no gap warning', rn.ok && !rn.processed.warnings.some(w=>/gaps in the GPS data/.test(w)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
