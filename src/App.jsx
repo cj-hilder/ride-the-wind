@@ -752,10 +752,21 @@ function DebugReadout({ debug }) {
       </div>
       <div style={{ padding: "2px 12px 10px" }}>
         <Row label="route avg bearing">{debug.avgBearingDeg}°</Row>
-        <Row label="mean headwind">{formatWindSpeed(debug.meanHeadwindKmh)} ({debug.meanHeadwindKmh >= 0 ? "head" : "tail"})</Row>
-        {debug.effortHeadwindKmh != null && (
-          <Row label="equivalent wind">{formatWindSpeed(debug.effortHeadwindKmh)}</Row>
-        )}
+        <Row label={`mean ${debug.meanHeadwindKmh >= 0 ? "headwind" : "tailwind"}`}>{formatWindSpeed(Math.abs(debug.meanHeadwindKmh))}</Row>
+        {debug.effortHeadwindKmh != null && (() => {
+          // Equivalent wind is normally the same direction as the mean, so show
+          // it unsigned (the "mean head/tailwind" label above already states the
+          // direction). Only when its sign genuinely OPPOSES the mean — possible
+          // on a mixed route where the asymmetric head/tail curve tips the net
+          // the other way — do we keep a sign, so the reversal is visible.
+          const eq = debug.effortHeadwindKmh;
+          const opposes = Math.sign(eq) !== Math.sign(debug.meanHeadwindKmh)
+            && Math.abs(eq) > 1e-9 && Math.abs(debug.meanHeadwindKmh) > 1e-9;
+          const text = opposes
+            ? `${formatWindSpeed(Math.abs(eq))} (${eq >= 0 ? "head" : "tail"})`
+            : formatWindSpeed(Math.abs(eq));
+          return <Row label="equivalent wind">{text}</Row>;
+        })()}
         {debug.effortHeadwindKmh != null && (
           <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "0 0 4px" }}>
             The single steady wind that would cost the same time as the actual wind. Headwinds cost more than tailwinds save, so this is different from the mean.
@@ -1676,8 +1687,18 @@ function RideEditor({ ride, controller, onClose }) {
 
         <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginBottom: 18 }}>
           {fmtRideDate(ride.startedAt)} · {fmtRideTime(ride.startedAt)} · <span style={{ color: CLASS_COLOR[rideClassLabel(ride)] }}>{rideClassLabel(ride)}</span>
-          {ride.klass !== "still" && liveK != null && <> · k={kPct(liveK)}</>}
-          {ride.klass !== "still" && rideMeanWindKmh(ride) != null && <> · equivalent wind {formatWindSpeed(rideMeanWindKmh(ride))}</>}
+          {ride.klass !== "still" && <> · k={liveK != null ? kPct(liveK) : "—"}</>}
+          {rideMeanWindKmh(ride) != null && (() => {
+            // Direction: the "headwind"/"tailwind" chip already states it for
+            // windy rides, so only append head/tail here for still/gentle
+            // (whose chip is directionless). Omit near calm, where sign is noise.
+            const dirNeeded = ride.klass === "still" || ride.klass === "gentle";
+            const mag = rideMeanWindKmh(ride);
+            const tag = dirNeeded && mag >= 0.5
+              ? ` (${rideWindSign(ride) < 0 ? "tail" : "head"})`
+              : "";
+            return <> · equivalent wind {formatWindSpeed(mag)}{tag}</>;
+          })()}
         </div>
 
         {/* Duration */}
