@@ -1113,16 +1113,24 @@ export function createAppController(deps = {}) {
     let included = capture.included;
     if (included == null) {
       const resolved = learning.resolveModel(rides, config, now());
-      const kRide = learning.rideK(
-        { wfv: 2, rideWindKmh, actualSec: capture.actualTimeSec, baselineRef: "current" },
-        resolved.baselineSec
-      );
-      // Quarantine a ride only when its implied k is genuinely implausible
-      // (below 0 can't happen for attenuation; above K_LEARN_REJECT means the
-      // ride contradicts the model). Values in (K_MAX, K_LEARN_REJECT] are a
-      // legitimate strong-wind route and get clamped in the fit, not excluded.
-      if (kRide != null && (kRide < learning.K_MIN || kRide > learning.K_LEARN_REJECT)) {
-        included = false;
+      // Still rides are never quarantined by the k check: their equivalent
+      // wind is ~0, so k = deviation/wind is an unstable near-zero-denominator
+      // ratio that blows up on any timing noise (a 1 km/h residual can imply
+      // k=10). A still ride carries no wind signal to contradict — it's exactly
+      // what should feed the baseline — so we only sanity-check k for rides
+      // that actually have meaningful wind (gentle/windy).
+      const cls = learning.classifyRide(rideWindKmh);
+      if (cls !== "still") {
+        const kRide = learning.rideK(
+          { wfv: 2, rideWindKmh, actualSec: capture.actualTimeSec, baselineRef: "current" },
+          resolved.baselineSec
+        );
+        // Quarantine only when the implied k is genuinely implausible (above
+        // K_LEARN_REJECT). Values in (K_MAX, K_LEARN_REJECT] are a legitimate
+        // strong-wind route and get clamped in the fit, not excluded.
+        if (kRide != null && (kRide < learning.K_MIN || kRide > learning.K_LEARN_REJECT)) {
+          included = false;
+        }
       }
     }
 

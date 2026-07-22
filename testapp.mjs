@@ -124,6 +124,13 @@ console.log('\nCapture rides -> resolver learns (real recordRide path, learn mod
   const {ride:anom}=await app.recordRide({ routeId:route.id, startedAt:anomStart, endedAt:anomStart+3000*1000,
     actualTimeSec:3000, forecastWind:station(90,15) });
   ok('out-of-range k ride defaults to not-used', anom.included===false, `included=${anom.included} wind=${anom.rideWindKmh}`);
+  // Still ride whose time differs from the seed baseline: equivalent wind is
+  // ~0, so k = deviation/wind would blow up — but a still ride must NOT be
+  // quarantined by that (it carries no wind signal, and should feed baseline).
+  const stillStart=new Date(2026,5,21,8,0).getTime();
+  const {ride:stillRide}=await app.recordRide({ routeId:route.id, startedAt:stillStart, endedAt:stillStart+3600*1000,
+    actualTimeSec:3600, forecastWind:station(90,2) }); // 2 km/h, ~still
+  ok('still ride defaults to USED even when time differs from baseline', stillRide.included===true, `included=${stillRide.included} wind=${stillRide.rideWindKmh}`);
   ok('learned baseline positive', t.learned.baselineSec>0);
 }
 
