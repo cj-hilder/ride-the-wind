@@ -32,6 +32,35 @@ const DEG = Math.PI / 180;
 
 export const W_REF_KMH = 20; // reference wind for normalisation (per spec §2.2)
 
+/**
+ * Fetch a URL with ONE automatic retry on a transient failure (HTTP 429 "too
+ * many requests", 5xx, or a network error). At app open the home screen fires
+ * several route verdicts concurrently, each doing a deterministic + ensemble
+ * call, so the opening burst can momentarily trip Open-Meteo's short-window
+ * rate limit — the classic "busy on first tap, fine on the next" symptom. A
+ * single short backoff turns that manual retry into an automatic one; the
+ * warmed per-station cache means the retry rarely bursts again. Returns the
+ * Response (ok or not) — the caller still checks res.ok — or throws if even the
+ * retry errors at the network level.
+ */
+async function fetchWithRetry(f, url, { retries = 1, backoffMs = 800 } = {}) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, backoffMs * attempt));
+    try {
+      const res = await f(url);
+      // Retry only transient statuses; return anything else (incl. ok) as-is.
+      if (res.ok || attempt === retries) return res;
+      if (res.status === 429 || res.status >= 500) continue;
+      return res; // non-transient (e.g. 400/404): don't waste a retry
+    } catch (e) {
+      lastErr = e; // network-level failure: retry, then rethrow
+      if (attempt === retries) throw lastErr;
+    }
+  }
+  throw lastErr || new Error("fetch failed");
+}
+
 /* ------------------------------------------------------------------ *
  * Pure math
  * ------------------------------------------------------------------ */
@@ -374,7 +403,7 @@ export function windFactorTimed({
  * @returns {Promise<Array<{time:number, speed:number, fromDeg:number}>>}
  */
 export async function fetchForecast(lat, lon, opts = {}) {
-  const { forecastDays = 8, pastDays = 1, fetchImpl } = opts;
+  const { forecastDays = 8, pastDays = 1, fetchImpl, retryBackoffMs } = opts;
   const f = fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
   if (!f) throw new Error("No fetch available; inject opts.fetchImpl.");
 
@@ -386,7 +415,7 @@ export async function fetchForecast(lat, lon, opts = {}) {
     `&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m,temperature_2m,precipitation,precipitation_probability,snowfall,weather_code` +
     `&wind_speed_unit=kmh&timeformat=unixtime&past_days=${pastDays}&forecast_days=${forecastDays}`;
 
-  const res = await f(url);
+  const res = await fetchWithRetry(f, url, retryBackoffMs != null ? { backoffMs: retryBackoffMs } : {});
   if (!res.ok) throw new Error(`Open-Meteo HTTP ${res.status}`);
   const data = await res.json();
   return parseForecast(data);
@@ -411,7 +440,7 @@ export async function fetchEnsemble(lat, lon, opts = {}) {
     `&hourly=wind_speed_10m,wind_direction_10m,precipitation` +
     `&models=${model}&wind_speed_unit=kmh&timeformat=unixtime&past_days=${pastDays}&forecast_days=${forecastDays}`;
 
-  const res = await f(url);
+  const res = await fetchWithRetry(f, url);
   if (!res.ok) throw new Error(`Open-Meteo ensemble HTTP ${res.status}`);
   const data = await res.json();
   return parseEnsemble(data);
