@@ -708,11 +708,11 @@ function PlanBody({ verdict, dayVerdict, fetching, routeLon, accent, showDebug, 
           <ConfidenceDots confidence={confidence} />
           {verdict.kHead != null && verdict.kTail != null ? (
             Math.abs(verdict.kHead - verdict.kTail) < 0.005 ? (
-              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>k {kPct(verdict.kHead)}</span>
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>ground effect {kPct(verdict.kHead)}</span>
             ) : (
               <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
                 {/* headwind slows you → down arrow; tailwind speeds you → up arrow */}
-                k <span style={{ color: verdict.windFactor >= 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor >= 0 ? 600 : 400 }}>↓{kPct(verdict.kHead)}</span>
+                ground effect <span style={{ color: verdict.windFactor >= 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor >= 0 ? 600 : 400 }}>↓{kPct(verdict.kHead)}</span>
                 {" / "}
                 <span style={{ color: verdict.windFactor < 0 ? "#fff" : "rgba(255,255,255,0.5)", fontWeight: verdict.windFactor < 0 ? 600 : 400 }}>↑{kPct(verdict.kTail)}</span>
               </span>
@@ -743,7 +743,7 @@ function DebugReadout({ debug }) {
       background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.1)",
     }}>
       <div style={{ fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.4)", padding: "8px 12px 0", fontFamily: "inherit" }}>
-        Tech info
+        Forecast details
       </div>
       {/* Highlighted top line: wind speed + two-letter direction + bearing */}
       <div style={{
@@ -756,27 +756,34 @@ function DebugReadout({ debug }) {
       <div style={{ padding: "2px 12px 10px" }}>
         <Row label="route avg bearing">{debug.avgBearingDeg}°</Row>
         <Row label={`mean ${debug.meanHeadwindKmh >= 0 ? "headwind" : "tailwind"}`}>{formatWindSpeed(Math.abs(debug.meanHeadwindKmh))}</Row>
+        <Row label="mean crosswind">{formatWindSpeed(debug.meanCrosswindKmh)}</Row>
         {debug.effortHeadwindKmh != null && (() => {
-          // Equivalent wind is normally the same direction as the mean, so show
-          // it unsigned (the "mean head/tailwind" label above already states the
-          // direction). Only when its sign genuinely OPPOSES the mean — possible
-          // on a mixed route where the asymmetric head/tail curve tips the net
-          // the other way — do we keep a sign, so the reversal is visible.
+          // Direction word for the equivalent-wind rows (both share it). Normally
+          // the same direction as the mean; the sign only opposes the mean on a
+          // mixed route where the asymmetric head/tail curve tips the net — in
+          // that case show an explicit (head)/(tail) tag so the reversal shows.
           const eq = debug.effortHeadwindKmh;
+          const felt = debug.feltEquivWindKmh ?? (eq * 1);
+          const dirWord = eq >= 0 ? "headwind" : "tailwind";
           const opposes = Math.sign(eq) !== Math.sign(debug.meanHeadwindKmh)
             && Math.abs(eq) > 1e-9 && Math.abs(debug.meanHeadwindKmh) > 1e-9;
-          const text = opposes
-            ? `${formatWindSpeed(Math.abs(eq))} (${eq >= 0 ? "head" : "tail"})`
-            : formatWindSpeed(Math.abs(eq));
-          return <Row label="equivalent wind">{text}</Row>;
+          const fmt = (v) => opposes
+            ? `${formatWindSpeed(Math.abs(v))} (${v >= 0 ? "head" : "tail"})`
+            : formatWindSpeed(Math.abs(v));
+          return (
+            <>
+              <Row label={`equivalent ${dirWord}`}>{fmt(eq)}</Row>
+              <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "0 0 4px" }}>
+                the steady {dirWord} that matches the forecast's overall effect on this route
+              </div>
+              <Row label={`ground effect equivalent ${dirWord}`}>{fmt(felt)}</Row>
+              <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "0 0 4px" }}>
+                the ground effect adjusted equivalent wind — the wind that actually affects your predicted ride time
+              </div>
+            </>
+          );
         })()}
-        {debug.effortHeadwindKmh != null && (
-          <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "0 0 4px" }}>
-            The single steady wind that would cost the same time as the actual wind. Headwinds cost more than tailwinds save, so this is different from the mean.
-          </div>
-        )}
-        <Row label="mean crosswind">{formatWindSpeed(debug.meanCrosswindKmh)}</Row>
-        <Row label="wind factor">{debug.windFactor} ({debug.windFactor >= 0 ? "slows" : "speeds"})</Row>
+        <Row label="time effect">{`${debug.windFactor >= 0 ? "+" : "−"}${Math.abs(debug.windFactor * 100).toFixed(1)}%`}</Row>
         <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
         <Row label="wind tuning">
           {debug.kIdHead && debug.kIdTail ? "head & tail learned"
@@ -1299,7 +1306,7 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
       </div>
 
       {!value.split ? (
-        <TerrainSlider title="Ground effect" k={headK} baselineSec={dispBaselineSec}
+        <TerrainSlider title="Ground effect (k)" k={headK} baselineSec={dispBaselineSec}
           readOnly={headLearned} showBoth example={example}
           mode={modes.kMode}
           source={learned && (learned.kHeadSource === "learned" || learned.kTailSource === "learned") ? "learned" : "slider"}

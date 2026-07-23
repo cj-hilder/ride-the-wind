@@ -75,6 +75,13 @@ console.log('\nLive home verdict (headwind forecast):');
     ok('windEffect exposes feltWindKmh', Number.isFinite(hv.windEffect.feltWindKmh), JSON.stringify(hv.windEffect.feltWindKmh));
     ok('feltWindKmh k-scaled ≤ raw equivalent', hv.windEffect.feltWindKmh <= Math.abs(hv.debug.effortHeadwindKmh) + 1e-9, `felt=${hv.windEffect.feltWindKmh} eq=${hv.debug.effortHeadwindKmh}`);
   }
+  // Forecast-details panel: debug carries the signed ground-effect equivalent
+  // wind (equivalent × k), for the "ground effect equivalent headwind" row.
+  ok('debug exposes feltEquivWindKmh', Number.isFinite(hv.debug.feltEquivWindKmh), `${hv.debug.feltEquivWindKmh}`);
+  ok('feltEquivWindKmh magnitude ≤ equivalent (k≤1 regime)', Math.abs(hv.debug.feltEquivWindKmh) <= Math.abs(hv.debug.effortHeadwindKmh) + 1e-9, `felt=${hv.debug.feltEquivWindKmh} eq=${hv.debug.effortHeadwindKmh}`);
+  ok('feltEquivWindKmh sign matches equivalent', hv.debug.effortHeadwindKmh === 0 || Math.sign(hv.debug.feltEquivWindKmh) === Math.sign(hv.debug.effortHeadwindKmh), `${hv.debug.feltEquivWindKmh} vs ${hv.debug.effortHeadwindKmh}`);
+  // time effect (panel) = windFactor × 100, 1dp — the displayed percentage.
+  ok('windFactor renders as a finite time-effect %', Number.isFinite(hv.debug.windFactor), `${hv.debug.windFactor}`);
   ok('range present', hv.range && hv.range.highSec>=hv.range.lowSec);
   ok('confidence: nothing learned yet (0 dots)', hv.confidence.dots===0 && hv.confidence.baselineLearned===false);
   ok('verdict has departureMs for countdown', typeof hv.verdict.departureMs==='number');

@@ -983,6 +983,10 @@ export function createAppController(deps = {}) {
         avgBearingDeg: Math.round(avgBearing),
         meanHeadwindKmh: +meanHead.toFixed(1),      // linear time-weighted mean
         effortHeadwindKmh: +effortHead.toFixed(2),  // equivalent wind (2dp, same precision as stored rideWindKmh so the two display identically at record time)
+        // Ground-effect equivalent wind: the equivalent wind scaled by the
+        // route's learned k for its direction — "the wind that actually affects
+        // the predicted ride time". Signed, same sign as effortHead.
+        feltEquivWindKmh: +(effortHead * (effortHead >= 0 ? (resolved.kHead ?? 1) : (resolved.kTail ?? 1))).toFixed(2),
         meanCrosswindKmh: +(cross / tt).toFixed(1),
         windFactor: +(verdict.windFactor ?? 0).toFixed(3),
         windFactorK1: +(verdict.windFactorK1 ?? 0).toFixed(3), // k=1 factor (effortHead inverts this)
