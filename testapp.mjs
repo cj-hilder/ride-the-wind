@@ -79,6 +79,7 @@ console.log('\nLive home verdict (headwind forecast):');
     // baseline·(1 + windFactor). Guards the bug where time effect showed the
     // deterministic factor while the departure used the ensemble center.
     ok('time effect matches central prediction', Math.abs((hv.debug.baselineSec * (1 + hv.debug.windFactor)) - hv.debug.predictedSec) <= 1.0, `base·(1+wf)=${(hv.debug.baselineSec*(1+hv.debug.windFactor)).toFixed(1)} predicted=${hv.debug.predictedSec}`);
+    ok('windEffect exposes raw forecast equivalent wind', Number.isFinite(hv.windEffect.equivWindKmh) && hv.windEffect.equivWindKmh >= 0, `${hv.windEffect.equivWindKmh}`);
   }
   // Forecast-details panel: debug carries the signed ground-effect equivalent
   // wind (equivalent × k), for the "ground effect equivalent headwind" row.
@@ -426,6 +427,21 @@ console.log('\nRide prediction (leaving-now duration for arrival seeding):');
     const cp = await cApp.ridePrediction(cr);
     if (cp.windWord) ok('near-calm wind is labelled light', cp.windWord.startsWith('light'), `windWord="${cp.windWord}" te=${cp.timeEffect}`);
     else ok('near-calm wind yields no wind word (below verdict floor)', true);
+  }
+  {
+    // Backstop rule (unit-level, exact): "light" requires |time effect| ≤ 10%
+    // AND raw forecast equivalent wind < 20 km/h. Verify the boolean directly,
+    // mirroring the logic in windEffectPhrase / ridePrediction.
+    const isLight = (te, eqw) => Math.abs(te) <= 0.10 && eqw < 20;
+    ok('light: small TE + weak forecast → light', isLight(0.05, 8) === true);
+    ok('light backstop: small TE + STRONG forecast → NOT light', isLight(0.04, 28) === false);
+    ok('light: large TE + weak forecast → NOT light', isLight(0.15, 8) === false);
+    ok('light backstop boundary: eqw exactly 20 → NOT light', isLight(0.05, 20) === false);
+    ok('light boundary: TE exactly 10% + weak forecast → light', isLight(0.10, 19.9) === true);
+    // Symmetric to tailwind: equivWindKmh is stored as a MAGNITUDE (Math.abs),
+    // so a strong tailwind (large |equivalent|) is caught by the same < 20 test.
+    ok('light backstop applies to tailwind: strong tailwind → NOT light', isLight(0.04, Math.abs(-25)) === false);
+    ok('light: gentle tailwind → light', isLight(0.06, Math.abs(-12)) === true);
   }
 
   // With an ensemble available, ridePrediction returns the ensemble-weighted

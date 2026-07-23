@@ -1053,6 +1053,7 @@ export function createAppController(deps = {}) {
       const eq = debug.effortHeadwindKmh ?? 0; // signed k=1 equivalent wind
       const kDir = eq >= 0 ? (resolved.kHead ?? 1) : (resolved.kTail ?? 1);
       windEffect.feltWindKmh = Math.abs(eq) * kDir;
+      windEffect.equivWindKmh = Math.abs(eq); // raw forecast equivalent (k=1), for the "light" backstop
       windEffect.timeEffect = debug.windFactor ?? 0; // signed k-applied fractional time effect
     }
 
@@ -1521,12 +1522,17 @@ export function createAppController(deps = {}) {
       if (!(sec > 0)) return null;
       // Head/tail word from the SAME windEffect the home card headline uses, so
       // classification can't diverge. Only definite head/tailwind insert a word,
-      // prefixed "light" when |time effect| ≤ 10% — the identical test the plan
-      // tab's phrase uses, so the two lines always agree.
+      // prefixed "light" when |time effect| ≤ 10% AND the raw forecast
+      // equivalent wind < 20 km/h — the identical two-part test the plan tab's
+      // phrase uses, so the two lines always agree. The forecast-wind backstop
+      // stops an e-bike/walker (very low k) seeing a strong wind called "light".
       const dir = res.windEffect && res.windEffect.direction;
       const LIGHT_TIME_EFFECT = 0.10;
+      const LIGHT_FORECAST_KMH = 20;
       const te = res.windEffect && res.windEffect.timeEffect;
-      const lightPrefix = (te != null && Math.abs(te) <= LIGHT_TIME_EFFECT) ? "light " : "";
+      const eqw = res.windEffect && res.windEffect.equivWindKmh;
+      const lightPrefix = (te != null && Math.abs(te) <= LIGHT_TIME_EFFECT
+        && (eqw ?? Infinity) < LIGHT_FORECAST_KMH) ? "light " : "";
       const windWord = dir === "headwind" ? `${lightPrefix}headwind`
         : dir === "tailwind" ? `${lightPrefix}tailwind` : null;
       // How much longer/shorter than still air (unambiguous ratio; avoids the

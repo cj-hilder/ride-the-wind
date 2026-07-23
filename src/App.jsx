@@ -157,8 +157,15 @@ function windEffectPhrase(we) {
   // same fractional effect shown in Forecast details, k-applied). Independent of
   // the 4-minute leave-early rule — a light headwind can still be worth leaving
   // a little early for on a long ride.
+  //
+  // BACKSTOP: also require the raw FORECAST equivalent wind (not k-adjusted) to
+  // be under 20 km/h. Without this, an e-bike rider or walker — whose k is very
+  // low, so even a strong wind gives a small time effect — would see a genuinely
+  // strong wind described as "light". Both conditions must hold.
   const LIGHT_TIME_EFFECT = 0.10;
-  const isLight = we.timeEffect != null && Math.abs(we.timeEffect) <= LIGHT_TIME_EFFECT;
+  const LIGHT_FORECAST_KMH = 20;
+  const isLight = we.timeEffect != null && Math.abs(we.timeEffect) <= LIGHT_TIME_EFFECT
+    && (we.equivWindKmh ?? Infinity) < LIGHT_FORECAST_KMH;
   const label = isLight
     ? `Light ${base}`
     : base.charAt(0).toUpperCase() + base.slice(1);
