@@ -67,13 +67,13 @@ console.log('\nLive home verdict (headwind forecast):');
   const hv=await app.getHomeVerdict(route.id, monday);
   ok('verdict produced', hv.verdict!=null);
   ok('headwind -> leave earlier', hv.verdict.verdict==='headwind', hv.verdict.verdict);
-  // windEffect exposes feltWindKmh (forecast equivalent × the route's k), the
-  // quantity the "light" phrase keys off. At the default k=0.5 it must sit below
-  // the raw k=1 equivalent — that k-scaling is what makes "light" reflect what
-  // the rider will actually feel, not just the forecast.
+  // windEffect exposes feltWindKmh (forecast equivalent × the route's k) for
+  // the Forecast-details panel, and timeEffect (k-applied fractional effect) —
+  // the quantity the "light" phrase now keys off (|timeEffect| ≤ 10%).
   if (hv.windEffect) {
     ok('windEffect exposes feltWindKmh', Number.isFinite(hv.windEffect.feltWindKmh), JSON.stringify(hv.windEffect.feltWindKmh));
     ok('feltWindKmh k-scaled ≤ raw equivalent', hv.windEffect.feltWindKmh <= Math.abs(hv.debug.effortHeadwindKmh) + 1e-9, `felt=${hv.windEffect.feltWindKmh} eq=${hv.debug.effortHeadwindKmh}`);
+    ok('windEffect exposes timeEffect = windFactor', hv.windEffect.timeEffect === hv.debug.windFactor, `te=${hv.windEffect.timeEffect} wf=${hv.debug.windFactor}`);
   }
   // Forecast-details panel: debug carries the signed ground-effect equivalent
   // wind (equivalent × k), for the "ground effect equivalent headwind" row.
@@ -408,6 +408,20 @@ console.log('\nRide prediction (leaving-now duration for arrival seeding):');
   // headwind should make it no faster than still-air baseline
   ok('headwind prediction ≥ baseline', pred.predictedSec >= 1000 * 0.99, `${pred.predictedSec}`);
   ok('ridePrediction returns a head/tail word or null', ['headwind','tailwind','light headwind','light tailwind',null].includes(pred.windWord), `${pred.windWord}`);
+  // "light" prefix must track |time effect| ≤ 10%: a strong 25 km/h headwind on
+  // this exposed-seed route exceeds 10%, so NOT light; a near-calm forecast is.
+  if (pred.windWord) {
+    const strongTE = Math.abs(pred.timeEffect ?? 1);
+    ok('strong headwind is NOT labelled light', strongTE <= 0.10 ? pred.windWord.startsWith('light') : !pred.windWord.startsWith('light'), `windWord="${pred.windWord}" te=${pred.timeEffect}`);
+  }
+  {
+    const cApp = mkApp(stubForecast(90, 3)); // near-calm → tiny time effect
+    const cr = await cApp.createRoute(gpx, { name:'CalmRoute', seedStillAirSec:1000,
+      seedHeadwind20Sec:1300, seedTailwind20Sec:760, targetArrival:'08:45', activeDays:['MO'] });
+    const cp = await cApp.ridePrediction(cr);
+    if (cp.windWord) ok('near-calm wind is labelled light', cp.windWord.startsWith('light'), `windWord="${cp.windWord}" te=${cp.timeEffect}`);
+    else ok('near-calm wind yields no wind word (below verdict floor)', true);
+  }
 
   // With an ensemble available, ridePrediction returns the ensemble-weighted
   // center (the "likely"), not the bare deterministic value.

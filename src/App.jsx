@@ -153,8 +153,12 @@ function windEffectPhrase(we) {
   // the rider won't feel much; an exposed route won't. The "No wind [effect]"
   // and "% chance headwind" branches above are unchanged.
   const base = we.direction === "headwind" ? "headwind" : "tailwind";
-  const LIGHT_FELT_KMH = 10;
-  const isLight = (we.feltWindKmh ?? Infinity) < LIGHT_FELT_KMH;
+  // "Light" when the wind barely moves your arrival: |time effect| ≤ 10% (the
+  // same fractional effect shown in Forecast details, k-applied). Independent of
+  // the 4-minute leave-early rule — a light headwind can still be worth leaving
+  // a little early for on a long ride.
+  const LIGHT_TIME_EFFECT = 0.10;
+  const isLight = we.timeEffect != null && Math.abs(we.timeEffect) <= LIGHT_TIME_EFFECT;
   const label = isLight
     ? `Light ${base}`
     : base.charAt(0).toUpperCase() + base.slice(1);

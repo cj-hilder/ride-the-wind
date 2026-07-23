@@ -1030,17 +1030,20 @@ export function createAppController(deps = {}) {
     // Carry the wind strength onto windEffect so the UI can apply the
     // "light" / "no wind effect" thresholds. meanHeadKmh is the magnitude of
     // the time-weighted mean headwind; windSpeedKmh the forecast wind speed
-    // sampled mid-route. feltWindKmh is the FELT equivalent wind — the k=1
-    // equivalent (effortHeadwindKmh) scaled by the route's learned attenuation
-    // for its direction — i.e. "how much wind the rider will actually notice".
-    // "Light" is decided on feltWindKmh alone (< 10 km/h), independent of the
-    // time-effect / leave-early threshold.
+    // sampled mid-route. feltWindKmh is the FELT equivalent wind (kept for the
+    // Forecast-details panel and any wind-magnitude use). timeEffect is the
+    // k-applied fractional effect on ride time (same value shown as "time
+    // effect" in Forecast details) — "light" is decided on |timeEffect| ≤ 10%,
+    // i.e. the wind is gentle to ride in / barely moves your arrival. This is
+    // independent of the 4-minute leave-early rule (a light wind can still be
+    // worth leaving a little early for on a long ride — no contradiction).
     if (windEffect && debug) {
       windEffect.meanHeadKmh = Math.abs(debug.meanHeadwindKmh ?? 0);
       windEffect.windSpeedKmh = debug.windSpeedKmh ?? 0;
       const eq = debug.effortHeadwindKmh ?? 0; // signed k=1 equivalent wind
       const kDir = eq >= 0 ? (resolved.kHead ?? 1) : (resolved.kTail ?? 1);
       windEffect.feltWindKmh = Math.abs(eq) * kDir;
+      windEffect.timeEffect = debug.windFactor ?? 0; // signed k-applied fractional time effect
     }
 
     return { route, verdict, range, conservative, windEffect, rangeUnavailable, confidence: conf, expect, debug, resolved };
@@ -1508,19 +1511,19 @@ export function createAppController(deps = {}) {
       if (!(sec > 0)) return null;
       // Head/tail word from the SAME windEffect the home card headline uses, so
       // classification can't diverge. Only definite head/tailwind insert a word,
-      // prefixed "light" when the FELT wind (forecast × k) is under 10 km/h —
-      // the identical test the plan tab's phrase uses, so the two lines agree.
+      // prefixed "light" when |time effect| ≤ 10% — the identical test the plan
+      // tab's phrase uses, so the two lines always agree.
       const dir = res.windEffect && res.windEffect.direction;
-      const LIGHT_FELT_KMH = 10;
-      const felt = res.windEffect && res.windEffect.feltWindKmh;
-      const lightPrefix = (felt != null && felt < LIGHT_FELT_KMH) ? "light " : "";
+      const LIGHT_TIME_EFFECT = 0.10;
+      const te = res.windEffect && res.windEffect.timeEffect;
+      const lightPrefix = (te != null && Math.abs(te) <= LIGHT_TIME_EFFECT) ? "light " : "";
       const windWord = dir === "headwind" ? `${lightPrefix}headwind`
         : dir === "tailwind" ? `${lightPrefix}tailwind` : null;
       // How much longer/shorter than still air (unambiguous ratio; avoids the
       // additive-vs-multiplicative ambiguity of the raw windFactor).
       const base = route.baselineTimeSec;
       const timeScale = (base > 0) ? sec / base : 1;
-      return { predictedSec: sec, windWord, timeScale };
+      return { predictedSec: sec, windWord, timeScale, timeEffect: te ?? null };
     } catch {
       return null;
     }
