@@ -1009,12 +1009,19 @@ export function createAppController(deps = {}) {
     }
 
     // Carry the wind strength onto windEffect so the UI can apply the
-    // "light" / "no wind effect" thresholds (7.5 km/h). meanHeadKmh is the
-    // magnitude of the time-weighted mean headwind; windSpeedKmh the forecast
-    // wind speed sampled mid-route.
+    // "light" / "no wind effect" thresholds. meanHeadKmh is the magnitude of
+    // the time-weighted mean headwind; windSpeedKmh the forecast wind speed
+    // sampled mid-route. feltWindKmh is the FELT equivalent wind — the k=1
+    // equivalent (effortHeadwindKmh) scaled by the route's learned attenuation
+    // for its direction — i.e. "how much wind the rider will actually notice".
+    // "Light" is decided on feltWindKmh alone (< 10 km/h), independent of the
+    // time-effect / leave-early threshold.
     if (windEffect && debug) {
       windEffect.meanHeadKmh = Math.abs(debug.meanHeadwindKmh ?? 0);
       windEffect.windSpeedKmh = debug.windSpeedKmh ?? 0;
+      const eq = debug.effortHeadwindKmh ?? 0; // signed k=1 equivalent wind
+      const kDir = eq >= 0 ? (resolved.kHead ?? 1) : (resolved.kTail ?? 1);
+      windEffect.feltWindKmh = Math.abs(eq) * kDir;
     }
 
     return { route, verdict, range, conservative, windEffect, rangeUnavailable, confidence: conf, expect, debug, resolved };
@@ -1194,6 +1201,9 @@ export function createAppController(deps = {}) {
 
     // Map resolved (freeze-applied) rides back, decorate for display.
     const decorated = resolved.rides.map((r) => {
+      // ONE classification (raw-forecast data-quality triage): the same value
+      // shown to the user and used to gate inclusion, so included/excluded is
+      // always explicable from what's displayed.
       const cls = learning.classifyRideRecord(r);
       const k = cls === "still" ? null : learning.rideK(r, liveBaseline); // null for v1 rides
       return {
@@ -1478,9 +1488,15 @@ export function createAppController(deps = {}) {
       const sec = res && res.verdict && res.verdict.predictedSec;
       if (!(sec > 0)) return null;
       // Head/tail word from the SAME windEffect the home card headline uses, so
-      // classification can't diverge. Only definite head/tailwind insert a word.
+      // classification can't diverge. Only definite head/tailwind insert a word,
+      // prefixed "light" when the FELT wind (forecast × k) is under 10 km/h —
+      // the identical test the plan tab's phrase uses, so the two lines agree.
       const dir = res.windEffect && res.windEffect.direction;
-      const windWord = dir === "headwind" ? "headwind" : dir === "tailwind" ? "tailwind" : null;
+      const LIGHT_FELT_KMH = 10;
+      const felt = res.windEffect && res.windEffect.feltWindKmh;
+      const lightPrefix = (felt != null && felt < LIGHT_FELT_KMH) ? "light " : "";
+      const windWord = dir === "headwind" ? `${lightPrefix}headwind`
+        : dir === "tailwind" ? `${lightPrefix}tailwind` : null;
       // How much longer/shorter than still air (unambiguous ratio; avoids the
       // additive-vs-multiplicative ambiguity of the raw windFactor).
       const base = route.baselineTimeSec;

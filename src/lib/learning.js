@@ -39,6 +39,18 @@ import { effortNorm, invHead, invTail } from "./windModel.js";
 
 export const KMH_STILL = 5;                 // |wind| below this: still
 export const KMH_WINDY = 10;                // |wind| at/above this: windy
+// Why FIXED thresholds on raw forecast wind (not scaled by k, not felt-wind):
+// k's accuracy self-weights by relevance. Where k is hard to learn well — a
+// sheltered route, an e-bike whose throttle flattens headwinds and speed-limit
+// caps tailwinds, a hill-dominated commute where terrain dwarfs wind — k also
+// comes out LOW, and a low k barely shifts the prediction versus the rider's
+// confounding factors, so an inaccurate (even wildly inaccurate) low k is
+// harmless. Where k genuinely matters (exposed routes, wind materially moves
+// ride time) the wind is strong enough that the data is naturally good. Error
+// in k and the cost of that error are inversely correlated, so a simple fixed
+// threshold gets accuracy where it's needed and wastes none chasing precision
+// where it's worthless — and it sidesteps having to diagnose WHY k is low
+// (shelter vs behaviour vs terrain), which the data can't distinguish anyway.
 export const KMH_SPREAD_MIN = 1.2;          // min km/h spread to learn k (per direction)
 export const KMH_BASELINE_SPREAD_MIN = 4;   // min km/h spread to extrapolate baseline
 export const K_MIN = 0.0;                   // THE k range (fraction of forecast
@@ -73,11 +85,20 @@ export function classifyRide(rideWindKmh) {
 }
 
 /**
- * Classify a ride RECORD: v2 rides by their rideWindKmh against the km/h
- * thresholds; v1 rides by their stored windFactor against the FROZEN v1
- * thresholds (the signed-square scale that value was computed on) — never a
- * v1 windFactor against v2 thresholds. This is what lets old still rides keep
- * feeding the baseline (a truly still ride is scale-agnostic).
+ * Classify a ride RECORD into still / gentle / windy.
+ *
+ * This is a DATA-QUALITY triage on the RAW forecast wind (no k applied), and
+ * there is exactly ONE such classification — the same value is displayed to the
+ * user AND used to decide whether the ride feeds the learning model, so the
+ * user can always see why a ride defaulted to included or excluded:
+ *   still  — genuinely calm: clean baseline data → used (feeds baseline)
+ *   gentle — too little wind to carry useful signal → noisy → default EXCLUDED
+ *   windy  — enough wind to be informative → used (feeds the k-fit)
+ *
+ * It is deliberately independent of k: whether a ride is too low-signal to
+ * trust is a property of how much FORECAST wind drove it, not of the shelter we
+ * are trying to learn (using k here would also be circular for the fit). v1
+ * rides classify on their stored windFactor against the frozen v1 thresholds.
  */
 const V1_WF_STILL = 0.06;
 const V1_WF_WINDY = 0.25;

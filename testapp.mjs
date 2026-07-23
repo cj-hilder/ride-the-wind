@@ -67,6 +67,14 @@ console.log('\nLive home verdict (headwind forecast):');
   const hv=await app.getHomeVerdict(route.id, monday);
   ok('verdict produced', hv.verdict!=null);
   ok('headwind -> leave earlier', hv.verdict.verdict==='headwind', hv.verdict.verdict);
+  // windEffect exposes feltWindKmh (forecast equivalent × the route's k), the
+  // quantity the "light" phrase keys off. At the default k=0.5 it must sit below
+  // the raw k=1 equivalent — that k-scaling is what makes "light" reflect what
+  // the rider will actually feel, not just the forecast.
+  if (hv.windEffect) {
+    ok('windEffect exposes feltWindKmh', Number.isFinite(hv.windEffect.feltWindKmh), JSON.stringify(hv.windEffect.feltWindKmh));
+    ok('feltWindKmh k-scaled ≤ raw equivalent', hv.windEffect.feltWindKmh <= Math.abs(hv.debug.effortHeadwindKmh) + 1e-9, `felt=${hv.windEffect.feltWindKmh} eq=${hv.debug.effortHeadwindKmh}`);
+  }
   ok('range present', hv.range && hv.range.highSec>=hv.range.lowSec);
   ok('confidence: nothing learned yet (0 dots)', hv.confidence.dots===0 && hv.confidence.baselineLearned===false);
   ok('verdict has departureMs for countdown', typeof hv.verdict.departureMs==='number');
@@ -374,7 +382,7 @@ console.log('\nRide prediction (leaving-now duration for arrival seeding):');
   ok('ridePrediction returns a positive duration', pred && pred.predictedSec > 0, JSON.stringify(pred));
   // headwind should make it no faster than still-air baseline
   ok('headwind prediction ≥ baseline', pred.predictedSec >= 1000 * 0.99, `${pred.predictedSec}`);
-  ok('ridePrediction returns a head/tail word or null', pred.windWord === 'headwind' || pred.windWord === 'tailwind' || pred.windWord === null, `${pred.windWord}`);
+  ok('ridePrediction returns a head/tail word or null', ['headwind','tailwind','light headwind','light tailwind',null].includes(pred.windWord), `${pred.windWord}`);
 
   // With an ensemble available, ridePrediction returns the ensemble-weighted
   // center (the "likely"), not the bare deterministic value.

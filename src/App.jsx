@@ -133,7 +133,7 @@ function countdownPhrase(departMs, nowMs) {
   return `in ${h} hour${h === 1 ? "" : "s"} ${m} min${m === 1 ? "" : "s"}`;
 }
 
-function windEffectPhrase(we, light = false) {
+function windEffectPhrase(we) {
   if (!we) return "";
   const WIND_FLOOR = 7.5; // km/h
   const fast = we.fastMin, slow = we.slowMin, likely = we.likelyMin;
@@ -147,12 +147,15 @@ function windEffectPhrase(we, light = false) {
     return `${noWindLabel}: ${ride}`;
   }
   if (we.direction === "mixed") return `${we.headPct}% chance headwind: ${ride}`;
-  // "Light head/tailwind" applies only when the verdict is under-threshold AND
-  // the mean headwind is genuinely slight (< 7.5 km/h). A strong wind that
-  // happens to fall just under the time threshold still reads as a full
-  // "Headwind/Tailwind", not "Light".
+  // "Light head/tailwind" when the wind the rider will actually FEEL (forecast
+  // × the route's learned k) is under 10 km/h — a statement about whether
+  // they'll notice the wind, independent of the time-effect / leave-early rule.
+  // A sheltered route (low k) reads "light" even on a breezy forecast, because
+  // the rider won't feel much; an exposed route won't. The "No wind [effect]"
+  // and "% chance headwind" branches above are unchanged.
   const base = we.direction === "headwind" ? "headwind" : "tailwind";
-  const isLight = light && (we.meanHeadKmh ?? 0) < WIND_FLOOR;
+  const LIGHT_FELT_KMH = 10;
+  const isLight = (we.feltWindKmh ?? Infinity) < LIGHT_FELT_KMH;
   const label = isLight
     ? `Light ${base}`
     : base.charAt(0).toUpperCase() + base.slice(1);
@@ -678,7 +681,7 @@ function PlanBody({ verdict, dayVerdict, fetching, routeLon, accent, showDebug, 
           })()}
           {windEffect && (
             <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginTop: 6 }}>
-              {windEffectPhrase(windEffect, verdict.verdict === "normal")}
+              {windEffectPhrase(windEffect)}
             </div>
           )}
           {rangeUnavailable && (

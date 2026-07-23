@@ -43,7 +43,7 @@ console.log('Classification (equivalent km/h scale):');
 
 console.log('\nRecord classification (v1 carve-out uses frozen v1 thresholds):');
 {
-  ok('v2 record classifies by rideWindKmh', classifyRideRecord(ride(12, 1000)) === 'windy');
+  ok('v2 record classifies by rideWindKmh (raw forecast, no k)', classifyRideRecord(ride(12, 1000)) === 'windy');
   ok('v1 still (wf 0.02) -> still', classifyRideRecord(rideV1(0.02, 1000)) === 'still');
   ok('v1 gentle (wf 0.15) -> gentle', classifyRideRecord(rideV1(0.15, 1000)) === 'gentle');
   ok('v1 windy (wf 0.5) -> windy', classifyRideRecord(rideV1(0.5, 1000)) === 'windy');
