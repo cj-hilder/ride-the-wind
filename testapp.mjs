@@ -74,6 +74,11 @@ console.log('\nLive home verdict (headwind forecast):');
     ok('windEffect exposes feltWindKmh', Number.isFinite(hv.windEffect.feltWindKmh), JSON.stringify(hv.windEffect.feltWindKmh));
     ok('feltWindKmh k-scaled ≤ raw equivalent', hv.windEffect.feltWindKmh <= Math.abs(hv.debug.effortHeadwindKmh) + 1e-9, `felt=${hv.windEffect.feltWindKmh} eq=${hv.debug.effortHeadwindKmh}`);
     ok('windEffect exposes timeEffect = windFactor', hv.windEffect.timeEffect === hv.debug.windFactor, `te=${hv.windEffect.timeEffect} wf=${hv.debug.windFactor}`);
+    // Consistency: the displayed "time effect" (windFactor) must reflect the
+    // SAME central prediction that drives arrival/departure — i.e. predicted =
+    // baseline·(1 + windFactor). Guards the bug where time effect showed the
+    // deterministic factor while the departure used the ensemble center.
+    ok('time effect matches central prediction', Math.abs((hv.debug.baselineSec * (1 + hv.debug.windFactor)) - hv.debug.predictedSec) <= 1.0, `base·(1+wf)=${(hv.debug.baselineSec*(1+hv.debug.windFactor)).toFixed(1)} predicted=${hv.debug.predictedSec}`);
   }
   // Forecast-details panel: debug carries the signed ground-effect equivalent
   // wind (equivalent × k), for the "ground effect equivalent headwind" row.

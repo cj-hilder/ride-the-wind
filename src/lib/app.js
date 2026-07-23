@@ -721,6 +721,16 @@ export function createAppController(deps = {}) {
         // equal to the unified weighted median, so everything agrees.
         if (range && verdict && Number.isFinite(range.centerSec)) {
           verdict.predictedSec = range.centerSec;
+          // The "time effect" shown in Forecast details (debug.windFactor) must
+          // reflect the SAME prediction that drives the departure/allowance — the
+          // ensemble center — not the raw deterministic factor. Otherwise a
+          // route can show e.g. +10.6% time effect while the ensemble-driven
+          // departure rounds to a 0-min allowance. predicted = baseline·(1+wf),
+          // so back out wf from the snapped center. (windFactorK1 stays the raw
+          // k=1 summary for ride records — that must remain forecast-based.)
+          if (route.baselineTimeSec > 0) {
+            verdict.windFactor = range.centerSec / route.baselineTimeSec - 1;
+          }
         }
       }
       if (!range) rangeUnavailable = true;
