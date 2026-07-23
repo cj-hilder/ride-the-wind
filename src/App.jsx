@@ -1304,12 +1304,12 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
       <SourceNote mode={modes.baselineMode} source={learned ? learned.baselineSource : "slider"} rides={learned ? learned.ridesBaseline : 0} />
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 16, marginBottom: 4 }}>
-        <label style={{ ...lbl, marginBottom: 0 }}>{value.split ? "Ground effect" : "Ground effect"}</label>
+        <label style={{ ...lbl, marginBottom: 0 }}>Ground effect (k)</label>
         <ModePill mode={modes.kMode} onChange={(m) => onModeChange("kMode", m)} />
       </div>
 
       {!value.split ? (
-        <TerrainSlider title="Ground effect (k)" k={headK} baselineSec={dispBaselineSec}
+        <TerrainSlider title="Ground effect" k={headK} baselineSec={dispBaselineSec}
           readOnly={headLearned} showBoth example={example}
           mode={modes.kMode}
           source={learned && (learned.kHeadSource === "learned" || learned.kTailSource === "learned") ? "learned" : "slider"}
