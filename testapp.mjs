@@ -90,6 +90,17 @@ console.log('\nLive home verdict (headwind forecast):');
     ok('forecast spread is a finite non-negative %', Number.isFinite(spreadPct) && spreadPct >= 0, `${spreadPct}`);
   }
   ok('range present', hv.range && hv.range.highSec>=hv.range.lowSec);
+  // Rounding consistency: the "Wind allowance" (deltaMin) must equal the visible
+  // minute shift between the shown still-air departure and the shown departure —
+  // never "0 min" while the clock moved a minute. Both are minute-aligned, so
+  // the millisecond difference is a whole number of minutes equal to deltaMin.
+  if (hv.verdict && hv.verdict.departureMs != null) {
+    const nd = hv.verdict.normalDepartureMs != null
+      ? hv.verdict.normalDepartureMs
+      : (hv.verdict.arrivalMs - Math.round(hv.debug.baselineSec/60)*60*1000);
+    const shownShiftMin = Math.round((nd - hv.verdict.departureMs) / 60000);
+    ok('wind allowance equals visible departure shift', shownShiftMin === hv.verdict.deltaMin, `shift=${shownShiftMin} deltaMin=${hv.verdict.deltaMin}`);
+  }
   ok('confidence: nothing learned yet (0 dots)', hv.confidence.dots===0 && hv.confidence.baselineLearned===false);
   ok('verdict has departureMs for countdown', typeof hv.verdict.departureMs==='number');
   ok('no message field (scheduler removed)', !('message' in hv.verdict));

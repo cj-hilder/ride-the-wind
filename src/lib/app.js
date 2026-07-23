@@ -838,10 +838,21 @@ export function createAppController(deps = {}) {
         earliestArrivalHHMM: hhmm(earliestArrivalMs),
         windowMin: Math.round((next.arrivalMs - earliestArrivalMs) / 60000),
       };
-      const deltaSec = slowSec - route.baselineTimeSec;
+      // Wind allowance MUST equal the visible shift between the shown departure
+      // and the shown still-air departure, or the user sees "0 min" while the
+      // clock moved a minute. Both displayed times are minute-aligned (slowSec
+      // is whole minutes; baselineDepartureMs rounds the baseline to a minute),
+      // so derive deltaSec from those SAME aligned quantities rather than from
+      // the raw baseline — otherwise a minute-rounded slowSec minus a raw
+      // baseline can round to 0 while the two clocks differ by a minute.
+      const baselineDepMin = baselineDepartureMs != null
+        ? baselineDepartureMs
+        : next.arrivalMs - Math.round(route.baselineTimeSec / 60) * 60 * 1000;
+      const deltaSec = Math.round((baselineDepMin - departureMs) / 1000);
       verdict.departureMs = departureMs;
       verdict.departureHHMM = conservative.departureHHMM;
-      verdict.normalDepartureHHMM = hhmm(baselineDepartureMs);
+      verdict.normalDepartureHHMM = hhmm(baselineDepMin);
+      verdict.normalDepartureMs = baselineDepMin;
       verdict.deltaSec = deltaSec;
       verdict.deltaMin = Math.round(deltaSec / 60);
       verdict.verdict = deltaSec > (verdict.thresholdMin ?? 4) * 60 ? "headwind"
@@ -909,10 +920,14 @@ export function createAppController(deps = {}) {
         windowMin: 0,
         unavailable: true,
       };
-      const deltaSec = centralSec - route.baselineTimeSec;
+      const baselineDepMin = baselineDepartureMs != null
+        ? baselineDepartureMs
+        : next.arrivalMs - Math.round(route.baselineTimeSec / 60) * 60 * 1000;
+      const deltaSec = Math.round((baselineDepMin - departureMs) / 1000);
       verdict.departureMs = departureMs;
       verdict.departureHHMM = conservative.departureHHMM;
-      verdict.normalDepartureHHMM = hhmm(baselineDepartureMs);
+      verdict.normalDepartureHHMM = hhmm(baselineDepMin);
+      verdict.normalDepartureMs = baselineDepMin;
       verdict.deltaSec = deltaSec;
       verdict.deltaMin = Math.round(deltaSec / 60);
       verdict.verdict = deltaSec > (verdict.thresholdMin ?? 4) * 60 ? "headwind"
