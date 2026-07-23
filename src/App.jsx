@@ -26,8 +26,7 @@ import {
   needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
-import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, rainfallValue, rainfallUnitLabel, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel } from "./lib/format.js";
-import { RAIN_RATE_BANDS, RAIN_TOTAL_BANDS } from "./lib/whatToExpect.js";
+import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel } from "./lib/format.js";
 import { effortNorm } from "./lib/windModel.js";
 import { DEFAULT_K } from "./lib/windModel.js";
 import { rideK as computeRideK } from "./lib/learning.js";
@@ -783,27 +782,31 @@ function DebugReadout({ debug }) {
             </>
           );
         })()}
+        {/* 1b: ground-effect equivalent (rendered in the block above) → time
+            effect → forecast spread → wind tuning */}
         <Row label="time effect">{`${debug.windFactor >= 0 ? "+" : "−"}${Math.abs(debug.windFactor * 100).toFixed(1)}%`}</Row>
-        <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
+        {debug.slowSec != null && debug.fastSec != null && debug.baselineSec > 0 && (
+          <Row label="forecast spread">{`${(Math.abs(debug.slowSec - debug.fastSec) / debug.baselineSec * 100).toFixed(1)}%`}</Row>
+        )}
         <Row label="wind tuning">
           {debug.kIdHead && debug.kIdTail ? "head & tail learned"
             : debug.kIdHead ? "head learned, tail manual"
             : debug.kIdTail ? "tail learned, head manual"
             : "manual (not enough windy rides yet)"}
         </Row>
-        <Row label="forecast updated">{fmtClock(debug.forecastUpdatedMs)}</Row>
-        <Row label="next update">{fmtClock(debug.forecastNextUpdateMs)}</Row>
+        {/* 1c: rain (bands legend removed) */}
         {(debug.rainPeakRateMmH != null || debug.rainTotalMm != null) && (
           <>
             <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
             <Row label="rain peak rate · total">{debug.rainPeakRateMmH != null ? `${formatRainfall(debug.rainPeakRateMmH, undefined, { rate: true })} · ${formatRainfall(debug.rainTotalMm)}` : "—"}</Row>
             <Row label="rain max prob">{debug.rainMaxProbPct != null ? `${debug.rainMaxProbPct}%` : "—"}</Row>
             <Row label="wettest forecast">{debug.rainWettestPeakMmH != null ? `${formatRainfall(debug.rainWettestPeakMmH, undefined, { rate: true })} · ${formatRainfall(debug.rainWettestTotalMm)}` : "—"}</Row>
-            <div style={{ fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.45, padding: "2px 0 0" }}>
-              bands — rate: {RAIN_RATE_BANDS.map((b) => rainfallValue(b)).join(" / ")} {rainfallUnitLabel(undefined, { rate: true })} · total: {RAIN_TOTAL_BANDS.map((b) => rainfallValue(b)).join(" / ")} {rainfallUnitLabel()} (a little / wet / very).
-            </div>
           </>
         )}
+        {/* 1d: forecast timing */}
+        <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
+        <Row label="forecast updated">{fmtClock(debug.forecastUpdatedMs)}</Row>
+        <Row label="next update">{fmtClock(debug.forecastNextUpdateMs)}</Row>
       </div>
     </div>
   );

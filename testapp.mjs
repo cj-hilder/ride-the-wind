@@ -82,6 +82,13 @@ console.log('\nLive home verdict (headwind forecast):');
   ok('feltEquivWindKmh sign matches equivalent', hv.debug.effortHeadwindKmh === 0 || Math.sign(hv.debug.feltEquivWindKmh) === Math.sign(hv.debug.effortHeadwindKmh), `${hv.debug.feltEquivWindKmh} vs ${hv.debug.effortHeadwindKmh}`);
   // time effect (panel) = windFactor × 100, 1dp — the displayed percentage.
   ok('windFactor renders as a finite time-effect %', Number.isFinite(hv.debug.windFactor), `${hv.debug.windFactor}`);
+  // Forecast spread (panel) = |slowSec − fastSec| / baselineSec × 100. The debug
+  // fields backing it must be present and non-negative when a range exists.
+  if (hv.debug.slowSec != null && hv.debug.fastSec != null) {
+    ok('debug has slow/fast/baseline for forecast spread', hv.debug.baselineSec > 0 && hv.debug.slowSec >= hv.debug.fastSec, `slow=${hv.debug.slowSec} fast=${hv.debug.fastSec} base=${hv.debug.baselineSec}`);
+    const spreadPct = Math.abs(hv.debug.slowSec - hv.debug.fastSec) / hv.debug.baselineSec * 100;
+    ok('forecast spread is a finite non-negative %', Number.isFinite(spreadPct) && spreadPct >= 0, `${spreadPct}`);
+  }
   ok('range present', hv.range && hv.range.highSec>=hv.range.lowSec);
   ok('confidence: nothing learned yet (0 dots)', hv.confidence.dots===0 && hv.confidence.baselineLearned===false);
   ok('verdict has departureMs for countdown', typeof hv.verdict.departureMs==='number');
