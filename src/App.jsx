@@ -26,7 +26,7 @@ import {
   needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
-import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel, defaultCruiseSpeedKmh, formatDisplayNumber } from "./lib/format.js";
+import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedUnitLabel, defaultCruiseSpeedKmh, formatDisplayNumber } from "./lib/format.js";
 import { effortNorm, V0_MIN, V0_MAX } from "./lib/windModel.js";
 import { DEFAULT_K } from "./lib/windModel.js";
 import { rideK as computeRideK } from "./lib/learning.js";
@@ -1189,18 +1189,19 @@ function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, o
   // is trustworthy (this is a cycling model; a walker's aerodynamics are a
   // different regime the curve would extrapolate wrongly).
   const cruiseDisp = canonicalKmhToRideSpeed(cruiseSpeedKmh ?? defaultCruiseSpeedKmh(u));
-  const cruiseStep = rideSpeedStep();
+  const cruiseStep = 1; // cruising speed steps in whole units (km/h or mph)
   const cruiseUnit = rideSpeedUnitLabel();
-  // Band endpoints in the user's ride-speed unit — the REACHABLE half-step
+  // Band endpoints in the user's ride-speed unit — the REACHABLE WHOLE-unit
   // values (lower rounds UP into the band, upper rounds DOWN), so neither the
   // spinner nor the caption can name a speed outside the validated [V0_MIN,
-  // V0_MAX] km/h band. These are the single source of truth for BOTH the clamp
-  // and the caption text, so they always agree.
-  const cruiseLo = Math.ceil(canonicalKmhToRideSpeed(V0_MIN) * 2) / 2;
-  const cruiseHi = Math.floor(canonicalKmhToRideSpeed(V0_MAX) * 2) / 2;
+  // V0_MAX] km/h band. Single source of truth for BOTH the clamp and the
+  // caption, so they always agree. (In mph the band 16–32 km/h ≈ 9.94–19.88,
+  // so reachable whole steps are 10 and 19.)
+  const cruiseLo = Math.ceil(canonicalKmhToRideSpeed(V0_MIN));
+  const cruiseHi = Math.floor(canonicalKmhToRideSpeed(V0_MAX));
   const fmtBound = (v) => formatDisplayNumber(v);
   const setCruiseDisplay = (nextDisplay) => {
-    const clamped = Math.max(cruiseLo, Math.min(cruiseHi, Math.round(nextDisplay * 2) / 2));
+    const clamped = Math.max(cruiseLo, Math.min(cruiseHi, Math.round(nextDisplay)));
     onChangeCruiseSpeed(rideSpeedToCanonicalKmh(clamped));
   };
 
@@ -1339,15 +1340,16 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
   const headLearned = modes.kMode === "learn" && learned && learned.kHeadSource === "learned";
   const tailLearned = modes.kMode === "learn" && learned && learned.kTailSource === "learned";
 
-  // Baseline speed is stored canonical (km/h) but shown/stepped in the ride-speed
-  // unit. Work in display units for the +/- logic (0.5 step, converted bounds),
-  // then convert once to canonical on commit — never re-derive from a rounded
-  // display, so mph↔km/h round-tripping doesn't drift. (Canonical bounds 1–50 km/h.)
-  const setSpeedDisplay = (nextDisplay) => {
+  // The still-air control is entered as RIDE TIME (minutes, ±1 like the ride
+  // editor); average speed is the DERIVED caption. Time is the natural thing to
+  // enter for a route ("about how long does it take you?"), and speed falls out
+  // of distance/time. The stored/committed quantity stays speedKmh (the model
+  // seed), so time→speed is converted on each step: speed = distance / time.
+  const setTimeMin = (nextMin) => {
     if (baseLearned) return;
-    const b = rideSpeedBounds(1, 50);
-    const clamped = Math.max(b.min, Math.min(b.max, Math.round(nextDisplay * 2) / 2));
-    onChange({ ...value, speedKmh: rideSpeedToCanonicalKmh(clamped) });
+    const min = Math.max(1, Math.round(nextMin));
+    const sec = min * 60;
+    onChange({ ...value, speedKmh: (distanceM / sec) * 3.6 });
   };
   const setK = (which, k) => {
     const kk = kClampUI(k);
@@ -1360,28 +1362,29 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
   // must not pin k — that desynced the slider on revert.)
   const headK = headLearned ? learned.kHead : value.kHead;
   const tailK = tailLearned ? learned.kTail : value.kTail;
-  const dispKmh = baseLearned ? learned.speedKmh : speedKmh;
-  const dispSpeed = canonicalKmhToRideSpeed(dispKmh); // shown/stepped in ride-speed unit
-  const speedStep = rideSpeedStep();
-  const speedUnit = rideSpeedUnitLabel();
   const dispBaselineSec = baseLearned ? learned.baselineSec : baselineSec;
+  const dispTimeMin = Math.max(1, Math.round(dispBaselineSec / 60));
+  // Derived average speed for the caption (from the DISPLAYED whole-minute time,
+  // so the number shown matches the ride time shown), in km/h or mph, 1 dp.
+  const avgSpeedKmh = dispBaselineSec > 0 ? (distanceM / dispBaselineSec) * 3.6 : 0;
+  const avgSpeedDisp = canonicalKmhToRideSpeed(avgSpeedKmh);
+  const speedUnit = rideSpeedUnitLabel();
 
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-        <label style={{ ...lbl, marginBottom: 0 }}>Still-air speed</label>
+        <label style={{ ...lbl, marginBottom: 0 }}>Still-air ride time</label>
         <ModePill mode={modes.baselineMode} onChange={(m) => onModeChange("baselineMode", m)} />
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, opacity: baseLearned ? 0.85 : 1 }}>
-        <button onClick={() => setSpeedDisplay(dispSpeed - speedStep)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="slower">−</button>
+        <button onClick={() => setTimeMin(dispTimeMin - 1)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="shorter">−</button>
         <div style={{ flex: 1, textAlign: "center" }}>
-          <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{formatDisplayNumber(dispSpeed)}</span>
-          <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}> {speedUnit}</span>
+          <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{formatElapsed(dispTimeMin * 60)}</span>
         </div>
-        <button onClick={() => setSpeedDisplay(dispSpeed + speedStep)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="faster">+</button>
+        <button onClick={() => setTimeMin(dispTimeMin + 1)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="longer">+</button>
       </div>
       <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)" }}>
-        Still-air ride time: <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatElapsed(dispBaselineSec)}</b>
+        Still-air average speed: <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatDisplayNumber(avgSpeedDisp, { dp: 1, keepZeros: true })} {speedUnit}</b>
       </div>
       <SourceNote mode={modes.baselineMode} source={learned ? learned.baselineSource : "slider"} rides={learned ? learned.ridesBaseline : 0} />
 
