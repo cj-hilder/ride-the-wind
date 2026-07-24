@@ -82,6 +82,18 @@ function num(value, dp, s) {
   return settings.decimal === "comma" ? fixed.replace(".", ",") : fixed;
 }
 
+/** Format a bare number that's ALREADY in display units (no conversion, no unit
+ * label) with the active decimal-separator setting. For the speed spinners,
+ * which work in display units and render the unit in a separate element.
+ * By default integers show with no decimals (16, not 16.0) — right for the
+ * spinners; pass keepZeros:true to always show `dp` decimals (right for the
+ * details-panel percentages, so "+8.0%" lines up with "+72.6%"). */
+export function formatDisplayNumber(value, { dp = 1, keepZeros = false } = {}) {
+  if (value == null || Number.isNaN(value)) return "";
+  const st = use();
+  return (!keepZeros && Number.isInteger(value)) ? String(value) : num(value, dp, st);
+}
+
 // ── temperature ─────────────────────────────────────────────────────────────
 /** °C canonical → "12°C" | "54°F" (whole degrees, as today). */
 export function formatTemperature(celsius, s) {

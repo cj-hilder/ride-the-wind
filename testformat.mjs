@@ -4,7 +4,7 @@ import {
   formatWindSpeed, formatDistance, formatRainfall, formatClockString, formatElevation,
   rainfallValue, rainfallUnitLabel, formatDistanceAdaptive, exampleWindLabel,
   rideSpeedToCanonicalKmh, canonicalKmhToRideSpeed, rideSpeedStep,
-  rideSpeedUnitLabel, rideSpeedBounds, _setSystemHour12,
+  rideSpeedUnitLabel, rideSpeedBounds, _setSystemHour12, formatDisplayNumber,
 } from './src/lib/format.js';
 
 let pass = 0, fail = 0;
@@ -177,6 +177,26 @@ console.log('Example wind label (round anchors):');
   ok('km/h → 20 km/h', exampleWindLabel(S({ windSpeed: 'kmh' })) === '20 km/h');
   ok('mph → 10 mph', exampleWindLabel(S({ windSpeed: 'mph' })) === '10 mph');
   ok('kt → 10 kt', exampleWindLabel(S({ windSpeed: 'kt' })) === '10 kt');
+}
+
+console.log('Display number (speed spinners — respects decimal separator):');
+{
+  setFormatSettings(S({ decimal: 'dot' }));
+  ok('dot: 16.5 → "16.5"', formatDisplayNumber(16.5) === '16.5', formatDisplayNumber(16.5));
+  ok('dot: whole 16 → "16"', formatDisplayNumber(16) === '16', formatDisplayNumber(16));
+  setFormatSettings(S({ decimal: 'comma' }));
+  ok('comma: 16.5 → "16,5"', formatDisplayNumber(16.5) === '16,5', formatDisplayNumber(16.5));
+  ok('comma: 19.5 → "19,5"', formatDisplayNumber(19.5) === '19,5', formatDisplayNumber(19.5));
+  ok('comma: whole 32 → "32" (no separator)', formatDisplayNumber(32) === '32', formatDisplayNumber(32));
+  ok('null → ""', formatDisplayNumber(null) === '');
+  // keepZeros: forces fixed decimals (details-panel percentages) so a round
+  // value lines up with the others ("+8.0%" beside "+72.6%").
+  setFormatSettings(S({ decimal: 'dot' }));
+  ok('keepZeros dot: 8.0 → "8.0"', formatDisplayNumber(8.0, { dp: 1, keepZeros: true }) === '8.0', formatDisplayNumber(8.0, { dp: 1, keepZeros: true }));
+  setFormatSettings(S({ decimal: 'comma' }));
+  ok('keepZeros comma: 8.0 → "8,0"', formatDisplayNumber(8.0, { dp: 1, keepZeros: true }) === '8,0', formatDisplayNumber(8.0, { dp: 1, keepZeros: true }));
+  ok('keepZeros comma: 72.6 → "72,6"', formatDisplayNumber(72.6, { dp: 1, keepZeros: true }) === '72,6', formatDisplayNumber(72.6, { dp: 1, keepZeros: true }));
+  setFormatSettings(DEFAULT_UNITS); // restore
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -26,7 +26,7 @@ import {
   needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
-import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel, defaultCruiseSpeedKmh } from "./lib/format.js";
+import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel, defaultCruiseSpeedKmh, formatDisplayNumber } from "./lib/format.js";
 import { effortNorm, V0_MIN, V0_MAX } from "./lib/windModel.js";
 import { DEFAULT_K } from "./lib/windModel.js";
 import { rideK as computeRideK } from "./lib/learning.js";
@@ -823,9 +823,9 @@ function DebugReadout({ debug }) {
         })()}
         {/* 1b: ground-effect equivalent (rendered in the block above) → time
             effect → forecast spread → wind tuning */}
-        <Row label="time effect">{`${debug.windFactor >= 0 ? "+" : "−"}${Math.abs(debug.windFactor * 100).toFixed(1)}%`}</Row>
+        <Row label="time effect">{`${debug.windFactor >= 0 ? "+" : "−"}${formatDisplayNumber(Math.abs(debug.windFactor * 100), { dp: 1, keepZeros: true })}%`}</Row>
         {debug.slowSec != null && debug.fastSec != null && debug.baselineSec > 0 && (
-          <Row label="forecast spread">{`${(Math.abs(debug.slowSec - debug.fastSec) / debug.baselineSec * 100).toFixed(1)}%`}</Row>
+          <Row label="forecast spread">{`${formatDisplayNumber(Math.abs(debug.slowSec - debug.fastSec) / debug.baselineSec * 100, { dp: 1, keepZeros: true })}%`}</Row>
         )}
         <Row label="wind tuning">
           {debug.kIdHead && debug.kIdTail ? "head & tail learned"
@@ -1198,7 +1198,7 @@ function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, o
   // and the caption text, so they always agree.
   const cruiseLo = Math.ceil(canonicalKmhToRideSpeed(V0_MIN) * 2) / 2;
   const cruiseHi = Math.floor(canonicalKmhToRideSpeed(V0_MAX) * 2) / 2;
-  const fmtBound = (v) => Number.isInteger(v) ? String(v) : v.toFixed(1);
+  const fmtBound = (v) => formatDisplayNumber(v);
   const setCruiseDisplay = (nextDisplay) => {
     const clamped = Math.max(cruiseLo, Math.min(cruiseHi, Math.round(nextDisplay * 2) / 2));
     onChangeCruiseSpeed(rideSpeedToCanonicalKmh(clamped));
@@ -1235,7 +1235,7 @@ function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, o
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <button onClick={() => setCruiseDisplay(cruiseDisp - cruiseStep)} style={spinBtn} aria-label="slower">−</button>
             <div style={{ flex: 1, textAlign: "center" }}>
-              <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{Number.isInteger(cruiseDisp) ? cruiseDisp : cruiseDisp.toFixed(1)}</span>
+              <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{formatDisplayNumber(cruiseDisp)}</span>
               <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}> {cruiseUnit}</span>
             </div>
             <button onClick={() => setCruiseDisplay(cruiseDisp + cruiseStep)} style={spinBtn} aria-label="faster">+</button>
@@ -1375,7 +1375,7 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, opacity: baseLearned ? 0.85 : 1 }}>
         <button onClick={() => setSpeedDisplay(dispSpeed - speedStep)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="slower">−</button>
         <div style={{ flex: 1, textAlign: "center" }}>
-          <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{Number.isInteger(dispSpeed) ? dispSpeed : dispSpeed.toFixed(1)}</span>
+          <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{formatDisplayNumber(dispSpeed)}</span>
           <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}> {speedUnit}</span>
         </div>
         <button onClick={() => setSpeedDisplay(dispSpeed + speedStep)} disabled={baseLearned} style={{ ...spinBtn, opacity: baseLearned ? 0.4 : 1, cursor: baseLearned ? "default" : "pointer" }} aria-label="faster">+</button>
