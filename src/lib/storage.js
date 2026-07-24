@@ -32,9 +32,12 @@ const DB_NAME = "ride-the-wind";
 const DB_VERSION = 1;
 
 // Default k when a direction has no usable setup estimate. Mirrors
-// windModel.DEFAULT_K (0.5; v2 = fraction of forecast wind felt); duplicated
-// here to avoid a cross-module dependency in the storage layer.
-const MIGRATION_DEFAULT_K = 0.5;
+// windModel.DEFAULT_K (0.4; v2 = fraction of forecast wind felt — set from
+// urban-shelter evidence: suburban street level is typically ~1/3 of the
+// open-terrain forecast, so 0.4 is a cautious starting prior that learning
+// raises for genuinely exposed routes). Duplicated here to avoid a cross-module
+// dependency in the storage layer.
+const MIGRATION_DEFAULT_K = 0.4;
 
 /**
  * Derive { kHead, kTail } from a route's stored setup estimates, for migrating
@@ -44,15 +47,22 @@ const MIGRATION_DEFAULT_K = 0.5;
  * side defaulting to MIGRATION_DEFAULT_K and clamped to the K range 0–1.4.
  */
 function splitSeedFromRoute(route) {
-  const A = 0.715, B = 0.30;
-  const invHead = (w) => (w > 0 ? (-1 + Math.sqrt(1 + 4 * A * (1 + A) * w)) / (2 * A) : 0);
-  const invTail = (w) => (w > 0 ? ((1 - B) * w) / (1 - B * w) : 0);
+  // Seed times are a v0-independent encoding (created/read at the nominal
+  // reference), so the migration inverts at nominal too. The live model then
+  // re-derives displayed k at the user's global cruising speed. Constants are
+  // windModel's linear-in-v0 laws at v0 = nominal; the inverse returns wind
+  // (km/h), and k = that ÷ the 20 km/h seed wind.
+  const still = route?.seedStillAirSec;
+  const v0 = 24; // nominal reference (matches app.js seed encoding)
+  const C_H = 0.01589 * v0 + 0.5243, A = 0.01782 * v0 + 0.3705;
+  const C_T = 0.00338 * v0 + 0.3095, B = 0.00201 * v0 + 0.2860;
+  const invHead = (w) => (w > 0 ? ((-1 + Math.sqrt(1 + 4 * A * (1 + A) * (w / C_H))) / (2 * A)) * v0 : 0);
+  const invTail = (w) => { if (!(w > 0)) return 0; const u = w / C_T; return (((1 - B) * u) / (1 - B * u)) * v0; };
   const clamp = (x) => Math.max(0.0, Math.min(1.4, x));
   let kHead = MIGRATION_DEFAULT_K, kTail = MIGRATION_DEFAULT_K;
-  const still = route?.seedStillAirSec;
   if (still > 0) {
-    if (route.seedHeadwind20Sec > 0) kHead = clamp(invHead(route.seedHeadwind20Sec / still - 1));
-    if (route.seedTailwind20Sec > 0) kTail = clamp(invTail(1 - route.seedTailwind20Sec / still));
+    if (route.seedHeadwind20Sec > 0) kHead = clamp(invHead(route.seedHeadwind20Sec / still - 1) / 20);
+    if (route.seedTailwind20Sec > 0) kTail = clamp(invTail(1 - route.seedTailwind20Sec / still) / 20);
   }
   return { kHead, kTail };
 }
@@ -385,6 +395,7 @@ export class Store {
       seedStillAirSec: baseValues.seedStillAirSec ?? route.seedStillAirSec,
       seedHeadwind20Sec: baseValues.seedHeadwind20Sec ?? null,
       seedTailwind20Sec: baseValues.seedTailwind20Sec ?? null,
+      totalDistance: route.totalDistance ?? null,
     });
     const updated = {
       ...route,
@@ -419,6 +430,9 @@ export class Store {
     if (!route) return null;
     const rides = await this.listRides(routeId);
     const config = this.routeConfig(route);
+    // Global rider cruising speed → curve v0 (one setting for all routes).
+    const cruise = await this.getSetting("cruiseSpeedKmh", null);
+    config.cruiseSpeedKmh = cruise > 0 ? cruise : null;
     const resolved = this.learning.resolveModel(normalizeRides(rides), config, nowMs);
 
     // Persist freeze transitions: write back any ride whose baselineRef /
@@ -614,7 +628,7 @@ export class Store {
 const SETTING_KEYS = [
   "globalAlertThresholdMin",
   "conservatismPct", // the uncertainty allowance
-  "wRefKmh",
+  "cruiseSpeedKmh",  // rider's flat, no-wind cruising speed → curve v0 (global)
   "lastOpenedRouteId",
   "persistentStorageGranted",
 ];

@@ -35,7 +35,7 @@
  * Constants (spec: wind model v2)
  * ------------------------------------------------------------------ */
 
-import { effortNorm, invHead, invTail } from "./windModel.js";
+import { effortNorm, invHead, invTail, V0_NOMINAL } from "./windModel.js";
 
 export const KMH_STILL = 5;                 // |wind| below this: still
 export const KMH_WINDY = 10;                // |wind| at/above this: windy
@@ -172,26 +172,28 @@ export function effectiveBaseline(ride, liveBaselineSec) {
  * invert the ride's time deviation through the branch curve and divide by the
  * ride's equivalent wind:
  *
- *   head:  k = invHead(actual/b − 1) / (w/20)
- *   tail:  k = invTail(1 − actual/b) / (w/20)      (w = |rideWindKmh|)
+ *   head:  k = invHead(actual/b − 1, v0) / |w|
+ *   tail:  k = invTail(1 − actual/b, v0) / |w|      (w = |rideWindKmh|)
  *
  * A deviation with the "wrong" sign (e.g. a headwind ride faster than
  * baseline) inverts to 0 — the ride testifies to zero wind effect; attenuation
  * cannot be negative. The returned k is UNCLAMPED: values beyond the k range
- * (0–1.2) are shown as-is, and such rides default to not-used at record time
+ * (0–1.4) are shown as-is, and such rides default to not-used at record time
  * (app.recordRide), the same mechanism as gentle rides — the user can opt them
- * back in. Null for still rides, v1 rides, or no usable baseline.
+ * back in. Null for still rides, v1 rides, or no usable baseline. v0 is the
+ * rider still-air speed for the branch curve (defaults to nominal).
  */
-export function rideK(ride, liveBaselineSec) {
+export function rideK(ride, liveBaselineSec, v0 = V0_NOMINAL) {
   if (!isV2Ride(ride)) return null;
   const b = effectiveBaseline(ride, liveBaselineSec);
   if (!(b > 0)) return null;
   const w = ride.rideWindKmh;
   if (!Number.isFinite(w) || Math.abs(w) < 1e-9) return null;
-  const x = Math.abs(w) / 20;
   const dev = ride.actualSec / b - 1;
-  const kx = w > 0 ? invHead(dev) : invTail(-dev);
-  return kx / x;
+  // invHead/invTail return the WIND (km/h) that produces this deviation for the
+  // rider's v0; k = that ÷ the ride's forecast equivalent wind.
+  const windNeeded = w > 0 ? invHead(dev, v0) : invTail(-dev, v0);
+  return windNeeded / Math.abs(w);
 }
 
 /* ------------------------------------------------------------------ *
@@ -225,7 +227,7 @@ function kmhSpread(rides) {
  *                                  slope absorbs
  *   3. else                      → slider fallback
  */
-export function resolveBaseline(rides, sliderBaselineSec) {
+export function resolveBaseline(rides, sliderBaselineSec, v0 = V0_NOMINAL) {
   const still = rides.filter((r) => classifyRideRecord(r) === "still");
   if (still.length >= 1) {
     const mean = still.reduce((s, r) => s + r.actualSec, 0) / still.length;
@@ -250,21 +252,22 @@ export function resolveBaseline(rides, sliderBaselineSec) {
       if (Math.abs(det) <= 1e-12) return null;
       return (sy * sxx - sx * sxy) / det;
     };
-    let A = ols(windy.map((r) => ({ z: effortNorm(r.rideWindKmh), y: r.actualSec })));
+    let A = ols(windy.map((r) => ({ z: effortNorm(r.rideWindKmh, v0), y: r.actualSec })));
     for (let it = 0; A > 0 && it < 2; it++) {
       let sw = 0, swk = 0;
       for (const r of windy) {
         const dev = r.actualSec / A - 1;
-        const x = Math.abs(r.rideWindKmh) / 20;
-        const kx = r.rideWindKmh > 0 ? invHead(dev) : invTail(-dev);
-        if (!Number.isFinite(kx) || !(x > 0)) continue;
-        sw += Math.abs(r.rideWindKmh);
-        swk += Math.abs(r.rideWindKmh) * (kx / x);
+        const w = Math.abs(r.rideWindKmh);
+        // invHead/invTail return km/h; implied k = windNeeded / forecast wind.
+        const windNeeded = r.rideWindKmh > 0 ? invHead(dev, v0) : invTail(-dev, v0);
+        if (!Number.isFinite(windNeeded) || !(w > 0)) continue;
+        sw += w;
+        swk += w * (windNeeded / w);
       }
       if (!(sw > 0)) break;
       const k = swk / sw;
       if (!(k > 0)) break;
-      const A2 = ols(windy.map((r) => ({ z: effortNorm(k * r.rideWindKmh) / k, y: r.actualSec })));
+      const A2 = ols(windy.map((r) => ({ z: effortNorm(k * r.rideWindKmh, v0) / k, y: r.actualSec })));
       if (A2 == null || !(A2 > 0)) break;
       A = A2;
     }
@@ -287,12 +290,12 @@ export function resolveBaseline(rides, sliderBaselineSec) {
  * gate fails (need >=2 rides AND km/h spread >= KMH_SPREAD_MIN) or no ride
  * yields a usable k.
  */
-function fitKWeighted(dirRides, liveBaselineSec) {
+function fitKWeighted(dirRides, liveBaselineSec, v0 = V0_NOMINAL) {
   if (dirRides.length < 2) return null;
   if (kmhSpread(dirRides) < KMH_SPREAD_MIN) return null;
   let sw = 0, swk = 0, used = 0;
   for (const r of dirRides) {
-    const k = rideK(r, liveBaselineSec);
+    const k = rideK(r, liveBaselineSec, v0);
     if (k == null) continue;
     const w = Math.abs(r.rideWindKmh);
     sw += w;
@@ -334,7 +337,7 @@ function fitKWeighted(dirRides, liveBaselineSec) {
  * @returns {{kHead, kTail, sourceHead, sourceTail, split, autoSplit,
  *            ridesHead, ridesTail}}
  */
-export function resolveK(rides, liveBaselineSec, config) {
+export function resolveK(rides, liveBaselineSec, config, v0 = V0_NOMINAL) {
   const { kMode, split, sliderKHead, sliderKTail } = config;
   const sH = clampK(sliderKHead) ?? sliderKHead;
   const sT = clampK(sliderKTail) ?? sliderKTail;
@@ -362,8 +365,8 @@ export function resolveK(rides, liveBaselineSec, config) {
     };
   }
 
-  const headFit = fitKWeighted(head, liveBaselineSec);
-  const tailFit = fitKWeighted(tail, liveBaselineSec);
+  const headFit = fitKWeighted(head, liveBaselineSec, v0);
+  const tailFit = fitKWeighted(tail, liveBaselineSec, v0);
   const bothQualify = !!headFit && !!tailFit;
 
   // Effective split: forced when both qualify (auto-split); otherwise honour
@@ -384,7 +387,7 @@ export function resolveK(rides, liveBaselineSec, config) {
   }
 
   // Combined learn: pool all contributing rides (both directions) into one fit.
-  const pooled = fitKWeighted(forK, liveBaselineSec);
+  const pooled = fitKWeighted(forK, liveBaselineSec, v0);
   if (pooled) {
     return {
       kHead: pooled.k, kTail: pooled.k,
@@ -433,7 +436,18 @@ export function resolveModel(allRides, config, nowMs = Date.now()) {
   const {
     baselineMode, sliderBaselineSec,
     kMode, split, sliderKHead, sliderKTail,
+    cruiseSpeedKmh = null,
   } = config;
+
+  // Rider still-air speed v0 (km/h) for the branch curves. This is a GLOBAL,
+  // rider-level setting — the user's typical flat, no-wind cruising speed — NOT
+  // derived per route from distance/baseline. A per-route average is a biased
+  // estimator (stops, traffic, hills only ever drag it DOWN, over-steepening
+  // the curve and over-warning); cruising speed is a stable rider property that
+  // means exactly what the curve needs. Behaviour that DOES vary per route (how
+  // hard you ride it, shelter, e-bike assist, gait) is absorbed by the learned
+  // k, not by v0. Unset → nominal; windModel clamps to the fitted band.
+  const v0 = cruiseSpeedKmh > 0 ? cruiseSpeedKmh : V0_NOMINAL;
 
   // 1. Determine the live baseline. In learn mode we need a baseline to feed
   // freeze + k; freeze needs the live baseline; baseline (learned) needs no k.
@@ -443,7 +457,7 @@ export function resolveModel(allRides, config, nowMs = Date.now()) {
   let liveBaselineSec = sliderBaselineSec;
   let baselineSource = "slider", baselineBranch = 3, ridesBaseline = 0;
   if (baselineMode === "learn") {
-    const b = resolveBaseline(includedPre, sliderBaselineSec);
+    const b = resolveBaseline(includedPre, sliderBaselineSec, v0);
     liveBaselineSec = b.baselineSec;
     baselineSource = b.source; baselineBranch = b.branch; ridesBaseline = b.ridesUsed;
   }
@@ -456,11 +470,12 @@ export function resolveModel(allRides, config, nowMs = Date.now()) {
   const included = rides.filter((r) => r.included !== false);
   const k = resolveK(included, liveBaselineSec, {
     kMode, split, sliderKHead, sliderKTail,
-  });
+  }, v0);
 
   return {
     baselineSec: liveBaselineSec,
     kHead: k.kHead, kTail: k.kTail,
+    v0,
     baselineSource, kHeadSource: k.sourceHead, kTailSource: k.sourceTail,
     split: k.split, autoSplit: k.autoSplit, baselineBranch,
     ridesBaseline, ridesHead: k.ridesHead, ridesTail: k.ridesTail,

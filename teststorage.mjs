@@ -52,10 +52,12 @@ console.log('\nRides persist with curation fields; model resolves from log (lear
   // a still ride pins baseline at 1000; windy rides both directions learn k=0.5
   const day=24*60*60*1000; const t0=Date.now();
   const winds=[0, -12, 12, -16, 16, -11, 11, -20]; // signed km/h, v2
+  const v0S=(5000/1000)/(1000/3600); // exercise a non-nominal v0 = 18 km/h
+  await s.setSetting('cruiseSpeedKmh', v0S); // global rider cruising speed
   for(let i=0;i<winds.length;i++){
     await s.recordRide({
       routeId:route.id, startedAt:t0 - (winds.length-i)*60000, endedAt:t0,
-      actualTimeSec:1000*(1+effortNorm(0.5*winds[i])), wfv:2, rideWindKmh:winds[i],
+      actualTimeSec:1000*(1+effortNorm(0.5*winds[i], v0S)), wfv:2, rideWindKmh:winds[i],
     });
   }
   const rides=await s.listRides(route.id);

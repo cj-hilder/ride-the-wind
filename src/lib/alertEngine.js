@@ -156,6 +156,7 @@ export function evaluateAlert(route, predictForArrival, opts = {}) {
     k: p.k ?? null,
     kHead: p.kHead ?? null,
     kTail: p.kTail ?? null,
+    v0: p.v0 ?? null, // curve v0 (global cruising speed) — for consistent inversions
     provisional: !!p.provisional,
   };
 }

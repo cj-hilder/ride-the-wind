@@ -26,8 +26,8 @@ import {
   needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
-import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel } from "./lib/format.js";
-import { effortNorm } from "./lib/windModel.js";
+import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedStep, rideSpeedBounds, rideSpeedUnitLabel, defaultCruiseSpeedKmh } from "./lib/format.js";
+import { effortNorm, V0_MIN, V0_MAX } from "./lib/windModel.js";
 import { DEFAULT_K } from "./lib/windModel.js";
 import { rideK as computeRideK } from "./lib/learning.js";
 
@@ -241,6 +241,7 @@ export default function App() {
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [displayUnits, setDisplayUnits] = useState(DEFAULT_UNITS);
+  const [cruiseSpeedKmh, setCruiseSpeedKmh] = useState(null); // global rider cruising speed → curve v0
   const [nowTick, setNowTick] = useState(Date.now()); // drives the Plan day strip; bumped on midnight rollover
   const [forecastGen, setForecastGen] = useState(0); // bumped whenever routes/forecasts refresh, so Plan recomputes in place
 
@@ -254,10 +255,18 @@ export default function App() {
   // Load display-unit preferences at startup and prime the format seam so every
   // formatter reflects them immediately (option B: module-level snapshot).
   useEffect(() => {
-    controller.store.getSetting("displayUnits", null).then((u) => {
+    controller.store.getSetting("displayUnits", null).then(async (u) => {
       const merged = { ...DEFAULT_UNITS, ...(u || {}) };
       setFormatSettings(merged);
       setDisplayUnits(merged);
+      // Seed the unit-aware cruising-speed default (20 km/h metric / 15 mph
+      // imperial) on first run, now that the true units are known.
+      const cruise = await controller.store.getSetting("cruiseSpeedKmh", null);
+      if (!(cruise > 0)) {
+        const def = defaultCruiseSpeedKmh(merged);
+        setCruiseSpeedKmh(def);
+        await controller.store.setSetting("cruiseSpeedKmh", def);
+      }
     });
   }, [controller]);
 
@@ -268,6 +277,25 @@ export default function App() {
     setDisplayUnits(merged);
     setForecastGen((g) => g + 1); // nudge a re-render so visible values reformat
     await controller.store.setSetting("displayUnits", merged);
+  }, [controller]);
+
+  // Load the global cruising speed. The unit-aware default is seeded by the
+  // units loader (below/above) once units are known, avoiding a metric/imperial
+  // race; here we just reflect whatever's stored (or leave null until seeded).
+  useEffect(() => {
+    let cancelled = false;
+    controller.store.getSetting("cruiseSpeedKmh", null).then((v) => {
+      if (!cancelled && v > 0) setCruiseSpeedKmh(v);
+    });
+    return () => { cancelled = true; };
+  }, [controller]);
+
+  // Persist a cruising-speed change (canonical km/h) and nudge a re-render so
+  // every route's wind response re-shapes at once.
+  const changeCruiseSpeed = useCallback(async (kmh) => {
+    setCruiseSpeedKmh(kmh);
+    setForecastGen((g) => g + 1);
+    await controller.store.setSetting("cruiseSpeedKmh", kmh);
   }, [controller]);
 
   const acceptHelp = useCallback(async () => {
@@ -388,7 +416,7 @@ export default function App() {
       {!recording && <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} />}
 
       {showHelp && <HelpPanel onClose={acceptHelp} />}
-      {showSettings && <SettingsPanel units={displayUnits} onChange={changeUnits} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsPanel units={displayUnits} onChange={changeUnits} cruiseSpeedKmh={cruiseSpeedKmh} onChangeCruiseSpeed={changeCruiseSpeed} onClose={() => setShowSettings(false)} />}
     </div>
   );
 }
@@ -1019,8 +1047,8 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp, onSettings })
 
       <div style={{ padding: "22px 22px 0" }}>
         <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={onHelp} style={{ ...backupBtn }}>Help</button>
-          <button onClick={onSettings} style={{ ...backupBtn }}>Settings</button>
+          <button onClick={onHelp} style={{ ...backupBtn }}><span aria-hidden="true" style={{ marginRight: 6 }}>ⓘ</span>Help</button>
+          <button onClick={onSettings} style={{ ...backupBtn }}><span aria-hidden="true" style={{ marginRight: 6 }}>⚙</span>Settings</button>
         </div>
         <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginTop: 14, lineHeight: 1.5, textAlign: "center" }}>
           Ride the Wind · free &amp; open source (MIT) · by Chris Hilder
@@ -1149,9 +1177,32 @@ function ModePill({ mode, onChange, disabled }) {
  * the top reflects the current (tentative) selection. Changes are applied live
  * via onChange (which persists + re-primes the format seam).
  * ========================================================================== */
-function SettingsPanel({ units, onChange, onClose }) {
+function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, onClose }) {
   const u = { ...DEFAULT_UNITS, ...(units || {}) };
   const set = (key, value) => onChange({ ...u, [key]: value });
+
+  // Cruising speed: stored canonical (km/h), shown/stepped in the ride-speed
+  // unit with a 0.5 step (mirrors the route baseline-speed spinner). Work in
+  // display units for the +/- logic, convert once to canonical on commit so
+  // mph↔km/h round-tripping doesn't drift. Bounds are the wind model's VALIDATED
+  // band [V0_MIN,V0_MAX] km/h — the setting only offers speeds where the curve
+  // is trustworthy (this is a cycling model; a walker's aerodynamics are a
+  // different regime the curve would extrapolate wrongly).
+  const cruiseDisp = canonicalKmhToRideSpeed(cruiseSpeedKmh ?? defaultCruiseSpeedKmh(u));
+  const cruiseStep = rideSpeedStep();
+  const cruiseUnit = rideSpeedUnitLabel();
+  // Band endpoints in the user's ride-speed unit — the REACHABLE half-step
+  // values (lower rounds UP into the band, upper rounds DOWN), so neither the
+  // spinner nor the caption can name a speed outside the validated [V0_MIN,
+  // V0_MAX] km/h band. These are the single source of truth for BOTH the clamp
+  // and the caption text, so they always agree.
+  const cruiseLo = Math.ceil(canonicalKmhToRideSpeed(V0_MIN) * 2) / 2;
+  const cruiseHi = Math.floor(canonicalKmhToRideSpeed(V0_MAX) * 2) / 2;
+  const fmtBound = (v) => Number.isInteger(v) ? String(v) : v.toFixed(1);
+  const setCruiseDisplay = (nextDisplay) => {
+    const clamped = Math.max(cruiseLo, Math.min(cruiseHi, Math.round(nextDisplay * 2) / 2));
+    onChangeCruiseSpeed(rideSpeedToCanonicalKmh(clamped));
+  };
 
   // Preview, split into two explicit lines. Order mirrors the controls below so
   // each sample maps to its toggle. Line 1: ride metrics; line 2: weather values.
@@ -1177,6 +1228,26 @@ function SettingsPanel({ units, onChange, onClose }) {
     }}>
       <div style={{ flex: 1, overflowY: "auto", padding: "calc(28px + env(safe-area-inset-top)) 24px 20px" }}>
         <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600, marginBottom: 16 }}>Settings</div>
+
+        {/* Cruising speed — rider-level, feeds the wind model's speed sensitivity */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)", fontWeight: 600, marginBottom: 8 }}>Cruising speed</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button onClick={() => setCruiseDisplay(cruiseDisp - cruiseStep)} style={spinBtn} aria-label="slower">−</button>
+            <div style={{ flex: 1, textAlign: "center" }}>
+              <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{Number.isInteger(cruiseDisp) ? cruiseDisp : cruiseDisp.toFixed(1)}</span>
+              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}> {cruiseUnit}</span>
+            </div>
+            <button onClick={() => setCruiseDisplay(cruiseDisp + cruiseStep)} style={spinBtn} aria-label="faster">+</button>
+          </div>
+          <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginTop: 8, lineHeight: 1.5 }}>
+            Your usual cruising speed — how fast you typically ride on the flat with no wind. The wind effect model is valid for cruising speeds between {fmtBound(cruiseLo)} and {fmtBound(cruiseHi)} {cruiseUnit}. Your average speed over an entire route will usually be different from your cruising speed and may be outside this range, but if your cruising speed is outside this range predicted times will be less accurate.
+          </div>
+        </div>
+
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.12)", margin: "0 0 18px" }} />
+
+        <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)", fontWeight: 600, marginBottom: 12 }}>Units</div>
 
         {/* Live preview */}
         <div style={{ padding: "12px 14px", borderRadius: 12, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(255,255,255,0.14)", marginBottom: 18 }}>
@@ -1365,15 +1436,16 @@ function TerrainSlider({ title, k, baselineSec, readOnly, sign, showBoth, exampl
   // Example times come from the real route geometry: a steady 20 km/h wind from
   // the route's mean bearing (headward) or its opposite (tailward), evaluated
   // through the v2 model with the slider's k INSIDE the physics curve:
-  //   time = baseline·(1 + Σw·effortNorm(k·hᵢ)/Σw)
+  //   time = baseline·(1 + Σw·effortNorm(k·hᵢ, v0)/Σw)
+  const exV0 = example ? example.v0 : undefined;
   const wfWith = (comps, kk) => {
     if (!comps || !comps.length) return 0;
     let num = 0, den = 0;
-    for (const c of comps) { num += c.w * effortNorm(kk * c.h); den += c.w; }
+    for (const c of comps) { num += c.w * effortNorm(kk * c.h, exV0); den += c.w; }
     return den > 0 ? num / den : 0;
   };
-  const headSec = baselineSec * (1 + (example ? wfWith(example.headComponents, shownK) : effortNorm(shownK * 20)));
-  const tailSec = baselineSec * (1 + (example ? wfWith(example.tailComponents, shownK) : effortNorm(-shownK * 20)));
+  const headSec = baselineSec * (1 + (example ? wfWith(example.headComponents, shownK) : effortNorm(shownK * 20, exV0)));
+  const tailSec = baselineSec * (1 + (example ? wfWith(example.tailComponents, shownK) : effortNorm(-shownK * 20, exV0)));
   const oneSec = sign === -1 ? tailSec : headSec;
   const headLabel = example ? example.headBearingLabel : "";
   const tailLabel = example ? example.tailBearingLabel : "";
@@ -2350,10 +2422,11 @@ function Setup({ controller, onDone, onCancel }) {
     const setup = {
       name: form.name.trim(),
       seedStillAirSec: Math.round(baselineSec),
-      // v2 forward map: seed time = still·(1 + f_branch(k·20)); exact
-      // counterpart of seedKSplit's inverse so slider k round-trips.
-      seedHeadwind20Sec: Math.round(baselineSec * (1 + effortNorm(form.kHead * 20))),
-      seedTailwind20Sec: Math.round(baselineSec * (1 + effortNorm(-form.kTail * 20))),
+      // Seed times are a v0-independent encoding at the nominal reference — the
+      // exact counterpart of createRoute's decode. The user's global cruising
+      // speed shapes live k and prediction, not this stored encoding.
+      seedHeadwind20Sec: Math.round(baselineSec * (1 + effortNorm(form.kHead * 20, 24))),
+      seedTailwind20Sec: Math.round(baselineSec * (1 + effortNorm(-form.kTail * 20, 24))),
       baselineMode: modes.baselineMode, kMode: modes.kMode, split: form.split,
       targetArrival: form.arrival, timeMode: form.timeMode, activeDays: form.days,
     };

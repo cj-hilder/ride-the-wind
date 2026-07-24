@@ -16,7 +16,12 @@ let pass=0,fail=0; const ok=(n,c,d='')=>{c?(pass++,console.log('  PASS '+n)):(fa
 const r=await app.createRoute(gpx,{name:'R',seedStillAirSec:3000,seedHeadwind20Sec:4560,seedTailwind20Sec:1830,targetArrival:'08:30',timeMode:'arrive',activeDays:['MO']});
 const d=(await app.getHomeVerdict(r.id, new Date(2026,5,1,8,0).getTime())).debug;
 ok('effortHeadwindKmh present', d.effortHeadwindKmh != null);
-const implied = effortNorm(d.effortHeadwindKmh);
+// v0 is now a GLOBAL rider setting (cruising speed), not per-route derived.
+// This test sets none, so the model uses the nominal fallback — reconcile with
+// that same v0. invHead/invTail return wind (km/h).
+import { invHead, invTail, V0_NOMINAL } from './src/lib/windModel.js';
+const v0R = V0_NOMINAL;
+const implied = effortNorm(d.effortHeadwindKmh, v0R);
 ok('effortNorm(effortHead) reconciles with windFactorK1', Math.abs(implied - d.windFactorK1) < 0.02, `${implied.toFixed(3)} vs ${d.windFactorK1}`);
 // effort headwind is the exact inverse of the factor, carrying its sign — so it
 // agrees in sign with wind_factor even when head/tail segments cancel.
@@ -24,10 +29,9 @@ ok('effort headwind sign matches k=1 factor', Math.sign(d.effortHeadwindKmh) ===
 // Direct check of the effort↔factor identity across signs and a cancelling
 // case (small positive factor, like a near-perpendicular wind on a winding
 // route): the v2 branch inverses must round-trip exactly.
-import { invHead, invTail } from './src/lib/windModel.js';
 for (const wf of [0.042, -0.094, 0.172, -0.3, 0]) {
-  const eff = wf === 0 ? 0 : (wf > 0 ? 20 * invHead(wf) : -20 * invTail(-wf));
-  const back = effortNorm(eff);
+  const eff = wf === 0 ? 0 : (wf > 0 ? invHead(wf, v0R) : -invTail(-wf, v0R));
+  const back = effortNorm(eff, v0R);
   ok(`exact inverse for wf=${wf}`, Math.abs(back - wf) < 1e-9, `${back}`);
 }
 

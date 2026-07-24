@@ -249,6 +249,14 @@ export function canonicalKmhToRideSpeed(kmh, s) {
 }
 /** Step for the spinner, in the display unit — always 0.5 regardless of unit. */
 export function rideSpeedStep() { return 0.5; }
+
+/** The default cruising speed (canonical km/h) for a fresh install: a round
+ * number in the user's own units — 20 km/h metric, 15 mph imperial — NOT one
+ * converted to the other (they're deliberately different round figures). Used
+ * as the curve's v0 until the user sets their own. */
+export function defaultCruiseSpeedKmh(s) {
+  return use(s).rideSpeed === "mph" ? 15 * KMH_PER_MPH : 20;
+}
 /** The ride-speed unit label ("km/h" | "mph"), for the spinner suffix. */
 export function rideSpeedUnitLabel(s) {
   return use(s).rideSpeed === "mph" ? "mph" : "km/h";

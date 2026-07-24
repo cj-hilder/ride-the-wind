@@ -29,6 +29,7 @@ import {
   segmentTimes,
   computeWindFactor,
   seriesCovers,
+  V0_NOMINAL,
 } from "./windModel.js";
 import * as learning from "./learning.js";
 import {
@@ -164,10 +165,11 @@ export function createAppController(deps = {}) {
       endRegion: { lat: p.end.lat, lon: p.end.lon, radius: 60 },
       baselineTimeSec: baselineSec,
       seedStillAirSec: baselineSec,
-      // v2 forward map: seed time = still·(1 + f_branch(k·w_ref)) — the exact
-      // counterpart of seedKSplit's inverse, so k round-trips through seed times.
-      seedHeadwind20Sec: Math.round(baselineSec * (1 + effortNorm(DEFAULT_K * 20))),
-      seedTailwind20Sec: Math.round(baselineSec * (1 + effortNorm(-DEFAULT_K * 20))),
+      // Demo seed times encode k=DEFAULT_K at the nominal v0; exampleConfig
+      // re-derives k live at the user's global cruise speed, so the example
+      // reflects their setting like a real route would.
+      seedHeadwind20Sec: Math.round(baselineSec * (1 + effortNorm(DEFAULT_K * 20, V0_NOMINAL))),
+      seedTailwind20Sec: Math.round(baselineSec * (1 + effortNorm(-DEFAULT_K * 20, V0_NOMINAL))),
       // Mirror the default new-route experience; toggleable in-memory so the
       // demo illustrates the difference between manual and learn.
       baselineMode: "learn",
@@ -189,9 +191,10 @@ export function createAppController(deps = {}) {
   // are themselves explanatory. The example has no persisted rides, so learn
   // falls back to the slider values — identical prediction, instructive UI.
   // k sliders come from its seed times.
-  function exampleConfig() {
+  function exampleConfig(cruiseKmh = null) {
     const r = exampleRoute();
-    const k = computeSeedKSplit(r.seedStillAirSec, r.seedHeadwind20Sec, r.seedTailwind20Sec);
+    const v0 = cruiseKmh > 0 ? cruiseKmh : undefined; // undefined → nominal in curve
+    const k = computeSeedKSplit(r.seedStillAirSec, r.seedHeadwind20Sec, r.seedTailwind20Sec, v0);
     return {
       baselineMode: r.baselineMode ?? "learn",
       sliderBaselineSec: r.seedStillAirSec,
@@ -199,6 +202,7 @@ export function createAppController(deps = {}) {
       split: r.split ?? false,
       sliderKHead: k.kHead ?? 1.0,
       sliderKTail: k.kTail ?? 1.0,
+      cruiseSpeedKmh: cruiseKmh,
     };
   }
   const isExampleId = (id) => id === EXAMPLE_ID;
@@ -216,8 +220,10 @@ export function createAppController(deps = {}) {
     }
     const kH = kHead != null ? kHead : null;
     const kT = kTail != null ? kTail : null;
-    if (kH != null) r.seedHeadwind20Sec = Math.round(r.seedStillAirSec * (1 + effortNorm(kH * 20)));
-    if (kT != null) r.seedTailwind20Sec = Math.round(r.seedStillAirSec * (1 + effortNorm(-kT * 20)));
+    // Encode at the nominal v0 (same fixed reference the example's seeds use);
+    // exampleConfig re-derives displayed k at the user's global cruise speed.
+    if (kH != null) r.seedHeadwind20Sec = Math.round(r.seedStillAirSec * (1 + effortNorm(kH * 20, V0_NOMINAL)));
+    if (kT != null) r.seedTailwind20Sec = Math.round(r.seedStillAirSec * (1 + effortNorm(-kT * 20, V0_NOMINAL)));
     if (targetArrival != null) r.targetArrival = targetArrival;
     if (activeDays != null) r.activeDays = activeDays;
     if (timeMode != null) r.timeMode = timeMode === "depart" ? "depart" : "arrive";
@@ -365,7 +371,7 @@ export function createAppController(deps = {}) {
   // (tailward), simulated over the actual segments. k-independent. Weight by
   // segment distance (the factor is a weighted mean of a speed-independent
   // per-segment quantity, so exact timing isn't needed for the example).
-  function exampleFor(segments) {
+  function exampleFor(segments, v0) {
     const DEG = Math.PI / 180;
     let bx = 0, by = 0;
     for (const s of segments) { bx += Math.cos(s.bearing * DEG); by += Math.sin(s.bearing * DEG); }
@@ -374,8 +380,9 @@ export function createAppController(deps = {}) {
     const steady = (fromDeg) => () => ({ speed: 20, fromDeg });
     // Per-segment along-route components (km/h) under the steady 20 km/h
     // example winds, with distance weights — the UI evaluates the v2 model
-    // live as baseline·(1 + Σw·effortNorm(k·hᵢ)/Σw) with the slider's k
-    // INSIDE the curve (there is no outer k multiply in v2).
+    // live as baseline·(1 + Σw·effortNorm(k·hᵢ, v0)/Σw) with the slider's k
+    // INSIDE the curve (there is no outer k multiply in v2). v0 is the route
+    // still-air speed for the branch curve; carried out so the UI matches.
     const comps = (fromDeg) => segments.map((s, i) => ({
       h: windComponent(20, fromDeg, s.bearing), w: w[i],
     }));
@@ -383,9 +390,10 @@ export function createAppController(deps = {}) {
       meanBearingDeg: Math.round(meanBearing),
       headBearingLabel: compass16(meanBearing),
       tailBearingLabel: compass16((meanBearing + 180) % 360),
+      v0: v0 ?? null,
       // k=1 factors (reference; the sliders use the components below)
-      headFactor: computeWindFactor(segments, steady(meanBearing), w),
-      tailFactor: computeWindFactor(segments, steady((meanBearing + 180) % 360), w),
+      headFactor: computeWindFactor(segments, steady(meanBearing), w, 1, v0),
+      tailFactor: computeWindFactor(segments, steady((meanBearing + 180) % 360), w, 1, v0),
       headComponents: comps(meanBearing),
       tailComponents: comps((meanBearing + 180) % 360),
     };
@@ -427,10 +435,14 @@ export function createAppController(deps = {}) {
    */
   async function createRoute(gpxText, setup) {
     const processed = processGpx(gpxText, { domParser: deps.domParser });
+    // Seed times are a v0-independent encoding: created and read at the nominal
+    // reference so they never go stale when the user changes their global
+    // cruising speed. Live k derivation and prediction use the global speed.
     const seededK = computeSeedKSplit(
       setup.seedStillAirSec,
       setup.seedHeadwind20Sec,
-      setup.seedTailwind20Sec
+      setup.seedTailwind20Sec,
+      V0_NOMINAL
     );
     const route = await store.createRoute(processed, setup, seededK);
     return route;
@@ -443,7 +455,7 @@ export function createAppController(deps = {}) {
    */
   async function createRouteFromProcessed(processed, setup) {
     const seededK = computeSeedKSplit(
-      setup.seedStillAirSec, setup.seedHeadwind20Sec, setup.seedTailwind20Sec
+      setup.seedStillAirSec, setup.seedHeadwind20Sec, setup.seedTailwind20Sec, V0_NOMINAL
     );
     return store.createRoute(processed, setup, seededK);
   }
@@ -559,9 +571,17 @@ export function createAppController(deps = {}) {
    * ride log (normalized to the resolver's shape) and its config (manual/learn
    * toggles, split, slider values). The example route has no persisted rides.
    */
+  // Global rider cruising speed (canonical km/h) → curve v0. One setting for
+  // all routes. Falls back to nominal if unset (App.jsx seeds the unit-aware
+  // default — 20 km/h metric / 15 mph imperial — at first run).
+  async function cruiseSpeedKmh() {
+    const v = await store.getSetting("cruiseSpeedKmh", null);
+    return v > 0 ? v : null;
+  }
+
   async function modelInputsFor(route) {
     if (isExampleId(route.id)) {
-      return { rides: [], config: exampleConfig() };
+      return { rides: [], config: exampleConfig(await cruiseSpeedKmh()) };
     }
     const rides = (await store.listRides(route.id)).map((r) => ({
       id: r.id,
@@ -575,7 +595,9 @@ export function createAppController(deps = {}) {
       baselineRef: r.baselineRef ?? "current",
       savedBaselineSec: r.savedBaselineSec ?? null,
     }));
-    return { rides, config: store.routeConfig(route) };
+    const config = store.routeConfig(route);
+    config.cruiseSpeedKmh = await cruiseSpeedKmh();
+    return { rides, config };
   }
 
   /**
@@ -998,8 +1020,11 @@ export function createAppController(deps = {}) {
       // every case, including a near-perpendicular wind on a winding route
       // where head and tail segments largely cancel.
       const wf1 = verdict.windFactorK1 ?? 0;
+      // Invert at the SAME v0 the factor was computed with (the global cruising
+      // speed carried on the verdict). invHead/invTail return wind in km/h.
+      const v0Dbg = verdict.v0;
       const effortHead = wf1 === 0 ? 0
-        : (wf1 > 0 ? 20 * invHead(wf1) : -20 * invTail(-wf1));
+        : (wf1 > 0 ? invHead(wf1, v0Dbg) : -invTail(-wf1, v0Dbg));
       const fetchedAt = forecastFetchedAt(route);
       debug = {
         windFromDeg: Math.round(w.fromDeg),
@@ -1141,12 +1166,16 @@ export function createAppController(deps = {}) {
     // plus the wind-model version stamp. windFactor itself is not stored on new
     // rides — rideWindKmh is the canonical, scale-stable summary.
     const wf1 = Number.isFinite(windFactor) ? windFactor : 0;
+    // Invert at the global cruising speed — the same v0 the factor was computed
+    // with, and the same v0 rideK will later read this record at, keeping the
+    // stored equivalent wind self-consistent with how the model consumes it.
+    const v0Rec = config.cruiseSpeedKmh > 0 ? config.cruiseSpeedKmh : undefined;
     const rideWindKmh = wf1 === 0 ? 0
-      : (wf1 > 0 ? 20 * invHead(wf1) : -20 * invTail(-wf1));
+      : (wf1 > 0 ? invHead(wf1, v0Rec) : -invTail(-wf1, v0Rec));
 
     // Per-ride k sanity (v2): compute the UNCLAMPED implied k against the
     // route's current resolved baseline. If it lands outside THE k range
-    // (0–1.2), the ride defaults to not-used — same mechanism as gentle rides;
+    // (0–1.4), the ride defaults to not-used — same mechanism as gentle rides;
     // the user can opt it back in from the Rides Manager. An out-of-range k
     // means the ride contradicts the model (baseline drift, stop-heavy ride,
     // anomaly), so it shouldn't silently steer learning.
@@ -1163,7 +1192,8 @@ export function createAppController(deps = {}) {
       if (cls !== "still") {
         const kRide = learning.rideK(
           { wfv: 2, rideWindKmh, actualSec: capture.actualTimeSec, baselineRef: "current" },
-          resolved.baselineSec
+          resolved.baselineSec,
+          resolved.v0
         );
         // Quarantine only when the implied k is genuinely implausible (above
         // K_LEARN_REJECT). Values in (K_MAX, K_LEARN_REJECT] are a legitimate
@@ -1238,7 +1268,7 @@ export function createAppController(deps = {}) {
       // shown to the user and used to gate inclusion, so included/excluded is
       // always explicable from what's displayed.
       const cls = learning.classifyRideRecord(r);
-      const k = cls === "still" ? null : learning.rideK(r, liveBaseline); // null for v1 rides
+      const k = cls === "still" ? null : learning.rideK(r, liveBaseline, resolved.v0); // null for v1 rides
       return {
         id: r.id,
         startedAt: r.startedAt,
@@ -1455,7 +1485,7 @@ export function createAppController(deps = {}) {
         split: config.split,
       },
       dots: learning.dotCount(resolved),
-      example: exampleFor(route.segments),
+      example: exampleFor(route.segments, resolved.v0),
       polyline: routePolyline(route.segments, route.endRegion),
     };
   }

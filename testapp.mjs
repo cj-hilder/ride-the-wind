@@ -53,10 +53,11 @@ let app, route;
   ok('processed segments present', route.segments.length>0);
   ok('baseline seeded', route.baselineTimeSec===1000);
   // split seed: kHead from 1300/1000-1=0.3, kTail from 1-760/1000=0.24
-  // v2: seed times invert through the PHYSICAL branch curves (k = wind attenuation):
-  // head excess 0.3 → invHead ≈ 0.528; tail saving 0.24 → invTail ≈ 0.604
-  ok('kHead slider seeded ~invHead(0.3)', near(route.sliderKHead,0.528,0.005), `${route.sliderKHead.toFixed(3)}`);
-  ok('kTail slider seeded ~invTail(0.24)', near(route.sliderKTail,0.604,0.005), `${route.sliderKTail.toFixed(3)}`);
+  // Seeds are a v0-independent encoding at the nominal reference; k is derived
+  // at the GLOBAL cruising speed (none set here → nominal v0=24). head excess
+  // 0.3 → kHead ≈ 0.529; tail saving 0.24 → kTail ≈ 0.618.
+  ok('kHead slider seeded', near(route.sliderKHead,0.5288,0.005), `${route.sliderKHead.toFixed(3)}`);
+  ok('kTail slider seeded', near(route.sliderKTail,0.6183,0.005), `${route.sliderKTail.toFixed(3)}`);
   ok('config learn by default', route.baselineMode==='learn' && route.kMode==='learn');
 }
 
@@ -242,9 +243,10 @@ console.log('\nReverse route (createReverseRoute):');
   ok('total distance preserved', Math.abs(rev.totalDistance - src.totalDistance) < 1);
   ok('inherits baseline seed', rev.seedStillAirSec === 1200);
   // createRoute derives sliders from seed times (0.3 head, 0.25 tail here), and
-  // the reverse inherits those stored sliders verbatim.
-  // v2 physical inverses: invHead(0.3)≈0.5276, invTail(0.25)≈0.6364
-  ok('inherits k sliders', Math.abs(rev.sliderKHead - 0.527638) < 1e-4 && Math.abs(rev.sliderKTail - 0.636364) < 1e-4, `${rev.sliderKHead}/${rev.sliderKTail}`);
+  // the reverse inherits those stored sliders verbatim. Seeds are v0-independent
+  // (nominal encoding); k derived at the global cruising speed (nominal here):
+  // kHead ≈ 0.5288, kTail ≈ 0.6505.
+  ok('inherits k sliders', Math.abs(rev.sliderKHead - 0.5288) < 1e-3 && Math.abs(rev.sliderKTail - 0.6505) < 1e-3, `${rev.sliderKHead}/${rev.sliderKTail}`);
   ok('modes learn/learn', rev.baselineMode === 'learn' && rev.kMode === 'learn');
   const revRides = await rApp.listRides(rev.id);
   ok('reverse starts with no rides', revRides.length === 0);
@@ -483,7 +485,7 @@ console.log('\nExport / import through controller:');
 console.log('\nTailwind forecast flips the verdict:');
 {
   clock=new Date(2026,4,31,21,30).getTime();
-  const appT=mkApp(stubForecast(270,32)); // wind from west, east route -> tailwind (32 km/h clears the 4-min threshold at the conservative default k=0.5)
+  const appT=mkApp(stubForecast(270,40)); // wind from west, east route -> tailwind (40 km/h clears the 4-min threshold at the conservative default k=0.4)
   const rT=await appT.createRoute(gpx, {name:'E', seedStillAirSec:1000, targetArrival:'08:45', activeDays:['MO','TU','WE','TH','FR']});
   const hv=await appT.getHomeVerdict(rT.id, new Date(2026,5,1,12,0).getTime());
   ok('tailwind verdict', hv.verdict.verdict==='tailwind', hv.verdict.verdict);

@@ -38,6 +38,7 @@ export default function HelpPanel({ onClose }) {
   const platform = detectInstall();
   const installed = platform === "installed";
   const h3 = { fontFamily: "'Fraunces',serif", fontSize: 17, fontWeight: 600, color: "#fff", margin: "0 0 6px" };
+  const h4 = { fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, color: "#fff", margin: "12px 0 4px" };
   const p = { fontSize: 13.5, color: "rgba(255,255,255,0.75)", lineHeight: 1.5, margin: "0 0 4px" };
   const ol = { fontSize: 13.5, color: "rgba(255,255,255,0.75)", lineHeight: 1.55, margin: "2px 0 4px", paddingLeft: 20 };
   const lnk = { color: "#e0a45e", textDecoration: "underline", fontWeight: 600 };
@@ -51,10 +52,24 @@ export default function HelpPanel({ onClose }) {
       <div style={{ flex: 1, overflowY: "auto", padding: "calc(28px + env(safe-area-inset-top)) 24px 20px" }}>
         <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600, marginBottom: 16 }}>Ride the Wind</div>
         <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 14 }}>
-         <ul style={ol}><li>Predicts your bike commute time from the forecast wind for your exact route at the time you ride.
-</li><li>Uses multiple forecasts to give you a range of predicted ride times.
+<p style={p}>
+Ride the Wind is a weather forecasting app for bike commuters. It distills the forecast into two questions:
+</p>
+<ul style={ol}><li>How will the wind affect my ride?
+</li><li>What should I wear?
+</li></ul>
+<p style={p}>
+It uses an easily configured model to predict the effect of the forecast wind on your ride speed, and if appropriate it suggests you leave early or late. It also alerts you to temperature, rain, and other weather that could affect your choice of clothing. 
+</p><p style={p}>
+This saves you having to interpret a general weather forecast for your particular route, and gives you only the information you need to know for your ride.
+</p>
+</div>
+        <div style={section}>
+          <h3 style={h3}>How it works</h3>
+<ul style={ol}><li>It applies the forecast wind to <b>your</b> route at the time <b>you</b> ride.
+</li><li>It uses multiple forecasts to give you a range of predicted ride times.
 </li><li>You control how much the spread of forecasts affects your ride times by adjusting the <i>uncertainty allowance</i>.
-</li><li>Recommends when to leave in order to arrive on time, based on those ride times.</li></ul>
+</li><li>It collects data when you ride which is used to fine tune the model and increase the accuracy of the predictions.</li></ul>
         </div>
 
         {!installed && (
@@ -67,10 +82,10 @@ export default function HelpPanel({ onClose }) {
         <div style={section}>
           <h3 style={h3}>The three tabs</h3>
           <p style={p}>
-            <b>1. Plan</b> shows forecast ride times and recommended departures for the week ahead. Also indicates temperature and alerts you when rain, snow, fog, thunderstorms, strong gusts or crosswinds are forecast for your ride. Tap the temperature to display more info about the forecast wind.
+            <b>1. Plan</b> shows the forecast ride times and recommended departures for the week ahead. It also indicates temperature and alerts you when rain, snow, fog, thunderstorms, strong gusts or crosswinds are forecast for your ride. Tap the temperature to display more forecast details.
           </p>
           <p style={p}>
-            <b>2. Ride</b> let's you record actual ride times which are then used to tune the model and make more accurate predictions. 
+            <b>2. Ride</b> let's you record actual ride times which are then used to tune the model and make more accurate predictions. There is a speedometer and clock that display while recording, as well as a progress indicator and predicted arrival time. 
           </p>
           <p style={p}>
             <b>3. Routes</b> is where you add new routes, hand tune your routes, and set the uncertainty allowance.
@@ -80,11 +95,15 @@ export default function HelpPanel({ onClose }) {
         <div style={section}>
           <h3 style={h3}>Tuning a route</h3>
           <p style={p}>
-            Each route starts from two things you set: your <b>still‑air speed</b> and a <b>ground effect</b> (how much the wind slows or speeds you up on this particular route). That's enough to use it from day one.
+            Tuning a route means setting the <b>still‑air speed</b> and <b>ground effect</b>. Those are the two tunable numbers used to predict ride times. Still air speed is your average riding speed for the route when there is no wind. A rough estimate (or the app's default value) is good enough as a starting point. Ground effect is the percentage of the forecast wind that you actually feel on this route. Start with the app's default value until you have a few windy rides recorded. 
           </p>
           <p style={p}>
-            As you record rides it learns your real numbers and takes over the tuning. You might need <b>several rides in each direction</b>. If the learned times aren't working for you, just switch to manual and set them by hand.
+            As you record rides the app learns your real numbers and takes over the tuning. You might need <b>several rides in each direction</b>. If the learned times aren't working for you, just switch to manual and set them by hand. All rides can be viewed and edited, so you can control which rides are used for learning. Once you are happy with the numbers there is no need to keep recording and editing unless your average still air speed changes (you get fitter, a new bike, etc).
           </p>
+           <h4 style={h4}>Cruising speed</h4>
+                <p style={p}>
+                Cruising speed also affects predicted ride times. It is found in the app settings. The default value is usually good enough, but set it to match your riding style and it will fine tune the predictions.
+</p>
           <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
            The app blends about 50 wind forecasts for your route. This enables it to predict a best case and worst case ride time from the spread of the forecasts. This means it can recommend departure times with a higher level of certainty of getting you there on time than a single forecast. You configure the uncertainty allowance according to how important it is for you to arrive on time.
           </p>

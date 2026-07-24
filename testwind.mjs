@@ -17,21 +17,21 @@ ok('wind from behind = tailwind (-)', windComponent(20,180,0) < 0, `${windCompon
 // Wind FROM the east (90) while going north -> pure crosswind -> ~0.
 ok('crosswind ~ 0', near(windComponent(20,90,0),0,1e-9));
 
-console.log('\nBranch curves (constant-power physics, v2, PHYSICAL magnitudes):');
-const head = effortNorm(20);   // +0.708: full 20 km/h headwind costs 70.8%
-const tail = effortNorm(-20);  // -0.350: full 20 km/h tailwind saves 35.0%
-ok('g(+wref) = +0.708 (physical anchor)', near(head,0.708,1e-9), `${head}`);
-ok('g(-wref) = -0.350 (physical anchor)', near(tail,-0.350,1e-9), `${tail}`);
-ok('head super-linear below anchor', effortNorm(10) < 0.708*0.5, `${effortNorm(10)}`);
-ok('head super-linear above anchor', effortNorm(30) > 0.708*1.5, `${effortNorm(30)}`);
-ok('tail concave below anchor', Math.abs(effortNorm(-10)) > 0.350*0.5, `${effortNorm(-10)}`);
-ok('tail saturating above anchor', Math.abs(effortNorm(-30)) < 0.350*1.5, `${effortNorm(-30)}`);
+console.log('\nBranch curves (constant-power physics, v2, rider-speed-aware):');
+const head = effortNorm(20);   // at default v0=24, x=20/24
+const tail = effortNorm(-20);
+ok('g(20) head @v0=24', near(head,0.6989,1e-3), `${head}`);
+ok('g(-20) tail @v0=24', near(tail,-0.3447,1e-3), `${tail}`);
+ok('head super-linear below anchor', effortNorm(10) < head*0.5, `${effortNorm(10)}`);
+ok('head super-linear above anchor', effortNorm(30) > head*1.5, `${effortNorm(30)}`);
+ok('tail concave below anchor', Math.abs(effortNorm(-10)) > 0.3447*0.5, `${effortNorm(-10)}`);
+ok('tail saturating above anchor', Math.abs(effortNorm(-30)) < 0.3447*1.5, `${effortNorm(-30)}`);
 ok('zero wind -> 0', effortNorm(0) === 0);
 ok('sign preserved on small tailwind', effortNorm(-5) < 0);
-// exact inverse round-trips
+// exact inverse round-trips — invHead/invTail now RETURN WIND (km/h), not x.
 for (const hk of [3, 8, 15, 20, 27]) {
-  ok(`invHead round-trip ${hk}`, near(invHead(effortNorm(hk)) * W_REF_KMH, hk, 1e-6), `${invHead(effortNorm(hk)) * W_REF_KMH}`);
-  ok(`invTail round-trip ${hk}`, near(invTail(-effortNorm(-hk)) * W_REF_KMH, hk, 1e-6), `${invTail(-effortNorm(-hk)) * W_REF_KMH}`);
+  ok(`invHead round-trip ${hk}`, near(invHead(effortNorm(hk)), hk, 1e-6), `${invHead(effortNorm(hk))}`);
+  ok(`invTail round-trip ${hk}`, near(invTail(-effortNorm(-hk)), hk, 1e-6), `${invTail(-effortNorm(-hk))}`);
 }
 
 console.log('\nAngle interpolation (wraparound):');
@@ -53,7 +53,7 @@ const tHeadSeed = 1000 * (1 + effortNorm(0.5 * 20));
 const tTailSeed = 1000 * (1 + effortNorm(-0.5 * 20));
 ok('recovers k=0.5 from both', near(seedK(1000, tHeadSeed, tTailSeed), 0.5, 1e-9), `${seedK(1000, tHeadSeed, tTailSeed)}`);
 ok('recovers k from headwind only', near(seedK(1000, tHeadSeed, null), 0.5, 1e-9), `${seedK(1000, tHeadSeed, null)}`);
-ok('defaults to DEFAULT_K (0.5) when none', seedK(1000, null, null) === 0.5);
+ok('defaults to DEFAULT_K (0.4) when none', seedK(1000, null, null) === 0.4);
 ok('clamps absurd seed to K_MAX 1.4', seedK(1000, 9000, null) === 1.4);
 
 console.log('\ncomputeWindFactor end-to-end:');
@@ -61,9 +61,9 @@ console.log('\ncomputeWindFactor end-to-end:');
 const segs=[0,1,2,3].map(()=>({lat:0,lon:0,bearing:0,distance:100,eleDelta:null}));
 const times=segmentTimes(segs,20,{useGradient:false});
 const fHead=computeWindFactor(segs,()=>({speed:20,fromDeg:0}),times);
-ok('uniform headwind -> +0.708 (physical)', near(fHead,0.708,1e-9), `${fHead}`);
+ok('uniform headwind -> 0.690 @v0=24', near(fHead,0.6989,1e-3), `${fHead}`);
 const fTail=computeWindFactor(segs,()=>({speed:20,fromDeg:180}),times);
-ok('uniform tailwind -> -0.350 (physical)', near(fTail,-0.350,1e-9), `${fTail}`);
+ok('uniform tailwind -> -0.345 @v0=24', near(fTail,-0.3447,1e-3), `${fTail}`);
 const fCross=computeWindFactor(segs,()=>({speed:20,fromDeg:90}),times);
 ok('uniform crosswind -> 0', near(fCross,0,1e-9), `${fCross}`);
 // k-inside separability: wf(k, wind w) === wf(1, wind k·w) for uniform wind
@@ -75,7 +75,7 @@ const fSplitHead=computeWindFactor(segs,()=>({speed:20,fromDeg:0}),times,{kHead:
 ok('split k: head route uses kHead only', near(fSplitHead,fK,1e-12), `${fSplitHead}`);
 const fSplitTail=computeWindFactor(segs,()=>({speed:20,fromDeg:180}),times,{kHead:9,kTail:0.6});
 ok('split k: tail route uses kTail only', near(fSplitTail,computeWindFactor(segs,()=>({speed:12,fromDeg:180}),times,1),1e-12), `${fSplitTail}`);
-ok('k default 1 unchanged', near(computeWindFactor(segs,()=>({speed:20,fromDeg:0}),times,1),0.708,1e-9));
+ok('k default 1 unchanged', near(computeWindFactor(segs,()=>({speed:20,fromDeg:0}),times,1),0.6989,1e-3));
 
 console.log('\nparseForecast (canned Open-Meteo shape):');
 const canned={hourly:{time:[100,0,200],wind_speed_10m:[5,4,6],wind_direction_10m:[10,20,30]}};

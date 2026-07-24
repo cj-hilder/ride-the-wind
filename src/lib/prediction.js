@@ -130,6 +130,7 @@ export function makePredictor({ route, rides, config, stationSeries, opts = {} }
         windFn,
         departMs,
         k: { kHead: resolved.kHead, kTail: resolved.kTail },
+        v0: resolved.v0,
         passes: 1, // inner single pass; outer loop here drives convergence
       });
       pr = predictFromModel(resolved, windFactor, { distanceM: route.totalDistance });
@@ -145,6 +146,7 @@ export function makePredictor({ route, rides, config, stationSeries, opts = {} }
       windFn,
       departMs,
       k: 1,
+      v0: resolved.v0,
       passes: 1,
     });
 
@@ -154,6 +156,7 @@ export function makePredictor({ route, rides, config, stationSeries, opts = {} }
       k: pr.k,
       kHead: pr.kHead,
       kTail: pr.kTail,
+      v0: resolved.v0,
       provisional,
       windFactor,
       windFactorK1,
