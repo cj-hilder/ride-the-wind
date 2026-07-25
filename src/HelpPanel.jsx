@@ -53,13 +53,13 @@ export default function HelpPanel({ onClose }) {
         <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600, marginBottom: 16 }}>Ride the Wind</div>
         <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 14 }}>
 <p style={p}>
-Ride the Wind is a weather forecasting app for bike commuters. It distills the forecast into two questions:
+Ride the Wind is a weather forecasting app for bike commuters. It scans the forecast to answer two questions at a glance:
 </p>
 <ul style={ol}><li>How will the wind affect my ride?
 </li><li>What should I wear?
 </li></ul>
 <p style={p}>
-It uses an easily configured model to predict the effect of the forecast wind on your ride speed, and if appropriate it suggests you leave early or late. It also alerts you to temperature, rain, and other weather that could affect your choice of clothing. 
+It uses an easily configured model to predict the effect of the forecast wind on your ride speed, and if appropriate it suggests how early or late to leave. It also alerts you to temperature, rain, and other weather that could affect your choice of clothing. 
 </p><p style={p}>
 This saves you having to interpret a general weather forecast for your particular route, and gives you only the information you need to know for your ride.
 </p>
@@ -68,8 +68,10 @@ This saves you having to interpret a general weather forecast for your particula
           <h3 style={h3}>How it works</h3>
 <ul style={ol}><li>It applies the forecast wind to <b>your</b> route at the time <b>you</b> ride.
 </li><li>It uses multiple forecasts to give you a range of predicted ride times.
-</li><li>You control how much the spread of forecasts affects your ride times by adjusting the <i>uncertainty allowance</i>.
-</li><li>It collects data when you ride which is used to fine tune the model and increase the accuracy of the predictions.</li></ul>
+</li><li>You control how much the spread of forecasts affects your ride times by adjusting the <i>uncertainty allowance</i> in the settings.
+</li><li>It collects data when you ride which is used to fine tune the model and increase the accuracy of the predictions.</li>
+<li>The predictions are used to recommend a departure time that will get you to work on time.</li>
+</ul>
         </div>
 
         {!installed && (
@@ -85,27 +87,27 @@ This saves you having to interpret a general weather forecast for your particula
             <b>1. Plan</b> shows the forecast ride times and recommended departures for the week ahead. It also indicates temperature and alerts you when rain, snow, fog, thunderstorms, strong gusts or crosswinds are forecast for your ride. Tap the temperature to display more forecast details.
           </p>
           <p style={p}>
-            <b>2. Ride</b> let's you record actual ride times which are then used to tune the model and make more accurate predictions. There is a speedometer and clock that display while recording, as well as a progress indicator and predicted arrival time. 
+            <b>2. Ride</b> let's you record actual ride times which are then used to tune the model and make more accurate predictions. There is a speedometer and clock that display while recording, as well as a progress indicator and predicted arrival time indicator. 
           </p>
           <p style={p}>
-            <b>3. Routes</b> is where you add new routes, hand tune your routes, and set the uncertainty allowance.
+            <b>3. Routes</b> is where you add new routes and hand tune your routes.
           </p>
         </div>
 
         <div style={section}>
           <h3 style={h3}>Tuning a route</h3>
           <p style={p}>
-            Tuning a route means setting the <b>still‑air speed</b> and <b>ground effect</b>. Those are the two tunable numbers used to predict ride times. Still air speed is your average riding speed for the route when there is no wind. A rough estimate (or the app's default value) is good enough as a starting point. Ground effect is the percentage of the forecast wind that you actually feel on this route. Start with the app's default value until you have a few windy rides recorded. 
+            Tuning a route means setting the <b>still‑air time</b> and <b>ground effect</b>. Those are the two tunable numbers used to predict ride times. Still air time is your average time taken to ride the route when there is no wind. A rough estimate (or the app's default value) is good enough as a starting point. Ground effect is the percentage of the forecast wind that you actually feel on this route. Start with the app's default value until you have a few windy rides recorded. 
           </p>
           <p style={p}>
-            As you record rides the app learns your real numbers and takes over the tuning. You might need <b>several rides in each direction</b>. If the learned times aren't working for you, just switch to manual and set them by hand. All rides can be viewed and edited, so you can control which rides are used for learning. Once you are happy with the numbers there is no need to keep recording and editing unless your average still air speed changes (you get fitter, a new bike, etc).
+            As you record rides the app learns your real numbers and takes over the tuning. You might need several rides in each direction. If the learned times aren't working for you, just switch to manual and set them by hand. All rides can be viewed and edited, so you can control which rides are used for learning. Once you are happy with the numbers there is no need to keep recording and editing unless your average still air time changes (you get fitter, a new bike, etc).
           </p>
            <h4 style={h4}>Cruising speed</h4>
                 <p style={p}>
                 Cruising speed also affects predicted ride times. It is found in the app settings. The default value is usually good enough, but set it to match your riding style and it will fine tune the predictions.
 </p>
           <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
-           The app blends about 50 wind forecasts for your route. This enables it to predict a best case and worst case ride time from the spread of the forecasts. This means it can recommend departure times with a higher level of certainty of getting you there on time than a single forecast. You configure the uncertainty allowance according to how important it is for you to arrive on time.
+           The app blends about 50 wind forecasts for your route. This enables it to predict a best case and worst case ride time from the spread of the forecasts. This means it can recommend departure times with more certainty than a single forecast would give. You configure the uncertainty allowance according to how important it is for you to arrive on time.
           </p>
         </div>
 
@@ -115,10 +117,10 @@ This saves you having to interpret a general weather forecast for your particula
             The simplest way to add a route is to <b>record it while you ride</b>. Choose <b>New</b>, tap <b>Record with GPS</b>, and ride the route once.
           </p>
           <p style={p}>
-            You can also <b>import a GPX file</b> (the path drawn on a map). That's handy if you'd rather plan the route before you ride it, or if you already have a GPX exported from Strava, Komoot, Garmin or a mapping site — just choose <b>New</b> → <b>Import a GPX file</b> and open it. To make one from scratch:
+            You can also <b>import a GPX file</b>. That's handy if you'd rather plan the route before you ride it, or if you already have a GPX exported from Strava, Komoot, Garmin or a mapping site — just choose <b>New</b> → <b>Import a GPX file</b> and open it. To make one from scratch:
           </p>
           <p style={{ ...p, fontWeight: 600, color: "rgba(255,255,255,0.85)", marginTop: 8 }}>
-            <a href="https://mapy.com" target="_blank" rel="noopener noreferrer" style={lnk}>Mapy.com</a> — good for dedicated bike lanes
+            <a href="https://mapy.com" target="_blank" rel="noopener noreferrer" style={lnk}>Mapy.com</a>
           </p>
           <ol style={ol}>
             <li>Open <a href="https://mapy.com" target="_blank" rel="noopener noreferrer" style={lnk}>Mapy.com</a>, then the planner (menu → directions).</li>
@@ -126,26 +128,13 @@ This saves you having to interpret a general weather forecast for your particula
             <li>Type your start in box A and destination in box B — the line draws itself.</li>
             <li>Expand the route panel, scroll down, and tap <b>Export</b>.</li>
           </ol>
-          <p style={{ ...p, fontWeight: 600, color: "rgba(255,255,255,0.85)", marginTop: 8 }}>
-            <a href="https://onthegomap.com" target="_blank" rel="noopener noreferrer" style={lnk}>OnTheGoMap.com</a> — the fast click‑and‑go way
-          </p>
-          <ol style={ol}>
-            <li>Open <a href="https://onthegomap.com" target="_blank" rel="noopener noreferrer" style={lnk}>OnTheGoMap.com</a> and set the mode to <b>bike</b> (top centre).</li>
-            <li>Click your start on the map, then your destination — it snaps to the roads.</li>
-            <li>Open the menu (top right) and tap <b>Export as GPX</b>.</li>
-          </ol>
-          <p style={{ ...p, color: "rgba(255,255,255,0.5)" }}>
-            However you add them, you'll want a route for each direction — one for riding out and one for the return.
-          </p>
         </div>
-
         <div style={section}>
           <h3 style={h3}>Say thanks</h3>
           <p style={p}>
-            If you like using this app and want to say thanks, <a href="https://ko-fi.com/chrishilder" target="_blank" rel="noopener noreferrer" style={lnk}>buy me a coffee</a>.
+            If you like using Ride the Wind and want to say thanks, <a href="https://ko-fi.com/chrishilder" target="_blank" rel="noopener noreferrer" style={lnk}>buy me a coffee</a>.
           </p>
         </div>
-
         <div style={{ padding: "16px 0 4px" }}>
           <p style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.55, margin: 0 }}>
             Ride the Wind gives estimates from weather forecasts provided by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer" style={lnk}>Open-Meteo</a>, a free, open-source forecast service. Ride the Wind is provided as is, with no warranty and no liability for lateness, wet socks, lightning strike or any other outcome. It's free and open source — made by <a href="https://github.com/cj-hilder/ride-the-wind" target="_blank" rel="noopener noreferrer" style={lnk}>Chris Hilder</a> and released under the MIT License.

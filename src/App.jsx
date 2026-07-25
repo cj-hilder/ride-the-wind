@@ -298,6 +298,25 @@ export default function App() {
     await controller.store.setSetting("cruiseSpeedKmh", kmh);
   }, [controller]);
 
+  // Uncertainty allowance — global, lives in Settings alongside cruising speed.
+  // Stored as a percentile (conservatismPct 50–99); the UI slider speaks 0–100%
+  // ("how much of the forecast spread to apply"), mapped via sliderToPct/
+  // pctToSlider. Bumping forecastGen re-runs predictions so departures shift.
+  const [conservatism, setConservatism] = useState(75); // slider %, 5% steps
+  useEffect(() => {
+    let cancelled = false;
+    controller.store.getSetting("conservatismPct", 87).then((v) => {
+      if (!cancelled && v != null) setConservatism(Math.round(pctToSlider(Number(v)) / 5) * 5);
+    });
+    return () => { cancelled = true; };
+  }, [controller]);
+  const changeConservatism = useCallback(async (sliderVal) => {
+    const s = Math.max(0, Math.min(100, Math.round(Number(sliderVal) || 0)));
+    setConservatism(s);
+    await controller.store.setSetting("conservatismPct", sliderToPct(s));
+    setForecastGen((g) => g + 1); // after persist, so the Home recompute reads the new value
+  }, [controller]);
+
   const acceptHelp = useCallback(async () => {
     setShowHelp(false);
     await controller.store.setSetting("helpSeen", true);
@@ -416,7 +435,7 @@ export default function App() {
       {!recording && <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} />}
 
       {showHelp && <HelpPanel onClose={acceptHelp} />}
-      {showSettings && <SettingsPanel units={displayUnits} onChange={changeUnits} cruiseSpeedKmh={cruiseSpeedKmh} onChangeCruiseSpeed={changeCruiseSpeed} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsPanel units={displayUnits} onChange={changeUnits} cruiseSpeedKmh={cruiseSpeedKmh} onChangeCruiseSpeed={changeCruiseSpeed} conservatism={conservatism} onChangeConservatism={changeConservatism} onClose={() => setShowSettings(false)} />}
     </div>
   );
 }
@@ -858,7 +877,6 @@ const DAY_CODES = [["MO", "M"], ["TU", "T"], ["WE", "W"], ["TH", "T"], ["FR", "F
 
 function Routes({ controller, routes, onChanged, onAddNew, onHelp, onSettings }) {
   const [editing, setEditing] = useState(null); // route id being edited
-  const [conservatism, setConservatism] = useState(75); // % uncertainty allowance (5% steps)
   const fileRef = useRef();
 
   // Drag-to-reorder: keep a local id order so the list rearranges live while
@@ -913,24 +931,6 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp, onSettings })
     await onChanged();
   };
 
-  useEffect(() => {
-    let alive = true;
-    controller.store.getSetting("conservatismPct", 87).then((v) => {
-      if (alive && v != null) setConservatism(Math.round(pctToSlider(Number(v)) / 5) * 5);
-    });
-    return () => { alive = false; };
-  }, [controller]);
-
-  // The slider speaks 0–100% ("how much of the forecast margin to apply"); the
-  // model wants a percentile in 50–99 (50 = median, no margin; 99 = most
-  // cautious). Map linearly between the two.
-  const saveConservatism = async (sliderVal) => {
-    const s = Math.max(0, Math.min(100, Math.round(Number(sliderVal) || 0)));
-    setConservatism(s);
-    await controller.store.setSetting("conservatismPct", sliderToPct(s));
-    await onChanged();
-  };
-
   const doExport = async () => {
     const bundle = await controller.exportAll();
     const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
@@ -960,21 +960,6 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp, onSettings })
       </div>
       <div style={{ padding: "0 22px 16px", fontSize: 13.5, color: "rgba(255,255,255,0.55)" }}>
         Each destination needs two routes, one going and one returning.
-      </div>
-
-      <div style={{ margin: "0 22px 18px", padding: "12px 14px", borderRadius: 14, background: "rgba(255,255,255,0.06)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 14 }}>Uncertainty allowance</span>
-          <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{conservatism}%</span>
-        </div>
-        <input type="range" min={0} max={100} step={5} value={conservatism}
-          onChange={(e) => setConservatism(Number(e.target.value))}
-          onMouseUp={(e) => saveConservatism(e.target.value)}
-          onTouchEnd={(e) => saveConservatism(e.target.value)}
-          style={{ width: "100%", marginTop: 8, accentColor: "#e0a45e" }} />
-        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginTop: 4, lineHeight: 1.4 }}>
-          Ride the Wind uses multiple forecast models to calculate a spread of forecast wind speeds. Your uncertainty allowance controls how much of that spread is applied to your ride times. Higher will have you leave earlier to be more likely on time.
-        </div>
       </div>
 
       {routes.length === 0 ? (
@@ -1177,14 +1162,20 @@ function ModePill({ mode, onChange, disabled }) {
  * the top reflects the current (tentative) selection. Changes are applied live
  * via onChange (which persists + re-primes the format seam).
  * ========================================================================== */
-function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, onClose }) {
+function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, conservatism, onChangeConservatism, onClose }) {
   const u = { ...DEFAULT_UNITS, ...(units || {}) };
   const set = (key, value) => onChange({ ...u, [key]: value });
 
+  // Local mirror of the uncertainty slider for smooth dragging; commits (persist
+  // + prediction recompute) happen on release via onChangeConservatism. Kept in
+  // sync if the prop changes underneath (e.g. import).
+  const [consLocal, setConsLocal] = useState(conservatism);
+  useEffect(() => { setConsLocal(conservatism); }, [conservatism]);
+
   // Cruising speed: stored canonical (km/h), shown/stepped in the ride-speed
-  // unit with a 0.5 step (mirrors the route baseline-speed spinner). Work in
-  // display units for the +/- logic, convert once to canonical on commit so
-  // mph↔km/h round-tripping doesn't drift. Bounds are the wind model's VALIDATED
+  // unit in WHOLE units. Work in display units for the +/- logic, convert once
+  // to canonical on commit so mph↔km/h round-tripping doesn't drift. Bounds are
+  // the wind model's VALIDATED
   // band [V0_MIN,V0_MAX] km/h — the setting only offers speeds where the curve
   // is trustworthy (this is a cycling model; a walker's aerodynamics are a
   // different regime the curve would extrapolate wrongly).
@@ -1229,6 +1220,24 @@ function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, o
     }}>
       <div style={{ flex: 1, overflowY: "auto", padding: "calc(28px + env(safe-area-inset-top)) 24px 20px" }}>
         <div style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600, marginBottom: 16 }}>Settings</div>
+
+        {/* Uncertainty allowance — global; how much of the forecast spread to apply */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)", fontWeight: 600 }}>Uncertainty allowance</span>
+            <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{consLocal}%</span>
+          </div>
+          <input type="range" min={0} max={100} step={5} value={consLocal}
+            onChange={(e) => setConsLocal(Number(e.target.value))}
+            onMouseUp={(e) => onChangeConservatism(e.target.value)}
+            onTouchEnd={(e) => onChangeConservatism(e.target.value)}
+            style={{ width: "100%", accentColor: "#e0a45e" }} />
+          <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginTop: 6, lineHeight: 1.5 }}>
+            Ride the Wind uses multiple forecast models to calculate a spread of forecast wind speeds. Your uncertainty allowance controls how much of that spread is applied to your ride times. Higher will have you leave earlier to be more likely on time.
+          </div>
+        </div>
+
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.12)", margin: "0 0 18px" }} />
 
         {/* Cruising speed — rider-level, feeds the wind model's speed sensitivity */}
         <div style={{ marginBottom: 18 }}>
