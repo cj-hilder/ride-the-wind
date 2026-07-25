@@ -743,20 +743,22 @@ export function createAppController(deps = {}) {
         // equal to the unified weighted median, so everything agrees.
         if (range && verdict && Number.isFinite(range.centerSec)) {
           verdict.predictedSec = range.centerSec;
-          // The "time effect" shown in Forecast details (debug.windFactor) must
-          // reflect the SAME prediction that drives the departure/allowance — the
-          // ensemble center — not the raw deterministic factor. Otherwise a
-          // route can show e.g. +10.6% time effect while the ensemble-driven
-          // departure rounds to a 0-min allowance. predicted = baseline·(1+wf),
-          // so back out wf from the snapped center. (windFactorK1 stays the raw
-          // k=1 summary for ride records — that must remain forecast-based.)
+          // The ensemble median drives the displayed central estimate
+          // ("likely", arrival, delta) and the departure, so predictedSec snaps
+          // to it. The details panel does NOT show this median as a time
+          // effect — it shows the deterministic "forecast time effect", which
+          // completes the wind chain (equivalent wind → ground effect
+          // equivalent wind → forecast time effect), with "forecast spread"
+          // alongside indicating how reliable that forecast is.
           if (route.baselineTimeSec > 0) {
+            // Preserve the DETERMINISTIC k-applied factor for the details panel:
+            // that's the one that completes the wind chain (it inverts to the
+            // ground-effect equivalent wind shown directly above it). The
+            // ensemble median still drives predictedSec/departure and stays in
+            // verdict.windFactor, which other consumers rely on (the light-wind
+            // rule and the plan-tab head/tail emphasis).
+            verdict.windFactorForecast = verdict.windFactor;
             verdict.windFactor = range.centerSec / route.baselineTimeSec - 1;
-            // Record that the displayed factor is now an ENSEMBLE-median figure,
-            // not the deterministic wind factor. The details panel labels it
-            // differently so the reader knows why it needn't reconcile
-            // arithmetically with the (always deterministic) equivalent-wind rows.
-            verdict.windFactorFromEnsemble = true;
           }
         }
       }
@@ -1044,7 +1046,10 @@ export function createAppController(deps = {}) {
         feltEquivWindKmh: +(effortHead * (effortHead >= 0 ? (resolved.kHead ?? 1) : (resolved.kTail ?? 1))).toFixed(2),
         meanCrosswindKmh: +(cross / tt).toFixed(1),
         windFactor: +(verdict.windFactor ?? 0).toFixed(3),
-        windFactorFromEnsemble: !!verdict.windFactorFromEnsemble, // true → labelled "ensemble time effect"
+        // Deterministic k-applied factor — what the details panel shows as
+        // "forecast time effect". Falls back to windFactor when no ensemble
+        // replaced it (then windFactor is already the deterministic value).
+        windFactorForecast: +(verdict.windFactorForecast ?? verdict.windFactor ?? 0).toFixed(3),
         windFactorK1: +(verdict.windFactorK1 ?? 0).toFixed(3), // k=1 factor (effortHead inverts this)
         baselineSec: Math.round(route.baselineTimeSec),
         predictedSec: Math.round(verdict.predictedSec),

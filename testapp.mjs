@@ -491,25 +491,37 @@ console.log('\nTailwind forecast flips the verdict:');
   ok('tailwind verdict', hv.verdict.verdict==='tailwind', hv.verdict.verdict);
 }
 
-console.log('\nTime-effect source flag (ensemble vs deterministic):');
+console.log('\nForecast time effect completes the wind chain (both regimes):');
 {
   clock=new Date(2026,4,31,21,30).getTime();
-  // WITH an ensemble: the displayed factor is back-computed from the ensemble
-  // median, so it must be flagged (panel labels it "ensemble time effect").
+  const { effortNorm } = await import('./src/lib/windModel.js');
+  // WITH an ensemble: predictedSec snaps to the ensemble median (drives the
+  // departure), but the panel's forecast time effect must stay DETERMINISTIC so
+  // it still inverts to the ground-effect equivalent wind shown above it.
   const appE=mkApp(stubForecast(90,25), stubEnsemble(90,25));
   const rE=await appE.createRoute(gpx, {name:'Ens', seedStillAirSec:1000, targetArrival:'08:45', activeDays:['MO','TU','WE','TH','FR']});
   const hvE=await appE.getHomeVerdict(rE.id, new Date(2026,5,1,12,0).getTime());
-  ok('ensemble present → windFactorFromEnsemble true', hvE.debug.windFactorFromEnsemble===true, `${hvE.debug.windFactorFromEnsemble}`);
-  // WITHOUT an ensemble: the factor stays the deterministic wind factor, so the
-  // flag must be false and the equivalent-wind rows reconcile with it.
+  const impliedE = effortNorm(hvE.debug.feltEquivWindKmh, hvE.verdict.v0);
+  ok('ensemble: forecast time effect reconciles with felt equivalent wind',
+    Math.abs(impliedE - hvE.debug.windFactorForecast) < 0.02,
+    `${impliedE.toFixed(3)} vs ${hvE.debug.windFactorForecast}`);
+  // The ensemble median still drives the prediction, so windFactor (the snapped
+  // one) may differ from the deterministic forecast factor — that's expected.
+  ok('ensemble: predictedSec reflects the ensemble median',
+    Math.abs(hvE.debug.windFactor - (hvE.debug.predictedSec / hvE.debug.baselineSec - 1)) < 0.01,
+    `${hvE.debug.windFactor} vs ${(hvE.debug.predictedSec/hvE.debug.baselineSec-1).toFixed(3)}`);
+  // WITHOUT an ensemble: nothing overwrites the factor, so the forecast time
+  // effect equals it and still reconciles.
   const appD=mkApp(stubForecast(90,25)); // no ensemble stub -> throws
   const rD=await appD.createRoute(gpx, {name:'Det', seedStillAirSec:1000, targetArrival:'08:45', activeDays:['MO','TU','WE','TH','FR']});
   const hvD=await appD.getHomeVerdict(rD.id, new Date(2026,5,1,12,0).getTime());
-  ok('no ensemble → windFactorFromEnsemble false', hvD.debug.windFactorFromEnsemble===false, `${hvD.debug.windFactorFromEnsemble}`);
-  // And in the deterministic case the chain reconciles: effortNorm(feltEquiv) ≈ windFactor
-  const { effortNorm } = await import('./src/lib/windModel.js');
-  const implied = effortNorm(hvD.debug.feltEquivWindKmh, hvD.verdict.v0);
-  ok('deterministic: felt equivalent reconciles with time effect', Math.abs(implied - hvD.debug.windFactor) < 0.02, `${implied.toFixed(3)} vs ${hvD.debug.windFactor}`);
+  const impliedD = effortNorm(hvD.debug.feltEquivWindKmh, hvD.verdict.v0);
+  ok('no ensemble: forecast time effect reconciles with felt equivalent wind',
+    Math.abs(impliedD - hvD.debug.windFactorForecast) < 0.02,
+    `${impliedD.toFixed(3)} vs ${hvD.debug.windFactorForecast}`);
+  ok('no ensemble: forecast factor equals windFactor',
+    Math.abs(hvD.debug.windFactorForecast - hvD.debug.windFactor) < 1e-9,
+    `${hvD.debug.windFactorForecast} vs ${hvD.debug.windFactor}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
