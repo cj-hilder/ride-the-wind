@@ -842,7 +842,7 @@ function DebugReadout({ debug }) {
         })()}
         {/* 1b: ground-effect equivalent (rendered in the block above) → time
             effect → forecast spread → wind tuning */}
-        <Row label="time effect">{`${debug.windFactor >= 0 ? "+" : "−"}${formatDisplayNumber(Math.abs(debug.windFactor * 100), { dp: 1, keepZeros: true })}%`}</Row>
+        <Row label={debug.windFactorFromEnsemble ? "ensemble time effect" : "time effect"}>{`${debug.windFactor >= 0 ? "+" : "−"}${formatDisplayNumber(Math.abs(debug.windFactor * 100), { dp: 1, keepZeros: true })}%`}</Row>
         {debug.slowSec != null && debug.fastSec != null && debug.baselineSec > 0 && (
           <Row label="forecast spread">{`${formatDisplayNumber(Math.abs(debug.slowSec - debug.fastSec) / debug.baselineSec * 100, { dp: 1, keepZeros: true })}%`}</Row>
         )}

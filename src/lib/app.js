@@ -752,6 +752,11 @@ export function createAppController(deps = {}) {
           // k=1 summary for ride records — that must remain forecast-based.)
           if (route.baselineTimeSec > 0) {
             verdict.windFactor = range.centerSec / route.baselineTimeSec - 1;
+            // Record that the displayed factor is now an ENSEMBLE-median figure,
+            // not the deterministic wind factor. The details panel labels it
+            // differently so the reader knows why it needn't reconcile
+            // arithmetically with the (always deterministic) equivalent-wind rows.
+            verdict.windFactorFromEnsemble = true;
           }
         }
       }
@@ -1039,6 +1044,7 @@ export function createAppController(deps = {}) {
         feltEquivWindKmh: +(effortHead * (effortHead >= 0 ? (resolved.kHead ?? 1) : (resolved.kTail ?? 1))).toFixed(2),
         meanCrosswindKmh: +(cross / tt).toFixed(1),
         windFactor: +(verdict.windFactor ?? 0).toFixed(3),
+        windFactorFromEnsemble: !!verdict.windFactorFromEnsemble, // true → labelled "ensemble time effect"
         windFactorK1: +(verdict.windFactorK1 ?? 0).toFixed(3), // k=1 factor (effortHead inverts this)
         baselineSec: Math.round(route.baselineTimeSec),
         predictedSec: Math.round(verdict.predictedSec),
