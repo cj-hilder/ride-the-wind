@@ -1494,11 +1494,11 @@ function TerrainSlider({ title, k, baselineSec, readOnly, sign, showBoth, exampl
         <span>flatter ►</span>
       </div>
       <div style={{ fontSize: 11.5, color: "#e0a45e", marginTop: 6 }}>
-        ground effect: {kPct(shownK)} of forecast wind felt
+        ground effect: {kPct(shownK)} of forecast wind
       </div>
       <SourceNote mode={mode} source={source} rides={rides} />
       <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginTop: 6, lineHeight: 1.4 }}>
-        <span style={{ color: "rgba(255,255,255,0.45)" }}>example ride, steady {exampleWindLabel()} wind from {dirLabel}</span><br />
+        <span style={{ color: "rgba(255,255,255,0.45)" }}>example ride, forecast {exampleWindLabel()} wind from {dirLabel}</span><br />
         {showBoth
           ? <>headwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatElapsed(headSec)}</b> / tailwind <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatElapsed(tailSec)}</b></>
           : <>{sign === -1 ? "tailwind" : "headwind"} <b style={{ color: "rgba(255,255,255,0.85)" }}>{formatElapsed(oneSec)}</b></>}
