@@ -1759,27 +1759,41 @@ function ManualRideEntry({ route, controller, onClose, onAdded }) {
 
 function RideEditor({ ride, controller, onClose }) {
   const [durMin, setDurMin] = useState(Math.round(ride.actualTimeSec / 60));
+  // The spinner edits WHOLE MINUTES, but a recorded ride carries seconds. Track
+  // whether the user actually touched the duration: until they do, we neither
+  // display a k derived from the truncated value (it would disagree with the
+  // rides list, which uses the exact stored seconds) nor overwrite the stored
+  // duration on save (which would silently drop the seconds and shift k).
+  const [durEdited, setDurEdited] = useState(false);
+  const editDur = (fn) => { setDurEdited(true); setDurMin(fn); };
   const [included, setIncluded] = useState(ride.included);
   const [ref, setRef] = useState(ride.baselineRef);
   const [confirmDel, setConfirmDel] = useState(false);
   const [bulkAsk, setBulkAsk] = useState(false);
   const locked = ride.locked; // age >= 14 days → current/historic frozen
-  // Live k: recomputed from the EDITED duration and baseline-reference choice,
-  // through the same inversion the model uses, so the headline updates as the
-  // user adjusts — not only after save. Must use the SAME curve v0 the list's k
-  // was computed with (the global cruising speed, carried on the ride), or the
-  // editor and the list show different k for the same ride. Null (hidden) when
-  // not computable.
+  // Live k: recomputed so the headline responds to BOTH the duration spinner and
+  // the current/historic choice. The duration used is the exact stored seconds
+  // until the user actually edits it — the spinner works in whole minutes, and
+  // truncating a recorded 12:13 to 12:00 would both disagree with the rides list
+  // (which uses exact seconds) and silently shift k. Uses the SAME curve v0 the
+  // list used (global cruising speed, carried on the ride). Null when not
+  // computable. Note k is very sensitive on gentle rides: with only a few km/h
+  // of equivalent wind the denominator is tiny, so a one-minute change can move
+  // k by tens of percent — which is why gentle rides default to not-used.
+  const effActualSec = durEdited ? durMin * 60 : ride.actualTimeSec;
   const liveK = ride.wfv === 2 && ride.klass !== "still"
     ? computeRideK(
-        { wfv: 2, rideWindKmh: ride.rideWindKmh, actualSec: durMin * 60,
+        { wfv: 2, rideWindKmh: ride.rideWindKmh, actualSec: effActualSec,
           baselineRef: ref, savedBaselineSec: ride.savedBaselineSec },
         ride.liveBaselineSec, ride.v0)
     : ride.rideK;
 
   const save = async () => {
     await controller.updateRide(ride.id, {
-      actualTimeSec: Math.max(1, Math.round(durMin * 60)),
+      // Only write the duration if the user actually changed it — otherwise a
+      // save made to toggle Use or current/historic would truncate the recorded
+      // seconds to whole minutes and shift the ride's k.
+      ...(durEdited ? { actualTimeSec: Math.max(1, Math.round(durMin * 60)) } : {}),
       included,
       ...(locked ? {} : { baselineRef: ref }),
     });
@@ -1815,11 +1829,11 @@ function RideEditor({ ride, controller, onClose }) {
         {/* Duration */}
         <label style={lbl}>Recorded ride time</label>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-          <button onClick={() => setDurMin((m) => Math.max(1, m - 1))} style={spinBtn} aria-label="shorter">−</button>
+          <button onClick={() => editDur((m) => Math.max(1, m - 1))} style={spinBtn} aria-label="shorter">−</button>
           <div style={{ flex: 1, textAlign: "center" }}>
             <span style={{ fontFamily: "'Fraunces',serif", fontSize: 24, fontWeight: 600 }}>{formatElapsed(durMin * 60)}</span>
           </div>
-          <button onClick={() => setDurMin((m) => m + 1)} style={spinBtn} aria-label="longer">+</button>
+          <button onClick={() => editDur((m) => m + 1)} style={spinBtn} aria-label="longer">+</button>
         </div>
 
         {/* Include / exclude */}

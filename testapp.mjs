@@ -553,6 +553,33 @@ console.log('\nRide editor k matches the list k (same curve v0):');
     r.liveBaselineSec);
   ok('omitting v0 would diverge (regression guard)', Math.abs(buggyK - r.rideK) > 1e-6,
     `buggy ${buggyK} vs list ${r.rideK}`);
+
+  // The editor must compute k from the EXACT stored seconds, not the duration
+  // truncated to whole minutes. Recorded rides carry seconds; truncating shifts
+  // k (badly, on gentle rides where the wind denominator is small).
+  const exactK = rideK(
+    { wfv: 2, rideWindKmh: r.rideWindKmh, actualSec: r.actualTimeSec,
+      baselineRef: r.baselineRef, savedBaselineSec: r.savedBaselineSec },
+    r.liveBaselineSec, r.v0);
+  const truncK = rideK(
+    { wfv: 2, rideWindKmh: r.rideWindKmh, actualSec: Math.round(r.actualTimeSec / 60) * 60,
+      baselineRef: r.baselineRef, savedBaselineSec: r.savedBaselineSec },
+    r.liveBaselineSec, r.v0);
+  ok('ride duration is not a whole minute (so the check is meaningful)',
+    r.actualTimeSec % 60 !== 0, `${r.actualTimeSec}s`);
+  ok('exact-seconds k === list k', Math.abs(exactK - r.rideK) < 1e-9, `${exactK} vs ${r.rideK}`);
+  ok('minute-truncated k would diverge (regression guard)', Math.abs(truncK - r.rideK) > 1e-6,
+    `truncated ${truncK} vs list ${r.rideK}`);
+
+  // An edit that does NOT touch the duration (e.g. toggling Use) must preserve
+  // the recorded seconds — the editor omits actualTimeSec from the patch, and
+  // updateRide must honour that rather than defaulting it.
+  const beforeSec = r.actualTimeSec;
+  await kApp.updateRide(r.id, { included: false });
+  const after = (await kApp.ridesForManager(kR.id))[0];
+  ok('unedited save preserves recorded seconds', after.actualTimeSec === beforeSec,
+    `${after.actualTimeSec} vs ${beforeSec}`);
+  ok('unedited save still applies the intended change', after.included === false, `${after.included}`);
 }
 clock = new Date(2026,4,31,21,30).getTime(); // restore
 
