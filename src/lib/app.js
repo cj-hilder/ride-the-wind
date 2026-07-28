@@ -1288,6 +1288,7 @@ export function createAppController(deps = {}) {
         rideWindKmh: r.rideWindKmh,
         windFactor: r.windFactor, // v1 legacy (mean-wind display uses v1 inverse)
         liveBaselineSec: liveBaseline, // lets the editor recompute k live as duration/baseline-ref change
+        v0: resolved.v0, // same curve v0 the list's k used — editor must match or its k diverges
         klass: cls,
         rideK: k,
         included: r.included !== false,

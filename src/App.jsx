@@ -1766,12 +1766,15 @@ function RideEditor({ ride, controller, onClose }) {
   const locked = ride.locked; // age >= 14 days → current/historic frozen
   // Live k: recomputed from the EDITED duration and baseline-reference choice,
   // through the same inversion the model uses, so the headline updates as the
-  // user adjusts — not only after save. Null (hidden) when not computable.
+  // user adjusts — not only after save. Must use the SAME curve v0 the list's k
+  // was computed with (the global cruising speed, carried on the ride), or the
+  // editor and the list show different k for the same ride. Null (hidden) when
+  // not computable.
   const liveK = ride.wfv === 2 && ride.klass !== "still"
     ? computeRideK(
         { wfv: 2, rideWindKmh: ride.rideWindKmh, actualSec: durMin * 60,
           baselineRef: ref, savedBaselineSec: ride.savedBaselineSec },
-        ride.liveBaselineSec)
+        ride.liveBaselineSec, ride.v0)
     : ride.rideK;
 
   const save = async () => {

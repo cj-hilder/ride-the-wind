@@ -524,5 +524,37 @@ console.log('\nForecast time effect completes the wind chain (both regimes):');
     `${hvD.debug.windFactorForecast} vs ${hvD.debug.windFactor}`);
 }
 
+console.log('\nRide editor k matches the list k (same curve v0):');
+{
+  clock = new Date(2026,5,1,9,0).getTime();
+  const kApp = mkApp(stubForecast(90, 25), stubEnsemble(90, 25)); // headwind
+  // A NON-nominal cruising speed is the case that exposed the bug: the list used
+  // the global cruising speed while the editor defaulted to nominal 24.
+  await kApp.store.setSetting('cruiseSpeedKmh', 20);
+  const kR = await kApp.createRoute(gpx, {name:'K', seedStillAirSec:1000, targetArrival:'08:45', activeDays:['MO','TU','WE','TH','FR']});
+  const st = new Date(2026,5,1,7,0).getTime();
+  await kApp.recordManualRide(kR.id, { startMs: st, endMs: st + 1150*1000 });
+  const list = await kApp.ridesForManager(kR.id);
+  const r = list[0];
+  ok('ride carries the curve v0 for the editor', r.v0 > 0, `${r.v0}`);
+  ok('ride v0 is the global cruising speed', Math.abs(r.v0 - 20) < 1e-9, `${r.v0}`);
+  // Recompute exactly as RideEditor does (unchanged duration) — must match.
+  const { rideK } = await import('./src/lib/learning.js');
+  const editorK = rideK(
+    { wfv: 2, rideWindKmh: r.rideWindKmh, actualSec: r.actualTimeSec,
+      baselineRef: r.baselineRef, savedBaselineSec: r.savedBaselineSec },
+    r.liveBaselineSec, r.v0);
+  ok('editor k === list k', r.rideK != null && Math.abs(editorK - r.rideK) < 1e-9,
+    `editor ${editorK} vs list ${r.rideK}`);
+  // And omitting v0 (the old bug) gives a DIFFERENT k — proves the test bites.
+  const buggyK = rideK(
+    { wfv: 2, rideWindKmh: r.rideWindKmh, actualSec: r.actualTimeSec,
+      baselineRef: r.baselineRef, savedBaselineSec: r.savedBaselineSec },
+    r.liveBaselineSec);
+  ok('omitting v0 would diverge (regression guard)', Math.abs(buggyK - r.rideK) > 1e-6,
+    `buggy ${buggyK} vs list ${r.rideK}`);
+}
+clock = new Date(2026,4,31,21,30).getTime(); // restore
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
