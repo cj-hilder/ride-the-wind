@@ -233,10 +233,41 @@ export function createAppController(deps = {}) {
     r.updatedAt = now();
   }
 
-  // In-memory caches for a session: avoid re-fetching the same station within
-  // a short window. Keyed by rounded lat/lon.
+  // Forecast caches. In memory for the session, and PERSISTED so reopening the
+  // app inside the refresh window makes no network requests at all. This is the
+  // single on-disk copy — the service worker no longer caches Open-Meteo, so
+  // there's one answer to "how old is this forecast?". Keyed by station coords
+  // rounded to 2dp (~1.1 km), which also dedupes nearby routes (a route and its
+  // reverse typically share stations).
   const forecastCache = new Map();
-  const FORECAST_TTL = 30 * 60 * 1000; // 30 min
+  const ensembleCache = new Map();
+  const FORECAST_TTL = 30 * 60 * 1000; // 30 min → refetch when online
+  const FORECAST_CACHE_MAX = 12;       // entries kept per kind (ensembles are big)
+
+  // Rehydrate once, lazily: every fetch path awaits this first, so a reopen sees
+  // the previous session's forecasts (with their true fetch times) before
+  // deciding whether anything needs fetching.
+  let cacheReady = null;
+  function ensureForecastCache() {
+    if (!cacheReady) {
+      cacheReady = (async () => {
+        try {
+          for (const row of await store.loadForecastEntries()) {
+            if (!row || !row.payload || !(row.at > 0)) continue;
+            if (row.kind === "det") forecastCache.set(row.key, { series: row.payload, at: row.at });
+            else if (row.kind === "ens") ensembleCache.set(row.key, { members: row.payload, at: row.at });
+          }
+        } catch { /* no cache → fetch normally */ }
+      })();
+    }
+    return cacheReady;
+  }
+
+  function persistForecast(key, kind, payload, at) {
+    store.saveForecastEntry({ key, kind, payload, at })
+      .then(() => store.pruneForecastEntries(FORECAST_CACHE_MAX))
+      .catch(() => {});
+  }
   // Auto-finish fires only when the rider is within this straight-line distance
   // of the end point (the sole end-detection rule).
   const FINISH_RADIUS_M = 50;
@@ -250,6 +281,7 @@ export function createAppController(deps = {}) {
   const ENSEMBLE_RAIN_PCT = 85;
 
   async function stationSeriesFor(route) {
+    await ensureForecastCache();
     const stations = chooseStations(route);
     // Stations are independent fetches — run them in parallel (a route has only
     // a few). Each still checks/populates the shared TTL cache.
@@ -259,13 +291,23 @@ export function createAppController(deps = {}) {
       if (hit && now() - hit.at < FORECAST_TTL) {
         return { lat: st.lat, lon: st.lon, series: hit.series };
       }
-      const series = await fetchForecastFor(st.lat, st.lon);
-      forecastCache.set(key, { series, at: now() });
-      return { lat: st.lat, lon: st.lon, series };
+      try {
+        const series = await fetchForecastFor(st.lat, st.lon);
+        const at = now();
+        forecastCache.set(key, { series, at });
+        persistForecast(key, "det", series, at);
+        return { lat: st.lat, lon: st.lon, series };
+      } catch (e) {
+        // Offline (or the API is down) but we have an older copy: a stale
+        // forecast beats no forecast. Crucially we do NOT restamp `at`, so the
+        // UI can report the real age instead of claiming it's current — and
+        // seriesCovers still rejects it if it no longer reaches the ride.
+        if (hit) return { lat: st.lat, lon: st.lon, series: hit.series };
+        throw e;
+      }
     }));
   }
 
-  const ensembleCache = new Map();
 
   // Most recent forecast fetch time across this route's stations (for the
   // tech-info panel's "last/next update"). null if none cached yet.
@@ -283,6 +325,7 @@ export function createAppController(deps = {}) {
   // must never block on the ensemble.
   async function ensembleStationsFor(route) {
     try {
+      await ensureForecastCache();
       const stations = chooseStations(route);
       // Independent per-station fetches — run in parallel; each uses the cache.
       return await Promise.all(stations.map(async (st) => {
@@ -291,9 +334,18 @@ export function createAppController(deps = {}) {
         if (hit && now() - hit.at < FORECAST_TTL) {
           return { lat: st.lat, lon: st.lon, members: hit.members };
         }
-        const members = await fetchEnsembleFor(st.lat, st.lon);
-        ensembleCache.set(key, { members, at: now() });
-        return { lat: st.lat, lon: st.lon, members };
+        try {
+          const members = await fetchEnsembleFor(st.lat, st.lon);
+          const at = now();
+          ensembleCache.set(key, { members, at });
+          persistForecast(key, "ens", members, at);
+          return { lat: st.lat, lon: st.lon, members };
+        } catch (e) {
+          // Same offline policy as the deterministic path: reuse the older copy
+          // at its true age rather than losing the spread entirely.
+          if (hit) return { lat: st.lat, lon: st.lon, members: hit.members };
+          throw e;
+        }
       }));
     } catch {
       return null;

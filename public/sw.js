@@ -21,7 +21,9 @@
 // so old shells are purged automatically on activate — no hand-editing.
 const VERSION = (self.__RTW_BUILD_ID__ || "dev");
 const SHELL_CACHE = "rtw-shell-" + VERSION;
-const DATA_CACHE = "rtw-data-v1";
+// Note: the old "rtw-data-v1" forecast cache is retired — forecasts are cached
+// by the app (IndexedDB) now. activate() deletes every cache except the current
+// shell, so any leftover copy is purged automatically.
 
 // Paths are relative to the SW's scope (registered under the Pages subpath),
 // BASE is derived dynamically so the SW works at any path (/ for ridethewind.nz).
@@ -47,7 +49,7 @@ self.addEventListener("activate", (event) => {
     caches.keys().then((keys) =>
       Promise.all(
         keys
-          .filter((k) => k !== SHELL_CACHE && k !== DATA_CACHE)
+          .filter((k) => k !== SHELL_CACHE) // drops the retired forecast cache too
           .map((k) => caches.delete(k))
       )
     ).then(() => self.clients.claim())
@@ -59,11 +61,11 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET") return;
 
-  // Open-Meteo: network-first, fall back to last good forecast.
-  if (url.hostname.endsWith("open-meteo.com")) {
-    event.respondWith(networkFirst(event.request, DATA_CACHE));
-    return;
-  }
+  // Open-Meteo is deliberately NOT cached here. Forecast caching lives in the
+  // app (IndexedDB), where the entry carries its true fetch time — so the app
+  // can skip the network while fresh AND report honest freshness when serving an
+  // older copy offline. A second copy here would duplicate a large payload and
+  // give two conflicting answers to "how old is this forecast?".
 
   if (url.origin === self.location.origin) {
     // The HTML document / SPA navigations: NETWORK-FIRST so a fresh deploy is
@@ -107,20 +109,6 @@ async function networkFirstDoc(request) {
     const cached = await cache.match(BASE + "index.html");
     if (cached) return cached;
     throw new Error("offline and no cached shell");
-  }
-}
-
-// Network-first for forecast data: fresh when online, last-known when not.
-async function networkFirst(request, cacheName) {
-  const cache = await caches.open(cacheName);
-  try {
-    const res = await fetch(request);
-    if (res.ok) cache.put(request, res.clone());
-    return res;
-  } catch {
-    const cached = await cache.match(request);
-    if (cached) return cached; // stale forecast is better than nothing
-    throw new Error("forecast unavailable offline");
   }
 }
 

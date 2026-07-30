@@ -31,10 +31,16 @@ const STORES = {
   // record at a time so a growing trace is never rewritten.
   SESSIONS: "sessions",
   SESSION_FIXES: "sessionFixes",
+  // Persisted forecast cache (v3). The ONE on-disk copy of forecast data —
+  // the service worker no longer caches Open-Meteo, so there is a single
+  // answer to "how old is this forecast?". Entries are kept past their refresh
+  // window on purpose: staleness only means "refetch if online", while an old
+  // entry is still the offline fallback.
+  FORECASTS: "forecastCache",
 };
 
 const DB_NAME = "ride-the-wind";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 // Default k when a direction has no usable setup estimate. Mirrors
 // windModel.DEFAULT_K (0.4; v2 = fraction of forecast wind felt — set from
@@ -114,6 +120,7 @@ export class MemoryBackend {
       [STORES.SETTINGS]: new Map(),
       [STORES.SESSIONS]: new Map(),
       [STORES.SESSION_FIXES]: new Map(),
+      [STORES.FORECASTS]: new Map(),
     };
   }
   async get(store, key) {
@@ -185,6 +192,9 @@ export class IndexedDBBackend {
           db.createObjectStore(STORES.SESSIONS, { keyPath: "id" });
         if (!db.objectStoreNames.contains(STORES.SESSION_FIXES))
           db.createObjectStore(STORES.SESSION_FIXES, { keyPath: "id" });
+        // v3: persisted forecast cache. Additive — no existing data touched.
+        if (!db.objectStoreNames.contains(STORES.FORECASTS))
+          db.createObjectStore(STORES.FORECASTS, { keyPath: "id" });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -575,6 +585,42 @@ export class Store {
   async clearSessions() {
     const all = await this.b.getAll(STORES.SESSIONS);
     for (const s of all) await this.deleteSession(s.id);
+  }
+
+  /* ── Persisted forecast cache ────────────────────────────────────────────
+   * One on-disk copy of forecast data, carrying the REAL fetch time so the app
+   * can report honest freshness ("forecast from 6:15 am") instead of assuming
+   * whatever arrived is current. Entries deliberately outlive their refresh
+   * window: staleness means "refetch if online", and a stale entry is still the
+   * offline fallback. Pruning is by capacity, not age. */
+
+  /** Store one station's payload. kind is "det" (deterministic) or "ens". */
+  saveForecastEntry({ key, kind, payload, at }) {
+    return this.b.put(STORES.FORECASTS, { id: `${kind}:${key}`, key, kind, payload, at });
+  }
+
+  /** Every cached entry, for rehydrating the in-memory caches at startup. */
+  loadForecastEntries() {
+    return this.b.getAll(STORES.FORECASTS);
+  }
+
+  /**
+   * Keep the newest `max` entries per kind, dropping the oldest beyond that.
+   * Ensemble payloads are large, so this bounds storage without ever discarding
+   * an entry we might still need as an offline fallback for a current route.
+   */
+  async pruneForecastEntries(max = 12) {
+    const all = await this.b.getAll(STORES.FORECASTS);
+    for (const kind of ["det", "ens"]) {
+      const rows = all.filter((r) => r.kind === kind).sort((a, b) => (b.at || 0) - (a.at || 0));
+      for (const doomed of rows.slice(max)) await this.b.delete(STORES.FORECASTS, doomed.id);
+    }
+  }
+
+  /** Drop the whole forecast cache (used by the data-reset path). */
+  async clearForecastEntries() {
+    const all = await this.b.getAll(STORES.FORECASTS);
+    for (const r of all) await this.b.delete(STORES.FORECASTS, r.id);
   }
 
   async updateRide(id, patch) {
