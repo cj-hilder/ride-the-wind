@@ -242,7 +242,15 @@ export function createAppController(deps = {}) {
   const forecastCache = new Map();
   const ensembleCache = new Map();
   const FORECAST_TTL = 30 * 60 * 1000; // 30 min → refetch when online
-  const FORECAST_CACHE_MAX = 12;       // entries kept per kind (ensembles are big)
+  // Retention. The cap must never evict stations that are still in use: a user
+  // with N routes has roughly N–4N station keys, so a tight cap silently turned
+  // the cache into a no-op for anyone with more routes than the cap (it only
+  // looked like it worked with few routes). Retention is therefore driven by AGE
+  // — an entry too old to be a sensible fallback — with a generous capacity
+  // backstop, and pruning runs ONCE per session rather than after every save
+  // (which churned storage and evicted as it went).
+  const FORECAST_KEEP_MS = 48 * 60 * 60 * 1000; // older than this is not a useful fallback
+  const FORECAST_CACHE_MAX = 200;               // backstop only, far above any real working set
 
   // Rehydrate once, lazily: every fetch path awaits this first, so a reopen sees
   // the previous session's forecasts (with their true fetch times) before
@@ -254,9 +262,14 @@ export function createAppController(deps = {}) {
         try {
           for (const row of await store.loadForecastEntries()) {
             if (!row || !row.payload || !(row.at > 0)) continue;
+            // Skip entries too old to be a useful offline fallback; the one-off
+            // prune below removes them from storage.
+            if (now() - row.at > FORECAST_KEEP_MS) continue;
             if (row.kind === "det") forecastCache.set(row.key, { series: row.payload, at: row.at });
             else if (row.kind === "ens") ensembleCache.set(row.key, { members: row.payload, at: row.at });
           }
+          // Once per session, not per save.
+          store.pruneForecastEntries(FORECAST_CACHE_MAX, FORECAST_KEEP_MS, now()).catch(() => {});
         } catch { /* no cache → fetch normally */ }
       })();
     }
@@ -264,9 +277,7 @@ export function createAppController(deps = {}) {
   }
 
   function persistForecast(key, kind, payload, at) {
-    store.saveForecastEntry({ key, kind, payload, at })
-      .then(() => store.pruneForecastEntries(FORECAST_CACHE_MAX))
-      .catch(() => {});
+    store.saveForecastEntry({ key, kind, payload, at }).catch(() => {});
   }
   // Auto-finish fires only when the rider is within this straight-line distance
   // of the end point (the sole end-detection rule).

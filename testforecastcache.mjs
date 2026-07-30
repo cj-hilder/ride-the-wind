@@ -106,6 +106,41 @@ console.log('\nOffline with no cache at all fails rather than inventing data:');
   ok('no cache + offline surfaces the failure', threw);
 }
 
+console.log('\nMany routes: the working set must survive a restart (regression):');
+{
+  // REGRESSION: the cache cap was smaller than the number of stations in use, so
+  // a user with more routes than the cap re-fetched everything on every open —
+  // it only appeared to work with few routes. The cap must never evict stations
+  // that are still in use.
+  const b3 = new MemoryBackend();
+  let calls = 0;
+  const mk = () => createAppController({
+    backend: b3,
+    fetchForecastFor: async () => { calls++; return mkSeries(); },
+    fetchEnsembleFor: async () => { calls++; return [mkSeries()]; },
+    now: () => clock, domParser: new DOMParser(),
+  });
+  const appA = mk();
+  const ids = [];
+  for (let i = 0; i < 13; i++) {
+    // Distinct locations so each route gets its own station key.
+    let p2 = '';
+    for (let j = 0; j <= 40; j++) p2 += `<trkpt lat="${(i * 0.5).toFixed(4)}" lon="${(j * 0.001).toFixed(5)}"><ele>10</ele></trkpt>`;
+    const g = `<?xml version="1.0"?><gpx><trk><trkseg>${p2}</trkseg></trk></gpx>`;
+    const r = await appA.createRoute(g, { name: 'R' + i, seedStillAirSec: 1200, targetArrival: '09:00', timeMode: 'arrive', activeDays: ['MO'] });
+    ids.push(r.id);
+  }
+  for (const id of ids) await appA.getHomeVerdict(id, clock);
+  const keys = new Set((await new Store({ backend: b3, learning }).loadForecastEntries()).filter(r => r.kind === 'det').map(r => r.key));
+  ok('all 13 stations persisted (none evicted)', keys.size === 13, `${keys.size} keys kept`);
+
+  clock += 5 * 60 * 1000; // still inside the refresh window
+  calls = 0;
+  const appB = mk(); // restart
+  for (const id of ids) await appB.getHomeVerdict(id, clock);
+  ok('restart with 13 routes makes no requests', calls === 0, `${calls} calls`);
+}
+
 console.log('\nPruning bounds storage without losing recent entries:');
 {
   const b2 = new MemoryBackend();
@@ -123,6 +158,21 @@ console.log('\nPruning bounds storage without losing recent entries:');
   ok('kept the NEWEST entries', Math.min(...det.map((r) => r.at)) === 1000 + 8, `${Math.min(...det.map(r=>r.at))}`);
   await s2.clearForecastEntries();
   ok('clear empties the cache', (await s2.loadForecastEntries()).length === 0);
+
+  // Age is the PRIMARY retention rule: entries too old to be a useful fallback
+  // go, regardless of how few there are, while recent ones survive a big cap.
+  const t0 = 1_700_000_000_000; // realistic epoch (a small t0 made `at` negative)
+  await s2.saveForecastEntry({ key: 'old', kind: 'det', payload: [{ time: 1 }], at: t0 - 72 * 3600 * 1000 });
+  await s2.saveForecastEntry({ key: 'new', kind: 'det', payload: [{ time: 2 }], at: t0 - 60 * 1000 });
+  await s2.pruneForecastEntries(200, 48 * 3600 * 1000, t0);
+  const left = (await s2.loadForecastEntries()).map((r) => r.key);
+  ok('aged-out entry dropped', !left.includes('old'), left.join(','));
+  ok('recent entry retained', left.includes('new'), left.join(','));
+  // Entries with no usable timestamp are dead weight — rehydrate skips them, so
+  // prune must be what clears them.
+  await s2.saveForecastEntry({ key: 'undated', kind: 'det', payload: [{ time: 3 }], at: 0 });
+  await s2.pruneForecastEntries(200, 48 * 3600 * 1000, t0);
+  ok('undated entry dropped', !(await s2.loadForecastEntries()).some((r) => r.key === 'undated'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

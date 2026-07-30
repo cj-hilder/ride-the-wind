@@ -605,14 +605,25 @@ export class Store {
   }
 
   /**
-   * Keep the newest `max` entries per kind, dropping the oldest beyond that.
-   * Ensemble payloads are large, so this bounds storage without ever discarding
-   * an entry we might still need as an offline fallback for a current route.
+   * Retention: drop entries older than `keepMs` (too old to be a sensible
+   * offline fallback), then apply `max` per kind purely as a backstop. Age is the
+   * primary rule on purpose — a capacity cap below the number of stations in use
+   * silently defeats the cache, because every open evicts entries another route
+   * still needs.
    */
-  async pruneForecastEntries(max = 12) {
+  async pruneForecastEntries(max = 200, keepMs = null, nowMs = Date.now()) {
     const all = await this.b.getAll(STORES.FORECASTS);
+    const survivors = [];
+    for (const r of all) {
+      // No usable timestamp → rehydrate skips it, so nothing else would ever
+      // remove it. Treat as dead weight.
+      const undated = !(r.at > 0);
+      const tooOld = keepMs != null && r.at > 0 && (nowMs - r.at) > keepMs;
+      if (undated || tooOld) await this.b.delete(STORES.FORECASTS, r.id);
+      else survivors.push(r);
+    }
     for (const kind of ["det", "ens"]) {
-      const rows = all.filter((r) => r.kind === kind).sort((a, b) => (b.at || 0) - (a.at || 0));
+      const rows = survivors.filter((r) => r.kind === kind).sort((a, b) => (b.at || 0) - (a.at || 0));
       for (const doomed of rows.slice(max)) await this.b.delete(STORES.FORECASTS, doomed.id);
     }
   }
