@@ -1328,6 +1328,9 @@ export function createAppController(deps = {}) {
     const startedAt = now();
     const trace = [];
     let prev = null, paused = false, pauseStartedAt = null, totalPausedMs = 0;
+    // Last elapsed value emitted while running — replayed verbatim in paused
+    // ticks so the caller's clock/readouts cannot drift during a pause.
+    let lastElapsedSec = 0;
 
     const watchId = geoApi.watchPosition(
       (pos) => {
@@ -1336,27 +1339,41 @@ export function createAppController(deps = {}) {
           accuracyM: (typeof pos.coords.accuracy === "number" && pos.coords.accuracy >= 0) ? pos.coords.accuracy : null,
           gpsSpeedMps: (typeof pos.coords.speed === "number" && pos.coords.speed >= 0) ? pos.coords.speed : null,
           speedAccMps: (typeof pos.coords.speedAccuracy === "number" && pos.coords.speedAccuracy >= 0) ? pos.coords.speedAccuracy : null };
-        if (paused) { prev = fix; return; }
-        trace.push(fix);
+        // Speed fields for this fix, computed the same way whether or not we're
+        // paused. Speed dt from GPS fix timestamps (see startRide for rationale);
+        // fall back to the app clock if gpsT missing/implausible.
+        let speedFields = null;
         if (prev && onTick) {
           const moved = haversineLocal(prev.lat, prev.lon, fix.lat, fix.lon);
-          // Speed dt from GPS fix timestamps (see startRide for rationale); fall
-          // back to the app clock if gpsT missing/implausible.
           const appDt = (fix.t - prev.t) / 1000;
           let dt = appDt;
           if (fix.gpsT != null && prev.gpsT != null) {
             const gdt = (fix.gpsT - prev.gpsT) / 1000;
             if (gdt > 0 && gdt < 3600) dt = gdt; // plausible GPS interval; batched delivery makes gdt < appDt (the case we fix)
           }
-          onTick({
-            elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000,
-            distanceM: traceDistance(trace),
+          speedFields = {
             speedMps: dt > 0 ? moved / dt : 0,
             gpsSpeedMps: fix.gpsSpeedMps, // device Doppler speed if available (m/s) — preferred needle source
             speedAccMps: fix.speedAccMps, // device speed accuracy (m/s), for Doppler-appropriate τ
             fixT: fix.gpsT ?? fix.t,
             accuracyM: fix.accuracyM,
-          });
+          };
+        }
+        if (paused) {
+          // PAUSED: feed the speedometer only. The fix is NOT appended to the
+          // trace, so the recorded route is untouched, and elapsed/distance are
+          // replayed frozen so nothing else can advance. Marked paused so
+          // consumers can skip any non-needle work.
+          if (speedFields) {
+            onTick({ ...speedFields, paused: true, elapsedSec: lastElapsedSec, distanceM: traceDistance(trace) });
+          }
+          prev = fix;
+          return;
+        }
+        trace.push(fix);
+        if (speedFields) {
+          lastElapsedSec = (fix.t - startedAt - totalPausedMs) / 1000;
+          onTick({ ...speedFields, elapsedSec: lastElapsedSec, distanceM: traceDistance(trace) });
         }
         prev = fix;
       },
@@ -1621,6 +1638,9 @@ export function createAppController(deps = {}) {
     let paused = false;
     let pauseStartedAt = null;
     let totalPausedMs = 0;
+    // Last elapsed emitted while running — replayed verbatim in paused ticks so
+    // the caller's clock cannot advance while the needle stays live.
+    let lastElapsedSec = 0;
 
     const watchId = geoApi.watchPosition(
       (pos) => {
@@ -1630,8 +1650,34 @@ export function createAppController(deps = {}) {
           speedAccMps: (typeof pos.coords.speedAccuracy === "number" && pos.coords.speedAccuracy >= 0) ? pos.coords.speedAccuracy : null,
           accuracyM: (typeof pos.coords.accuracy === "number" && pos.coords.accuracy >= 0) ? pos.coords.accuracy : null };
         // While paused, ignore movement entirely — no distance, no finish
-        // detection, no trace growth, and the clock is held.
-        if (paused) { prev = fix; return; }
+        // detection, no trace growth, and the clock is held. The ONE exception is
+        // the speedometer: we still emit the live speed fields (marked paused,
+        // with elapsed/distance replayed frozen and NO lat/lon or
+        // distanceToEndM) so the needle keeps working without feeding progress,
+        // pace, route projection, or arrival detection.
+        if (paused) {
+          if (prev && onTick) {
+            const moved = haversineLocal(prev.lat, prev.lon, fix.lat, fix.lon);
+            const appDt = (fix.t - prev.t) / 1000;
+            let dt = appDt;
+            if (fix.gpsT != null && prev.gpsT != null) {
+              const gdt = (fix.gpsT - prev.gpsT) / 1000;
+              if (gdt > 0 && gdt < 3600) dt = gdt;
+            }
+            onTick({
+              paused: true,
+              elapsedSec: lastElapsedSec,
+              distanceM: traceDistance(trace),
+              speedMps: dt > 0 ? moved / dt : 0,
+              fixT: fix.gpsT ?? fix.t,
+              gpsSpeedMps: fix.gpsSpeedMps,
+              speedAccMps: fix.speedAccMps,
+              accuracyM: fix.accuracyM,
+            });
+          }
+          prev = fix;
+          return;
+        }
         if (prev) {
           // distance accrual
           const moved = haversineLocal(prev.lat, prev.lon, fix.lat, fix.lon);
@@ -1674,8 +1720,9 @@ export function createAppController(deps = {}) {
               if (gdt > 0 && gdt < 3600) dt = gdt;
             }
             const speedMps = dt > 0 ? moved / dt : 0;
+            lastElapsedSec = (fix.t - startedAt - totalPausedMs) / 1000;
             onTick({
-              elapsedSec: (fix.t - startedAt - totalPausedMs) / 1000,
+              elapsedSec: lastElapsedSec,
               distanceM: traceDistance(trace),
               speedMps,                 // this-fix derived speed over the GPS interval; UI smooths
               fixT: fix.gpsT ?? fix.t,  // GPS fix timestamp for the EMA dt (falls back to app clock)

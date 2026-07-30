@@ -238,6 +238,11 @@ export default function App() {
   const [activeRouteId, setActiveRouteId] = useState(null);
   const activeRouteIdRef = useRef(null);
   useEffect(() => { activeRouteIdRef.current = activeRouteId; }, [activeRouteId]);
+  // Remember the open route across app restarts (see refresh(), which prefers it).
+  useEffect(() => {
+    if (!activeRouteId) return;
+    controller.store.setSetting("lastOpenedRouteId", activeRouteId).catch(() => {});
+  }, [controller, activeRouteId]);
   const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [displayUnits, setDisplayUnits] = useState(DEFAULT_UNITS);
@@ -335,7 +340,19 @@ export default function App() {
       // restart.
       const cur = activeRouteIdRef.current;
       const stillPresent = cur && list.some((r) => r.route.id === cur);
-      if (!stillPresent && list[0]) setActiveRouteId(list[0].route.id);
+      if (!stillPresent && list[0]) {
+        // Prefer the route the user last had open (persisted across app restarts),
+        // so accidentally closing and reopening doesn't dump you on the first
+        // route. Only consulted when there's no valid current selection — i.e.
+        // first load, or the selected route was deleted (in which case the
+        // remembered id won't match either and we fall back to the first).
+        let pick = list[0].route.id;
+        try {
+          const remembered = await controller.store.getSetting("lastOpenedRouteId", null);
+          if (remembered && list.some((r) => r.route.id === remembered)) pick = remembered;
+        } catch { /* settings unavailable → first route */ }
+        setActiveRouteId(pick);
+      }
       // Signal the Plan tab to recompute the displayed ride against fresh data,
       // preserving its day/route/explored-time selection.
       setForecastGen((g) => g + 1);
@@ -2936,16 +2953,29 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     }).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
     acquireWake();
     const handle = await controller.startRide(route, {
-      onTick: ({ elapsedSec, distanceM, speedMps, gpsSpeedMps, speedAccMps, fixT, accuracyM, lat, lon }) => {
+      onTick: ({ elapsedSec, distanceM, speedMps, gpsSpeedMps, speedAccMps, fixT, accuracyM, lat, lon, paused: tickPaused }) => {
         setElapsed(elapsedSec);
         setGpsError(null); // a fix arrived → clear any prior error (no-op if already null)
         const em = emaRef.current;
         const goodFix = accuracyM == null || accuracyM <= GPS_ACCURACY_GATE_M;
 
         // Project the fix onto the route for progress + pace (gap-immune).
-        let proj = { alongM: em.lastAlongM || 0, offRoute: true };
-        if (goodFix && lat != null && em.polyline.length >= 2) {
-          proj = projectToRoute({ lat, lon }, em.polyline, em.lastAlongM);
+        // PAUSED ticks deliberately carry no position (they exist only to keep the
+        // speedometer live), so hold the last projection: progress, the off-route
+        // indicator and pace all freeze while the needle keeps moving.
+        let proj;
+        if (tickPaused) {
+          // Default false (not true) to match `live`'s initial state: pausing
+          // before the first projected fix must not flip the display to
+          // off-route, which would null the arrival marker.
+          proj = { alongM: em.lastAlongM || 0, offRoute: em.lastOffRoute ?? false, offRouteM: em.lastOffRouteM ?? 0 };
+        } else {
+          proj = { alongM: em.lastAlongM || 0, offRoute: true };
+          if (goodFix && lat != null && em.polyline.length >= 2) {
+            proj = projectToRoute({ lat, lon }, em.polyline, em.lastAlongM);
+          }
+          em.lastOffRoute = proj.offRoute;
+          em.lastOffRouteM = proj.offRouteM;
         }
 
         if (em.lastFixT != null) {
@@ -3003,7 +3033,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
           // distance. This makes arrival mildly optimistic by however long the
           // rider is actually stopped (unforeseeable), which is the honest stance —
           // we have no better guess at future stops than none.
-          if (dt > 0 && goodFix) {
+          if (dt > 0 && goodFix && !tickPaused) {
             const instMps = Math.max(0, Math.min(SPEED_SANE_MAX_MPS, speedMps || 0));
             if (instMps >= PACE_MOVING_MIN_MPS) {
               // Accrue moving distance/time (used only to gate the early forecast
@@ -3024,7 +3054,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
 
         const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
         if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; em.lastSpeedAccM = speedAccMps; }
-        if (goodFix && !proj.offRoute) em.lastAlongM = proj.alongM;
+        if (goodFix && !proj.offRoute && !tickPaused) em.lastAlongM = proj.alongM;
         // "GPS initialising" readout during warm-up: best (lowest) accuracy so far,
         // 8/best×100 → approaches 100 as fixes sharpen; monotonic.
         if (accuracyM != null && (em.bestAccM == null || accuracyM < em.bestAccM)) em.bestAccM = accuracyM;

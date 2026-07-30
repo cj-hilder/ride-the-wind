@@ -583,5 +583,77 @@ console.log('\nRide editor k matches the list k (same curve v0):');
 }
 clock = new Date(2026,4,31,21,30).getTime(); // restore
 
+console.log('\nPause keeps the speedometer live without feeding anything else:');
+{
+  const pApp = mkApp(stubForecast(90, 20));
+  const dLon = 5 / 111320; // ~5 m spacing
+
+  // --- Route recording (new route) ---
+  {
+    let cb = null;
+    const geo = { watchPosition: (s) => { cb = s; return 11; }, clearWatch: () => {} };
+    const ticks = [];
+    const h = await pApp.recordRoute({ geo, onTick: (t) => ticks.push(t) });
+    let i = 0;
+    const emit = () => { clock += 1000; cb({ coords: { latitude: 0, longitude: (i++) * dLon, accuracy: 5, speed: 5 } }); };
+    emit(); emit(); emit();                       // running
+    const runTicks = ticks.length;
+    const lastRun = ticks[ticks.length - 1];
+    h.pause();
+    emit(); emit();                                // paused — should still tick
+    const pausedTicks = ticks.filter((t) => t.paused);
+    ok('route: paused fixes still emit ticks', pausedTicks.length === 2, `${pausedTicks.length}`);
+    ok('route: paused ticks carry live speed', pausedTicks.every((t) => t.gpsSpeedMps === 5), JSON.stringify(pausedTicks.map(t=>t.gpsSpeedMps)));
+    ok('route: paused ticks freeze elapsed', pausedTicks.every((t) => t.elapsedSec === lastRun.elapsedSec), `${pausedTicks.map(t=>t.elapsedSec)} vs ${lastRun.elapsedSec}`);
+    ok('route: paused ticks freeze distance', pausedTicks.every((t) => t.distanceM === lastRun.distanceM), `${pausedTicks.map(t=>t.distanceM)} vs ${lastRun.distanceM}`);
+    h.resume();
+    emit();
+    let rec = null; h.onFinish((r) => { rec = r; }); h.manualFinish();
+    // The two paused fixes must NOT be in the recorded trace.
+    ok('route: paused fixes excluded from the trace', rec && rec.trace.length === runTicks + 2,
+      `trace ${rec && rec.trace.length}, expected ${runTicks + 2}`);
+    ok('route: ticks resumed after resume', ticks.some((t) => !t.paused && t.elapsedSec > lastRun.elapsedSec));
+  }
+
+  // --- Ride recording (existing route), incl. no auto-finish while paused ---
+  {
+    const er = route.endRegion;
+    let cb = null;
+    const geo = { watchPosition: (s) => { cb = s; return 12; }, clearWatch: () => {} };
+    const ticks = []; let finished = false, arrived = false;
+    const rh = await pApp.startRide(route, {
+      geo, onTick: (t) => ticks.push(t),
+      onFinish: () => { finished = true; }, onArrived: () => { arrived = true; },
+    });
+    const emitAt = (lat, lon) => { clock += 1000; cb({ coords: { latitude: lat, longitude: lon, accuracy: 5, speed: 6 } }); };
+    // Move away from the start so the ride arms.
+    for (let i = 0; i < 60; i++) emitAt(0, i * dLon);
+    const lastRun = ticks[ticks.length - 1];
+    ok('ride: running ticks are unmarked', lastRun != null && !lastRun.paused);
+
+    rh.pause();
+    // Emit fixes sitting INSIDE the end region while paused. This must not
+    // finish the ride, must not advance progress, and must not leak a position.
+    emitAt(er.lat, er.lon); emitAt(er.lat, er.lon);
+    const pausedTicks = ticks.filter((t) => t.paused);
+    ok('ride: paused fixes still emit ticks', pausedTicks.length === 2, `${pausedTicks.length}`);
+    ok('ride: paused ticks carry live speed', pausedTicks.every((t) => t.gpsSpeedMps === 6));
+    ok('ride: paused ticks freeze elapsed', pausedTicks.every((t) => t.elapsedSec === lastRun.elapsedSec),
+      `${pausedTicks.map(t=>t.elapsedSec)} vs ${lastRun.elapsedSec}`);
+    ok('ride: paused ticks freeze distance', pausedTicks.every((t) => t.distanceM === lastRun.distanceM),
+      `${pausedTicks.map(t=>t.distanceM)} vs ${lastRun.distanceM}`);
+    ok('ride: paused ticks carry NO position (no projection possible)',
+      pausedTicks.every((t) => t.lat == null && t.lon == null && t.distanceToEndM == null));
+    ok('ride: no auto-finish while paused inside the end region', !finished && !arrived,
+      `finished=${finished} arrived=${arrived}`);
+
+    rh.resume();
+    emitAt(0, 61 * dLon);
+    ok('ride: ticks resume unmarked after resume',
+      ticks[ticks.length - 1] && !ticks[ticks.length - 1].paused);
+  }
+}
+clock = new Date(2026,4,31,21,30).getTime(); // restore
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

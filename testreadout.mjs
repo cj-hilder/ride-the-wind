@@ -185,4 +185,21 @@ console.log('\nneedleTauMs (adaptive needle smoothing from GPS accuracy):');
   ok('0.5 m does not beat 2.5 m (no over-trust)', needleTauMs(0.5, 0.5) >= needleTauMs(2.5, 2.5));
 }
 
+console.log('\nArrival while PAUSED (progress + pace frozen, wall clock advancing):');
+{
+  // During a pause the recorder freezes progress and pace but the dial clock
+  // keeps ticking, so the predicted arrival must keep sliding later — a stopped
+  // rider's arrival genuinely slips. Guards the pause-speedometer change: if a
+  // paused tick ever advanced progress/pace, arrival would stop tracking wall time.
+  const t0 = 1700000000000;
+  const frozen = (nowMs) => expectedArrivalMs({
+    nowMs, estDistanceM: 3000, routeTotalM: 5000, paceMps: 5,
+    forecastRemainingSec: 1200, baselineRemainingSec: 1200,
+  });
+  const a0 = frozen(t0), a30 = frozen(t0 + 30000), a90 = frozen(t0 + 90000);
+  ok('arrival slips 1s per 1s while stopped', a30 - a0 === 30000, `${a30 - a0}`);
+  ok('arrival keeps slipping over a longer pause', a90 - a0 === 90000, `${a90 - a0}`);
+  ok('arrival remains in the future during a pause', a90 > t0 + 90000, `${a90} vs ${t0 + 90000}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
