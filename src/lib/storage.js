@@ -26,10 +26,15 @@ const STORES = {
   RIDES: "rides",
   MODEL: "modelState",
   SETTINGS: "settings",
+  // In-progress recording recovery (see recording-recovery-spec.md). At most one
+  // session exists at a time. Fixes live in their own store, appended one small
+  // record at a time so a growing trace is never rewritten.
+  SESSIONS: "sessions",
+  SESSION_FIXES: "sessionFixes",
 };
 
 const DB_NAME = "ride-the-wind";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 // Default k when a direction has no usable setup estimate. Mirrors
 // windModel.DEFAULT_K (0.4; v2 = fraction of forecast wind felt — set from
@@ -107,6 +112,8 @@ export class MemoryBackend {
       [STORES.RIDES]: new Map(),
       [STORES.MODEL]: new Map(),
       [STORES.SETTINGS]: new Map(),
+      [STORES.SESSIONS]: new Map(),
+      [STORES.SESSION_FIXES]: new Map(),
     };
   }
   async get(store, key) {
@@ -172,6 +179,12 @@ export class IndexedDBBackend {
           db.createObjectStore(STORES.MODEL, { keyPath: "routeId" });
         if (!db.objectStoreNames.contains(STORES.SETTINGS))
           db.createObjectStore(STORES.SETTINGS); // out-of-line keys
+        // v2: interrupted-recording recovery. Additive only — existing stores and
+        // their data are untouched, so upgrading can't lose routes or rides.
+        if (!db.objectStoreNames.contains(STORES.SESSIONS))
+          db.createObjectStore(STORES.SESSIONS, { keyPath: "id" });
+        if (!db.objectStoreNames.contains(STORES.SESSION_FIXES))
+          db.createObjectStore(STORES.SESSION_FIXES, { keyPath: "id" });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -518,6 +531,52 @@ export class Store {
    * Patch a single ride (editor: duration edit, include/exclude toggle,
    * current/historic switch). Only whitelisted fields are writable.
    */
+  /* ── Interrupted-recording recovery ──────────────────────────────────────
+   * At most ONE in-progress session exists at a time. The header carries timing
+   * and flags; fixes are appended individually so a long trace is never
+   * rewritten. See recording-recovery-spec.md. */
+
+  /** Write (or overwrite) the session header. Throttled by the caller. */
+  saveSession(header) {
+    return this.b.put(STORES.SESSIONS, { ...header, updatedAt: header.updatedAt ?? Date.now() });
+  }
+
+  /** Append one fix. Keyed `${sessionId}:${seq}` so writes never collide or
+   * rewrite earlier fixes. seq is zero-padded so a plain sort is chronological. */
+  appendSessionFix(sessionId, seq, fix) {
+    const id = `${sessionId}:${String(seq).padStart(9, "0")}`;
+    return this.b.put(STORES.SESSION_FIXES, { id, sessionId, seq, fix });
+  }
+
+  /** The current session header, or null. */
+  async loadSession() {
+    const all = await this.b.getAll(STORES.SESSIONS);
+    if (!all.length) return null;
+    // Only one is expected; if several somehow exist, the newest wins.
+    return all.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+  }
+
+  /** All fixes for a session, in order. */
+  async loadSessionFixes(sessionId) {
+    const all = await this.b.getAll(STORES.SESSION_FIXES);
+    return all
+      .filter((r) => r.sessionId === sessionId)
+      .sort((a, b) => a.seq - b.seq)
+      .map((r) => r.fix);
+  }
+
+  /** Remove a session and every fix belonging to it. */
+  async deleteSession(sessionId) {
+    await this.b.delete(STORES.SESSIONS, sessionId);
+    await this.b.deleteWhere(STORES.SESSION_FIXES, (r) => r.sessionId === sessionId);
+  }
+
+  /** Drop every session (used on discard-all / defensive cleanup). */
+  async clearSessions() {
+    const all = await this.b.getAll(STORES.SESSIONS);
+    for (const s of all) await this.deleteSession(s.id);
+  }
+
   async updateRide(id, patch) {
     const ride = await this.b.get(STORES.RIDES, id);
     if (!ride) throw new Error(`No ride ${id}`);

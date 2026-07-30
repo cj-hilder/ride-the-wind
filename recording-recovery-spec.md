@@ -1,8 +1,8 @@
-# Interrupted recording recovery (SPEC — for review, NOT yet built)
+# Interrupted recording recovery (SPEC — BUILT in 1.6.0)
 
-Status: drafted for Chris. Target: 1.7.0. This touches the RECORDING path, which
-cannot be bundle-tested in the build environment — so it wants careful review and
-device testing before release.
+Status: BUILT. Engine covered by 36 tests in `testrecovery.mjs` (868 total).
+The launch modal is wired but, like all UI here, is not bundle-testable — device
+check needed. This touches the RECORDING path, so test on device before release.
 
 ## Problem
 
@@ -168,13 +168,8 @@ Controller-level (the recorders are already tested with a stubbed `geo`):
    backgrounded mid-way, which already happens — so it gets the same treatment.
    The existing large-gap warning (>500 m, warn not block) is the mechanism, and
    the user checks the map. No resumed-specific handling.
-
-## Open question for Chris
-
-**Prompt on relaunch, or on entering the Ride tab?** A modal at launch is
-unmissable but intrudes if the user opened the app only to check a forecast.
-Alternative: a persistent banner on the Ride tab. I lean launch prompt, since an
-unfinished recording is time-critical — but it's the one placement decision left.
+3. **Launch modal** (not a Ride-tab banner) — an unfinished recording is
+   time-critical, so it must be unmissable. Discard requires a second confirm.
 
 ## Estimated size
 

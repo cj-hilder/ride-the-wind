@@ -1322,15 +1322,127 @@ export function createAppController(deps = {}) {
    * with manualFinish(). Pause is supported (excluded from actualSec). The trace
    * is kept RAW here; denoising/gating happens at route construction.
    */
-  async function recordRoute({ onTick, onError, geo } = {}) {
+  /**
+   * Interrupted-recording recovery: persists an in-progress recording so an app
+   * kill (swipe-away, OS reclaim, crash, reload) doesn't destroy it. Fixes are
+   * appended one small record at a time; the header (timing + flags) is written
+   * on a throttle plus on page-hide, which is the last reliable hook before a
+   * kill. See recording-recovery-spec.md.
+   */
+  const SESSION_HEADER_THROTTLE_MS = 5000;
+  const SESSION_STALE_MS = 12 * 60 * 60 * 1000; // 12 h → discard without prompting
+
+  function makeSessionRecorder(id, base) {
+    let seq = 0;
+    let lastHeaderWrite = 0;
+    let latest = { ...base, id };
+    let detach = null;
+    // Flush on page-hide/visibility-hidden: the last chance to persist before an
+    // OS kill. Both events are used because coverage differs across browsers.
+    if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+      const flush = () => { store.saveSession({ ...latest, updatedAt: now() }).catch(() => {}); };
+      const onVis = () => { if (document.visibilityState === "hidden") flush(); };
+      document.addEventListener("visibilitychange", onVis);
+      document.addEventListener("pagehide", flush);
+      detach = () => {
+        document.removeEventListener("visibilitychange", onVis);
+        document.removeEventListener("pagehide", flush);
+      };
+    }
+    return {
+      id,
+      /** Seed the initial header (and adopt a resumed seq offset). */
+      async init(startSeq = 0) {
+        seq = startSeq;
+        lastHeaderWrite = now();
+        await store.saveSession({ ...latest, updatedAt: now() }).catch(() => {});
+      },
+      /** Persist one fix, and the header if the throttle has elapsed. */
+      fix(f, header) {
+        latest = { ...latest, ...header };
+        store.appendSessionFix(id, seq++, f).catch(() => {});
+        if (now() - lastHeaderWrite >= SESSION_HEADER_THROTTLE_MS) {
+          lastHeaderWrite = now();
+          store.saveSession({ ...latest, updatedAt: now() }).catch(() => {});
+        }
+      },
+      /** Persist header immediately (pause/resume — cheap and state-critical). */
+      mark(header) {
+        latest = { ...latest, ...header };
+        lastHeaderWrite = now();
+        store.saveSession({ ...latest, updatedAt: now() }).catch(() => {});
+      },
+      /** Recording ended (finished or discarded): drop the session entirely. */
+      async done() {
+        if (detach) detach();
+        await store.deleteSession(id).catch(() => {});
+      },
+    };
+  }
+
+  /**
+   * Look for a recording that can be resumed. Returns a summary for the launch
+   * prompt, or null. Sessions older than SESSION_STALE_MS are discarded silently
+   * — resuming yesterday's ride would produce a nonsense ride time.
+   */
+  async function findResumableSession() {
+    const s = await store.loadSession().catch(() => null);
+    if (!s) return null;
+    if (!s.updatedAt || now() - s.updatedAt > SESSION_STALE_MS) {
+      await store.deleteSession(s.id).catch(() => {});
+      return null;
+    }
+    const fixes = await store.loadSessionFixes(s.id).catch(() => []);
+    const route = s.routeId ? await store.getRoute(s.routeId).catch(() => null) : null;
+    // A ride session whose route has since been deleted can't be resumed.
+    if (s.kind === "ride" && !route) {
+      await store.deleteSession(s.id).catch(() => {});
+      return null;
+    }
+    // Elapsed so far, excluding COMPLETED pauses. The closed-app gap is included
+    // when the rider was recording, and excluded when they were paused (the pause
+    // stays open across the gap) — per the spec's gap policy.
+    const openPauseMs = s.pausedAt ? (now() - s.pausedAt) : 0;
+    return {
+      session: s,
+      kind: s.kind,
+      route,
+      routeName: route ? route.name : null,
+      fixCount: fixes.length,
+      paused: !!s.pausedAt,
+      elapsedSec: Math.max(0, (now() - s.startedAt - (s.totalPausedMs || 0) - openPauseMs) / 1000),
+    };
+  }
+
+  /** Discard a resumable recording (the prompt's Discard path). */
+  async function discardSession(sessionId) {
+    await store.deleteSession(sessionId).catch(() => {});
+  }
+
+  async function recordRoute({ onTick, onError, geo, resumeSession = null } = {}) {
     const geoApi = geo || (typeof navigator !== "undefined" ? navigator.geolocation : null);
     if (!geoApi) throw new Error("Geolocation unavailable.");
-    const startedAt = now();
-    const trace = [];
-    let prev = null, paused = false, pauseStartedAt = null, totalPausedMs = 0;
+    // RESUME: restore timing, trace and pause state from the persisted session.
+    // A resumed recording keeps its original startedAt, so the closed-app span
+    // counts as recording time, and the next fix simply joins to the last one —
+    // leaving the straight line in the track, per the spec. The existing
+    // large-gap warning at validation is how the user judges it.
+    const resumed = resumeSession || null;
+    const priorFixes = resumed ? await store.loadSessionFixes(resumed.id).catch(() => []) : [];
+    const startedAt = resumed ? resumed.startedAt : now();
+    const trace = priorFixes.slice();
+    let prev = trace.length ? trace[trace.length - 1] : null;
+    let paused = resumed ? !!resumed.pausedAt : false;
+    let pauseStartedAt = resumed && resumed.pausedAt ? resumed.pausedAt : null;
+    let totalPausedMs = resumed ? (resumed.totalPausedMs || 0) : 0;
     // Last elapsed value emitted while running — replayed verbatim in paused
     // ticks so the caller's clock/readouts cannot drift during a pause.
     let lastElapsedSec = 0;
+
+    const sessionId = resumed ? resumed.id : `rec-${startedAt}-${Math.random().toString(36).slice(2, 8)}`;
+    const session = makeSessionRecorder(sessionId, { kind: "route", startedAt });
+    await session.init(trace.length);
+    const headerNow = () => ({ startedAt, totalPausedMs, pausedAt: pauseStartedAt });
 
     const watchId = geoApi.watchPosition(
       (pos) => {
@@ -1371,6 +1483,7 @@ export function createAppController(deps = {}) {
           return;
         }
         trace.push(fix);
+        session.fix(fix, headerNow());
         if (speedFields) {
           lastElapsedSec = (fix.t - startedAt - totalPausedMs) / 1000;
           onTick({ ...speedFields, elapsedSec: lastElapsedSec, distanceM: traceDistance(trace) });
@@ -1398,11 +1511,20 @@ export function createAppController(deps = {}) {
     let onFinishCb = null;
     return {
       stop,
-      pause: () => { if (!paused) { paused = true; pauseStartedAt = Date.now(); } },
-      resume: () => { if (paused) { totalPausedMs += Date.now() - pauseStartedAt; paused = false; pauseStartedAt = null; } },
+      pause: () => { if (!paused) { paused = true; pauseStartedAt = now(); session.mark(headerNow()); } },
+      resume: () => { if (paused) { totalPausedMs += now() - pauseStartedAt; paused = false; pauseStartedAt = null; session.mark(headerNow()); } },
       isPaused: () => paused,
       onFinish: (cb) => { onFinishCb = cb; },
-      manualFinish: () => { stop(); if (onFinishCb) onFinishCb(buildResult(now())); },
+      manualFinish: () => {
+        stop();
+        // The recording is now in the caller's hands (preview → save, or discard),
+        // so the recovery session has done its job.
+        session.done();
+        if (onFinishCb) onFinishCb(buildResult(now()));
+      },
+      /** Abandon without finishing (user cancelled) — drop the session too. */
+      abandon: () => { stop(); return session.done(); },
+      sessionId,
     };
   }
 
@@ -1622,25 +1744,44 @@ export function createAppController(deps = {}) {
     return whatToExpect({ segments: route.segments, times, windFn, departMs: now(), windWord });
   }
 
-  async function startRide(route, { onTick, onFinish, onArrived, onError, geo } = {}) {
+  async function startRide(route, { onTick, onFinish, onArrived, onError, geo, resumeSession = null } = {}) {
     const geoApi = geo || (typeof navigator !== "undefined" ? navigator.geolocation : null);
     if (!geoApi) throw new Error("Geolocation unavailable.");
 
-    const startedAt = now();
-    const forecastWind = await stationSeriesFor(route).catch(() => []);
+    // RESUME: restore the interrupted ride. startedAt is preserved, so the
+    // closed-app span counts as RIDING time (per the spec's gap policy) unless the
+    // rider was paused when the app died — in which case the pause stays open
+    // across the gap and that span becomes paused time instead. The stored
+    // forecastWind is reused so the ride's wind summary reflects the conditions it
+    // actually started in, not a re-fetch after the interruption.
+    const resumed = resumeSession || null;
+    const priorFixes = resumed ? await store.loadSessionFixes(resumed.id).catch(() => []) : [];
+    const startedAt = resumed ? resumed.startedAt : now();
+    const forecastWind = (resumed && Array.isArray(resumed.forecastWind) && resumed.forecastWind.length)
+      ? resumed.forecastWind
+      : await stationSeriesFor(route).catch(() => []);
     const endRegion = route.endRegion;
-    const trace = [];
-    let prev = null;
-    let hasLeftStart = false; // finish detection stays disarmed until the rider actually leaves the start
-    let arrivalDeclined = false; // set when the rider chose "keep riding" — auto-finish stays off thereafter
+    const trace = priorFixes.slice();
+    let prev = trace.length ? trace[trace.length - 1] : null;
+    let hasLeftStart = resumed ? !!resumed.hasLeftStart : false; // finish detection stays disarmed until the rider actually leaves the start
+    let arrivalDeclined = resumed ? !!resumed.arrivalDeclined : false; // set when the rider chose "keep riding" — auto-finish stays off thereafter
     // Pause support: total paused ms is excluded from the ride time, so a rider
     // can stop (lights, coffee, mechanical) without inflating the learned time.
-    let paused = false;
-    let pauseStartedAt = null;
-    let totalPausedMs = 0;
+    let paused = resumed ? !!resumed.pausedAt : false;
+    let pauseStartedAt = resumed && resumed.pausedAt ? resumed.pausedAt : null;
+    let totalPausedMs = resumed ? (resumed.totalPausedMs || 0) : 0;
     // Last elapsed emitted while running — replayed verbatim in paused ticks so
     // the caller's clock cannot advance while the needle stays live.
     let lastElapsedSec = 0;
+
+    const sessionId = resumed ? resumed.id : `ride-${startedAt}-${Math.random().toString(36).slice(2, 8)}`;
+    const session = makeSessionRecorder(sessionId, {
+      kind: "ride", routeId: route.id, startedAt, forecastWind,
+    });
+    await session.init(trace.length);
+    const headerNow = () => ({
+      startedAt, totalPausedMs, pausedAt: pauseStartedAt, hasLeftStart, arrivalDeclined,
+    });
 
     const watchId = geoApi.watchPosition(
       (pos) => {
@@ -1682,6 +1823,7 @@ export function createAppController(deps = {}) {
           // distance accrual
           const moved = haversineLocal(prev.lat, prev.lon, fix.lat, fix.lon);
           trace.push(fix);
+          session.fix(fix, headerNow());
           // finish detection: in end region, or stopped near it. GATED on the
           // ride having actually begun — the rider must have moved a minimum
           // distance from the start first. Without this, starting a ride within
@@ -1739,13 +1881,17 @@ export function createAppController(deps = {}) {
               // keeps riding. A "keep riding" latches arrivalDeclined so
               // auto-finish won't fire again for the rest of the ride.
               arrivalDeclined = true;
+              // Persist the latch at once: if the app dies after "keep riding",
+              // a resumed ride must not immediately re-trigger auto-finish.
+              session.mark(headerNow());
               onArrived(buildResult(fix.t));
             } else {
-              stop(); if (onFinish) onFinish(buildResult(fix.t));
+              stop(); session.done(); if (onFinish) onFinish(buildResult(fix.t));
             }
           }
         } else {
           trace.push(fix);
+          session.fix(fix, headerNow());
         }
         prev = fix;
       },
@@ -1771,10 +1917,19 @@ export function createAppController(deps = {}) {
     function stop() { geoApi.clearWatch(watchId); }
     return {
       stop,
-      pause: () => { if (!paused) { paused = true; pauseStartedAt = Date.now(); } },
-      resume: () => { if (paused) { totalPausedMs += Date.now() - pauseStartedAt; paused = false; pauseStartedAt = null; } },
+      pause: () => { if (!paused) { paused = true; pauseStartedAt = now(); session.mark(headerNow()); } },
+      resume: () => { if (paused) { totalPausedMs += now() - pauseStartedAt; paused = false; pauseStartedAt = null; session.mark(headerNow()); } },
       isPaused: () => paused,
-      manualFinish: () => { stop(); if (onFinish) onFinish(buildResult(now())); },
+      manualFinish: () => {
+        stop();
+        // Ride is finished and handed to the review screen — recovery no longer
+        // applies, so drop the session (the ride itself is saved separately).
+        session.done();
+        if (onFinish) onFinish(buildResult(now()));
+      },
+      /** Abandon without finishing (user discarded) — drop the session too. */
+      abandon: () => { stop(); return session.done(); },
+      sessionId,
     };
   }
 
@@ -1812,6 +1967,7 @@ export function createAppController(deps = {}) {
     getHomeVerdict, listRoutesWithVerdict,
     recordRide, recordManualRide, listRides, startRide, recordRoute, previewTrace, finalizeRecordedRoute, distanceToStart, distanceToEnd, rideExpectation, ridePrediction, routeTuning, updateExampleSeeds,
     updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,
+    findResumableSession, discardSession,
     start,
     exportAll, importAll, requestPersistence,
     stationSeriesFor,

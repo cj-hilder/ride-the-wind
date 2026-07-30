@@ -244,6 +244,20 @@ export default function App() {
     controller.store.setSetting("lastOpenedRouteId", activeRouteId).catch(() => {});
   }, [controller, activeRouteId]);
   const [showHelp, setShowHelp] = useState(false);
+  // Interrupted-recording recovery: look for a resumable session once at launch.
+  // Stale/orphaned sessions are cleaned up inside findResumableSession, so a
+  // non-null result always means there's something genuinely worth offering.
+  const [resumable, setResumable] = useState(null);   // summary for the prompt
+  const [resumeRide, setResumeRide] = useState(null); // session handed to Capture
+  const [resumeRoute, setResumeRoute] = useState(null); // session handed to RouteRecorder
+  const [discardAsk, setDiscardAsk] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    controller.findResumableSession()
+      .then((r) => { if (!cancelled && r) setResumable(r); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [controller]);
   const [showSettings, setShowSettings] = useState(false);
   const [displayUnits, setDisplayUnits] = useState(DEFAULT_UNITS);
   const [cruiseSpeedKmh, setCruiseSpeedKmh] = useState(null); // global rider cruising speed → curve v0
@@ -439,11 +453,15 @@ export default function App() {
           />
         ) : screen === "setup" ? (
           <Setup controller={controller}
+            resumeSession={resumeRoute}
+            onResumeHandled={() => setResumeRoute(null)}
             onDone={async () => { await refresh(); setScreen("routes"); }}
             onCancel={() => setScreen("routes")} />
         ) : (
           <Capture controller={controller} route={active?.route}
             onRecordingChange={setRecording}
+            resumeSession={resumeRide}
+            onResumeHandled={() => setResumeRide(null)}
             onDone={async () => { await refresh(); setScreen("home"); }} />
         )}
         </ScreenBoundary>
@@ -452,6 +470,61 @@ export default function App() {
       {!recording && <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} />}
 
       {showHelp && <HelpPanel onClose={acceptHelp} />}
+      {resumable && (
+        <div style={OVERLAY}>
+          <div style={{ maxWidth: 420, margin: "0 auto", padding: "calc(24px + env(safe-area-inset-top)) 20px 28px" }}>
+            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 22, fontWeight: 600, marginBottom: 12 }}>
+              Unfinished recording
+            </div>
+            <div style={{ fontSize: 14.5, color: "rgba(255,255,255,0.85)", lineHeight: 1.6, marginBottom: 8 }}>
+              {resumable.kind === "ride"
+                ? <>You were recording a ride on <b>{resumable.routeName}</b>.</>
+                : <>You were recording a new route.</>}
+            </div>
+            <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", lineHeight: 1.6, marginBottom: 20 }}>
+              {fmtStopwatch(resumable.elapsedSec)} recorded{resumable.paused ? " — paused" : ""}. Continue recording?
+            </div>
+            {!discardAsk ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <button
+                  onClick={() => {
+                    if (resumable.kind === "ride") {
+                      setActiveRouteId(resumable.session.routeId);
+                      setResumeRide(resumable.session);
+                      setScreen("capture");
+                    } else {
+                      // A new-route recording resumes inside the route recorder.
+                      setResumeRoute(resumable.session);
+                      setScreen("setup");
+                    }
+                    setResumable(null);
+                  }}
+                  style={{ padding: 14, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 15, fontWeight: 600, background: "#6fd49a", color: "#0f2a1c", border: "none" }}>
+                  Continue recording
+                </button>
+                <button onClick={() => setDiscardAsk(true)} style={{ ...backupBtn }}>Discard</button>
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: 13.5, color: "#e0a45e", lineHeight: 1.6, marginBottom: 14 }}>
+                  Discarding throws away everything recorded so far. This can’t be undone.
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button onClick={() => setDiscardAsk(false)} style={{ ...backupBtn, flex: 1 }}>Keep it</button>
+                  <button
+                    onClick={async () => {
+                      await controller.discardSession(resumable.session.id);
+                      setDiscardAsk(false); setResumable(null);
+                    }}
+                    style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 14, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>
+                    Discard
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {showSettings && <SettingsPanel units={displayUnits} onChange={changeUnits} cruiseSpeedKmh={cruiseSpeedKmh} onChangeCruiseSpeed={changeCruiseSpeed} conservatism={conservatism} onChangeConservatism={changeConservatism} onClose={() => setShowSettings(false)} />}
     </div>
   );
@@ -2200,7 +2273,7 @@ const lbl = { display: "block", fontSize: 12.5, color: "rgba(255,255,255,0.6)", 
  * browser doesn't suspend watchPosition when the screen locks / app backgrounds.
  * On Finish, hands the raw traversal up via onRecorded (the parent gates it).
  * ========================================================================== */
-function RouteRecorder({ controller, onCancel, onRecorded }) {
+function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResumeHandled }) {
   const [state, setState] = useState("armed"); // armed | recording | blocked
   const [blocked, setBlocked] = useState(null); // gate-failure message
   const [gpsError, setGpsError] = useState(null); // {code,message} when geolocation fails
@@ -2246,12 +2319,24 @@ function RouteRecorder({ controller, onCancel, onRecorded }) {
     return () => clearInterval(id);
   }, [state]);
 
-  const begin = async () => {
+  const resumeStartedRef = useRef(false);
+  useEffect(() => {
+    if (!resumeSession || resumeStartedRef.current) return;
+    resumeStartedRef.current = true;
+    (async () => {
+      await begin(resumeSession);
+      if (resumeSession.pausedAt) { setPaused(true); releaseWake(); }
+      onResumeHandled?.();
+    })();
+  }, [resumeSession]);
+
+  const begin = async (resume = null) => {
     setState("recording"); setElapsed(0); setPaused(false); setGpsError(null);
     setLive({ distanceM: 0, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, lastSpeedAccM: null, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null };
     acquireWake();
     const handle = await controller.recordRoute({
+      resumeSession: resume,
       onError: (e) => { setGpsError(e || { code: 2 }); },
       onTick: ({ elapsedSec, distanceM, speedMps, gpsSpeedMps, speedAccMps, fixT, accuracyM }) => {
         setElapsed(elapsedSec);
@@ -2410,8 +2495,8 @@ function MethodOption({ title, desc, onClick, disabled }) {
  * Setup — create a route: choose a method (record / reverse / GPX), then the
  * shared details form (name, tuning, schedule).
  * ========================================================================== */
-function Setup({ controller, onDone, onCancel }) {
-  const [method, setMethod] = useState(null); // null=chooser, "gpx", "reverse"
+function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled }) {
+  const [method, setMethod] = useState(resumeSession ? "record" : null); // null=chooser, "gpx", "reverse"
   const [gpxText, setGpxText] = useState(null);
   const [processed, setProcessed] = useState(null); // reverse/record path: pre-built geometry
   const [recording, setRecording] = useState(null); // record path: the raw traversal (for first-ride logging)
@@ -2549,6 +2634,7 @@ function Setup({ controller, onDone, onCancel }) {
       {/* Step 2c: record by GPS */}
       {method === "record" && !preview && (
         <RouteRecorder controller={controller}
+          resumeSession={resumeSession} onResumeHandled={onResumeHandled}
           onCancel={() => { setMethod(null); setErr(null); }}
           onRecorded={(rec, res) => {
             // res = { ok:true, processed, preview } from the recorder's gate.
@@ -2843,7 +2929,7 @@ function ProgressBar({ travelledM, totalM }) {
 /* ============================================================================
  * Capture — tap to start, auto-finish, confirm (real controller.recordRide)
  * ========================================================================== */
-function Capture({ controller, route, onDone, onRecordingChange }) {
+function Capture({ controller, route, onDone, onRecordingChange, resumeSession, onResumeHandled }) {
   const [state, setState] = useState("armed");
   const [elapsed, setElapsed] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -2897,7 +2983,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
 
   // Begin recording. If GPS says we're well away from the route's start, ask
   // first — guards against accidentally recording from the wrong place.
-  const beginRecording = async () => {
+  const beginRecording = async (resume = null) => {
     setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0); setGpsError(null);
     setLive({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     // Needle speed seeds at 0 (rider stationary). Arrival pace is dormant (null)
@@ -2953,6 +3039,7 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     }).then((e) => setExpectLine(e && e.line ? e.line : null)).catch(() => {});
     acquireWake();
     const handle = await controller.startRide(route, {
+      resumeSession: resume,
       onTick: ({ elapsedSec, distanceM, speedMps, gpsSpeedMps, speedAccMps, fixT, accuracyM, lat, lon, paused: tickPaused }) => {
         setElapsed(elapsedSec);
         setGpsError(null); // a fix arrived → clear any prior error (no-op if already null)
@@ -3098,6 +3185,21 @@ function Capture({ controller, route, onDone, onRecordingChange }) {
     }
     await beginRecording();
   };
+
+  // Resume an interrupted ride: begin immediately with the persisted session,
+  // skipping the far-from-start guard (the rider is mid-ride, not starting one).
+  // If the app was killed while paused, come back paused — the controller
+  // restores that, so mirror it in the UI.
+  const resumeStartedRef = useRef(false);
+  useEffect(() => {
+    if (!resumeSession || resumeStartedRef.current) return;
+    resumeStartedRef.current = true;
+    (async () => {
+      await beginRecording(resumeSession);
+      if (resumeSession.pausedAt) { setPaused(true); releaseWake(); }
+      onResumeHandled?.();
+    })();
+  }, [resumeSession]);
 
   // Local display clock so the timer ticks smoothly and freezes on pause,
   // independent of GPS fix cadence.
