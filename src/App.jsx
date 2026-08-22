@@ -104,6 +104,18 @@ const skyForRide = (startRegion, departureMs, predictedSec) => {
 };
 const ACCENT = { headwind: "#5b8fc7", tailwind: "#e0a45e", normal: "#9aa7b0" };
 const fmtMin = (sec) => formatElapsed(sec);
+// Strict 24h "HH:MM" for a given instant, independent of the system clock
+// format. Needed anywhere a value must round-trip through <input type="time">
+// or the route-config parser (atLocalTime), which only understand 24h — unlike
+// verdict.*HHMM fields (from the app's hhmm()), which follow the system's 12/24h
+// display setting and can look like "8:17 am". Feeding a 12h string into a time
+// input or comparing it against a stored 24h config value is exactly the bug
+// that made Explore's default time produce NaN on 12-hour-clock devices.
+const to24hHHMM = (ms) => {
+  if (ms == null || Number.isNaN(ms)) return "";
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
 
 // "Uncertainty allowance" slider speaks 0–100% (how much of the forecast spread to
 // apply); the model wants a percentile in 50–99. 0% → 50 (median, no margin),
@@ -792,7 +804,7 @@ function PlanBody({ verdict, dayVerdict, fetching, routeLon, accent, showDebug, 
             </button>
           </div>
           {showExplore && (
-            <ExplorePicker timeMode={timeMode} current={exploredHHMM || verdict.arrivalHHMM}
+            <ExplorePicker timeMode={timeMode} current={exploredHHMM || to24hHHMM(isDepart ? verdict.departureMs : verdict.arrivalMs)}
               hasOverride={!!exploredHHMM} canGoNow={canGoNow}
               onApply={onExplore} onGoNow={onGoNow} onRestore={onRestore} onCancel={() => setShowExplore(false)} />
           )}
