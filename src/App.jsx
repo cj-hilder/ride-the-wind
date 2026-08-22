@@ -2421,7 +2421,7 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
         </div>
         <div style={{ display: "flex", gap: 12 }}>
           <button onClick={onCancel} style={backupBtn}>Cancel</button>
-          <button onClick={begin} style={{ ...backupBtn, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Record again</button>
+          <button onClick={() => begin()} style={{ ...backupBtn, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Record again</button>
         </div>
       </div>
     );
@@ -2471,7 +2471,7 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
       <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", lineHeight: 1.5, marginBottom: 18, padding: "12px 14px", borderRadius: 12, background: "rgba(224,164,94,0.12)", border: "1px solid rgba(224,164,94,0.35)" }}>
         Keep this app open and visible while recording. The ability to record GPS data in the background is not currently available. (It is a possible future enhancement.)
       </div>
-      <button onClick={begin} style={{ width: "100%", padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Start recording</button>
+      <button onClick={() => begin()} style={{ width: "100%", padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Start recording</button>
     </div>
   );
 }
