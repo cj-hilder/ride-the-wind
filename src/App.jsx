@@ -242,6 +242,14 @@ export default function App() {
   const controller = controllerRef.current;
 
   const [screen, setScreen] = useState("home"); // home | setup | capture
+  // Restore the last-open tab across app restarts. Applied once, inside
+  // refresh()'s first successful load (see below), so it can validate against
+  // the loaded route list (e.g. don't restore to "capture" with zero routes).
+  // `screenHydrated` gates the persistence effect below so a fresh mount's
+  // default "home" doesn't get written to settings before the restore has had
+  // a chance to read the previous value.
+  const [screenHydrated, setScreenHydrated] = useState(false);
+  const screenRestoredRef = useRef(false);
   const [recording, setRecording] = useState(false); // ride in progress → lock nav
   const [routes, setRoutes] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -255,6 +263,15 @@ export default function App() {
     if (!activeRouteId) return;
     controller.store.setSetting("lastOpenedRouteId", activeRouteId).catch(() => {});
   }, [controller, activeRouteId]);
+  // Persist the last-open tab. "setup" is a sub-screen of Routes (an in-progress
+  // new-route wizard with no restorable draft) rather than a real destination,
+  // so it's excluded — landing back on "Add route" with a blank form on next
+  // launch would be more confusing than just falling back to Routes.
+  useEffect(() => {
+    if (!screenHydrated) return;
+    if (screen === "setup") return;
+    controller.store.setSetting("lastScreen", screen).catch(() => {});
+  }, [controller, screen, screenHydrated]);
   const [showHelp, setShowHelp] = useState(false);
   // Interrupted-recording recovery: look for a resumable session once at launch.
   // Stale/orphaned sessions are cleaned up inside findResumableSession, so a
@@ -378,6 +395,19 @@ export default function App() {
           if (remembered && list.some((r) => r.route.id === remembered)) pick = remembered;
         } catch { /* settings unavailable → first route */ }
         setActiveRouteId(pick);
+      }
+      // Restore the last-open tab, once, on the first successful load — gated
+      // on the loaded list so "capture" is only restored if there's actually a
+      // route to show there (mirrors the TabBar's own disabled condition).
+      if (!screenRestoredRef.current) {
+        screenRestoredRef.current = true;
+        try {
+          const savedScreen = await controller.store.getSetting("lastScreen", null);
+          const valid = savedScreen === "home" || savedScreen === "routes"
+            || (savedScreen === "capture" && list.length > 0);
+          if (valid) setScreen(savedScreen);
+        } catch { /* settings unavailable → default home */ }
+        setScreenHydrated(true);
       }
       // Signal the Plan tab to recompute the displayed ride against fresh data,
       // preserving its day/route/explored-time selection.
@@ -552,11 +582,17 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
   const [selectedDayMs, setSelectedDayMs] = useState(startOfToday);
   const [dayVerdict, setDayVerdict] = useState(null);
   const [fetching, setFetching] = useState(false);
-  // Explore: per-(route, day) what-if time overrides, held in session only.
-  // Key "routeId:dayMs" → "HH:MM". Never persisted; survives background refresh
-  // and route/day switches, cleared only on full reload.
+  // Explore: per-(route, day) what-if time overrides. Key "routeId:dayMs" →
+  // "HH:MM" (or {hhmm, depart:true} for a "Go now" instance). Persisted across
+  // app restarts (see the restore/persist effects below); survives background
+  // refresh and route/day switches.
   const [explored, setExplored] = useState({});
   const [showExplore, setShowExplore] = useState(false);
+  // Guards the persistence effects below so this component's fresh-mount
+  // defaults (today, {}) don't get written to settings before the restore
+  // (async — an IndexedDB read) has actually run and had a chance to load the
+  // real last-viewed values.
+  const [hydrated, setHydrated] = useState(false);
 
   const exploreKey = `${activeRouteId}:${selectedDayMs}`;
   // An override is either null, a plain "HH:MM" (respects the route's mode), or
@@ -564,6 +600,42 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
   const exploredEntry = explored[exploreKey] || null;
   const exploredHHMM = exploredEntry ? (exploredEntry.hhmm ?? exploredEntry) : null;
   const exploredDepart = !!(exploredEntry && exploredEntry.depart);
+
+  // Restore the last-viewed day and any explored (what-if) times, once, on
+  // mount. A restored day or explore-entry that's now in the past is dropped —
+  // stale, not useful to come back to — rather than restored and then
+  // immediately snapped forward, so the "Explore" badge doesn't flash on.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [savedDayMs, savedExplored] = await Promise.all([
+        controller.store.getSetting("lastSelectedDayMs", null).catch(() => null),
+        controller.store.getSetting("exploredOverrides", null).catch(() => null),
+      ]);
+      if (cancelled) return;
+      if (savedDayMs != null && savedDayMs >= startOfToday) setSelectedDayMs(savedDayMs);
+      if (savedExplored && typeof savedExplored === "object") {
+        const fresh = {};
+        for (const [key, val] of Object.entries(savedExplored)) {
+          const dayMs = Number(key.split(":")[1]);
+          if (Number.isFinite(dayMs) && dayMs >= startOfToday) fresh[key] = val;
+        }
+        setExplored(fresh);
+      }
+      setHydrated(true);
+    })();
+    return () => { cancelled = true; };
+  }, [controller]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist the day/explore selection so relaunching returns to the same view.
+  useEffect(() => {
+    if (!hydrated) return;
+    controller.store.setSetting("lastSelectedDayMs", selectedDayMs).catch(() => {});
+  }, [controller, selectedDayMs, hydrated]);
+  useEffect(() => {
+    if (!hydrated) return;
+    controller.store.setSetting("exploredOverrides", explored).catch(() => {});
+  }, [controller, explored, hydrated]);
 
   // If the calendar day rolls over (midnight) and the selection was an old
   // "today", snap it forward so the strip and selection stay coherent.
@@ -1642,6 +1714,15 @@ const fmtStopwatch = (s) => {
   const p2 = (n) => String(n).padStart(2, "0");
   return hh > 0 ? `${hh}:${p2(mm)}:${p2(ss)}` : `${mm}:${p2(ss)}`;
 };
+// Elapsed seconds already banked in a resumed recording session — same
+// calculation as findResumableSession() in app.js. Used to seed the on-screen
+// timer immediately on resume, instead of starting from 0 and jumping once the
+// first GPS fix lands and corrects it.
+const resumedElapsedSec = (session) => {
+  if (!session) return 0;
+  const openPauseMs = session.pausedAt ? (Date.now() - session.pausedAt) : 0;
+  return Math.max(0, (Date.now() - session.startedAt - (session.totalPausedMs || 0) - openPauseMs) / 1000);
+};
 const CLASS_COLOR = {
   windy: "#e0a45e", // legacy key (windy now displays as headwind|tailwind)
   headwind: "#5b8fc7", tailwind: "#e0a45e", // verdict accent colours
@@ -2343,7 +2424,7 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
   }, [resumeSession]);
 
   const begin = async (resume = null) => {
-    setState("recording"); setElapsed(0); setPaused(false); setGpsError(null);
+    setState("recording"); setElapsed(resumedElapsedSec(resume)); setPaused(false); setGpsError(null);
     setLive({ distanceM: 0, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, lastSpeedAccM: null, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null };
     acquireWake();
@@ -2996,7 +3077,7 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
   // Begin recording. If GPS says we're well away from the route's start, ask
   // first — guards against accidentally recording from the wrong place.
   const beginRecording = async (resume = null) => {
-    setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0); setGpsError(null);
+    setState("riding"); setElapsed(resumedElapsedSec(resume)); setPaused(false); setConfirm(null); setAdjustMin(0); setGpsError(null);
     setLive({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     // Needle speed seeds at 0 (rider stationary). Arrival pace is dormant (null)
     // and seeded at the 1 km along-route mark with the average speed so far, then
