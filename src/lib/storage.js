@@ -745,6 +745,7 @@ const SETTING_KEYS = [
   "globalAlertThresholdMin",
   "conservatismPct", // the uncertainty allowance
   "cruiseSpeedKmh",  // rider's flat, no-wind cruising speed → curve v0 (global)
+  "displayUnits",    // metric/imperial etc. — a rider preference, not a device one
   "lastOpenedRouteId",
   "persistentStorageGranted",
 ];

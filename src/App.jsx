@@ -104,6 +104,18 @@ const skyForRide = (startRegion, departureMs, predictedSec) => {
 };
 const ACCENT = { headwind: "#5b8fc7", tailwind: "#e0a45e", normal: "#9aa7b0" };
 const fmtMin = (sec) => formatElapsed(sec);
+// Strict 24h "HH:MM" for a given instant, independent of the system clock
+// format. Needed anywhere a value must round-trip through <input type="time">
+// or the route-config parser (atLocalTime), which only understand 24h — unlike
+// verdict.*HHMM fields (from the app's hhmm()), which follow the system's 12/24h
+// display setting and can look like "8:17 am". Feeding a 12h string into a time
+// input or comparing it against a stored 24h config value is exactly the bug
+// that made Explore's default time produce NaN on 12-hour-clock devices.
+const to24hHHMM = (ms) => {
+  if (ms == null || Number.isNaN(ms)) return "";
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
 
 // "Uncertainty allowance" slider speaks 0–100% (how much of the forecast spread to
 // apply); the model wants a percentile in 50–99. 0% → 50 (median, no margin),
@@ -230,6 +242,14 @@ export default function App() {
   const controller = controllerRef.current;
 
   const [screen, setScreen] = useState("home"); // home | setup | capture
+  // Restore the last-open tab across app restarts. Applied once, inside
+  // refresh()'s first successful load (see below), so it can validate against
+  // the loaded route list (e.g. don't restore to "capture" with zero routes).
+  // `screenHydrated` gates the persistence effect below so a fresh mount's
+  // default "home" doesn't get written to settings before the restore has had
+  // a chance to read the previous value.
+  const [screenHydrated, setScreenHydrated] = useState(false);
+  const screenRestoredRef = useRef(false);
   const [recording, setRecording] = useState(false); // ride in progress → lock nav
   const [routes, setRoutes] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -243,6 +263,15 @@ export default function App() {
     if (!activeRouteId) return;
     controller.store.setSetting("lastOpenedRouteId", activeRouteId).catch(() => {});
   }, [controller, activeRouteId]);
+  // Persist the last-open tab. "setup" is a sub-screen of Routes (an in-progress
+  // new-route wizard with no restorable draft) rather than a real destination,
+  // so it's excluded — landing back on "Add route" with a blank form on next
+  // launch would be more confusing than just falling back to Routes.
+  useEffect(() => {
+    if (!screenHydrated) return;
+    if (screen === "setup") return;
+    controller.store.setSetting("lastScreen", screen).catch(() => {});
+  }, [controller, screen, screenHydrated]);
   const [showHelp, setShowHelp] = useState(false);
   // Interrupted-recording recovery: look for a resumable session once at launch.
   // Stale/orphaned sessions are cleaned up inside findResumableSession, so a
@@ -263,6 +292,149 @@ export default function App() {
   const [cruiseSpeedKmh, setCruiseSpeedKmh] = useState(null); // global rider cruising speed → curve v0
   const [nowTick, setNowTick] = useState(Date.now()); // drives the Plan day strip; bumped on midnight rollover
   const [forecastGen, setForecastGen] = useState(0); // bumped whenever routes/forecasts refresh, so Plan recomputes in place
+
+  // Back-button guard. A hardware/gesture back press with no history entries
+  // of our own just exits the app immediately — no confirmation, no chance to
+  // notice a recording is running. We keep one buffer entry in the joint
+  // history at all times; consuming it fires `popstate` here instead of
+  // actually leaving, which gives us a chance to intercept it.
+  //
+  // Priority, closest thing to Android's own back-stack convention:
+  //   1. an open Help/Settings panel just closes (very common "back to
+  //      dismiss" reflex — shouldn't escalate to a quit prompt),
+  //   2. an active recording (ride OR new-route) always gets the confirm
+  //      dialog, even mid-wizard — this is the scenario that actually
+  //      motivated the guard, so it takes priority over everything below,
+  //   3. otherwise, the setup wizard cancels straight back to Routes with no
+  //      prompt (nothing to lose — its own in-panel "‹" button steps through
+  //      record/preview/method one level at a time; the hardware back button
+  //      is coarser and just backs out entirely, a known simplification),
+  //   4. otherwise, ask before quitting.
+  const [quitConfirm, setQuitConfirm] = useState(false);
+  // Shown after "Quit" is tapped, while we're waiting to see whether the
+  // self-triggered back() below actually closed anything (see confirmQuit).
+  const [awaitingExit, setAwaitingExit] = useState(false);
+  // Set right before we trigger our own history.back() in confirmQuit(), so
+  // the popstate that call produces is recognized as self-triggered rather
+  // than a fresh user back-press — otherwise the listener re-arms the guard
+  // and re-shows the dialog in response to its own exit attempt, and "Quit"
+  // can never actually leave.
+  const quittingRef = useRef(false);
+  // Handle for the deferred exit attempt in confirmQuit(), so cancelAwaitingExit
+  // can call it off if the user backs out before it fires.
+  const quitTimeoutRef = useRef(null);
+  // Whether we can actually expect "Quit" to close anything. An installed
+  // PWA/TWA typically finishes the activity once nothing's left before the
+  // history floor — a real exit. A plain browser tab with a real page
+  // underneath (the user navigated here from somewhere in the same tab) also
+  // lands on a real exit. The only genuinely uncertain case is a plain tab
+  // sitting at the floor of its own history (opened fresh, e.g. from a
+  // bookmark or typed URL) — there's nothing to go back to, so our
+  // JS-triggered back() silently no-ops. `history.length` is captured once,
+  // on first render, before our own guard ever calls pushState — after that
+  // it keeps growing regardless of what's really underneath, so a live read
+  // later would tell us nothing.
+  const isStandalone = typeof window !== "undefined" && (
+    window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true
+  );
+  const initialHistoryLengthRef = useRef(history.length);
+  const uncertainExit = !isStandalone && initialHistoryLengthRef.current <= 1;
+  // Establish the initial guard entry exactly once, on mount. This must NOT
+  // live inside the effect below: that effect's dependency array has to
+  // include showHelp/showSettings/recording/screen so its listener closure
+  // stays fresh, but those change constantly during ordinary use (switching
+  // tabs, opening Settings, starting a recording) — if pushState ran on every
+  // re-run of that effect too, each such change would silently stack another
+  // unconsumed guard entry, and back would need one press per accumulated
+  // entry before it ever reached a real exit.
+  useEffect(() => {
+    history.pushState({ rtwGuard: true }, "", location.href);
+  }, []);
+  useEffect(() => {
+    const onPopState = () => {
+      if (quittingRef.current) {
+        // The pop produced by our own history.back() in confirmQuit(). Reset
+        // immediately rather than leaving this permanently true: if the
+        // exit attempt actually succeeded, this component is about to be
+        // torn down anyway and none of this matters; if it didn't (the
+        // uncertain-exit case — nothing before us to go back to), we're
+        // still here, and every back press for the rest of the session must
+        // go back to being guarded normally, not silently fall through as
+        // if we were forever mid-exit.
+        quittingRef.current = false;
+        setAwaitingExit(false);
+        return;
+      }
+      // Re-arm immediately (before deciding what to do) so a rapid second
+      // back-press — e.g. while the dialog is still rendering — is also
+      // caught here rather than falling through to a real exit. This is the
+      // ONLY other place pushState is called — exactly once per consumed
+      // back-press, never as a side effect of unrelated state changes.
+      history.pushState({ rtwGuard: true }, "", location.href);
+      // Dismissing Help via back should count the same as its own close
+      // button — otherwise helpSeen never gets marked and it re-shows on
+      // every future launch for anyone who dismisses it this way. Inlined
+      // rather than calling acceptHelp() directly: that's declared later in
+      // this component, and referencing it here (this effect's dependency
+      // array is evaluated during the same render, before that line runs)
+      // would throw a temporal-dead-zone error.
+      if (showHelp) {
+        setShowHelp(false);
+        controller.store.setSetting("helpSeen", true).catch(() => {});
+        return;
+      }
+      if (showSettings) { setShowSettings(false); return; }
+      // A live recording always gets the confirm dialog, even from the setup
+      // wizard — silently dropping back to Routes would abandon an
+      // in-progress new-route recording exactly as unceremoniously as the
+      // bare back button used to.
+      if (!recording && screen === "setup") { setScreen("routes"); return; }
+      setQuitConfirm(true);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [controller, showHelp, showSettings, recording, screen]);
+  const confirmQuit = () => {
+    setQuitConfirm(false);
+    setAwaitingExit(true);
+    // Marking quittingRef synchronously, before anything else, so that
+    // whenever the self-triggered pop below actually arrives it's correctly
+    // recognized regardless of timing.
+    quittingRef.current = true;
+    // Defer the actual exit attempt to the next tick. history.back()'s
+    // popstate can fire tightly enough (same tick, before React paints) to
+    // land before the setAwaitingExit(true) above ever reaches the screen —
+    // React just sees true-then-false batched together and renders neither,
+    // so the toast never appears, and the guard ends up silently disarmed
+    // before the user ever presses back themselves. Giving React one clear
+    // tick to commit and paint first guarantees the toast is genuinely
+    // visible before we attempt to leave.
+    quitTimeoutRef.current = setTimeout(() => {
+      quitTimeoutRef.current = null;
+      // Best-effort actual exit. `window.close()` only works for windows
+      // opened by script — a no-op here in most browsers/PWA shells,
+      // harmless either way. `history.back()` steps past our guard entry;
+      // whether that finishes an installed PWA/TWA (it typically does, once
+      // nothing's left before the root entry) or does nothing at all (a
+      // plain browser tab with no prior page) is up to the platform —
+      // there's no web API that can force a tab or app closed
+      // unconditionally.
+      try { window.close(); } catch {}
+      history.back();
+    }, 60);
+  };
+  const cancelAwaitingExit = () => {
+    // Call off the deferred exit attempt if the user cancels within its
+    // brief window, before it's had a chance to fire.
+    if (quitTimeoutRef.current) { clearTimeout(quitTimeoutRef.current); quitTimeoutRef.current = null; }
+    // The user backed out of the "tap back again" panel some other way (e.g.
+    // reopened the app to the same tab) without ever pressing back again.
+    // Re-arm properly rather than leaving the guard disarmed.
+    quittingRef.current = false;
+    setAwaitingExit(false);
+    history.pushState({ rtwGuard: true }, "", location.href);
+  };
+  const cancelQuit = () => setQuitConfirm(false);
 
   // First launch (helpSeen unset) → show the welcome/help panel once.
   useEffect(() => {
@@ -367,6 +539,19 @@ export default function App() {
         } catch { /* settings unavailable → first route */ }
         setActiveRouteId(pick);
       }
+      // Restore the last-open tab, once, on the first successful load — gated
+      // on the loaded list so "capture" is only restored if there's actually a
+      // route to show there (mirrors the TabBar's own disabled condition).
+      if (!screenRestoredRef.current) {
+        screenRestoredRef.current = true;
+        try {
+          const savedScreen = await controller.store.getSetting("lastScreen", null);
+          const valid = savedScreen === "home" || savedScreen === "routes"
+            || (savedScreen === "capture" && list.length > 0);
+          if (valid) setScreen(savedScreen);
+        } catch { /* settings unavailable → default home */ }
+        setScreenHydrated(true);
+      }
       // Signal the Plan tab to recompute the displayed ride against fresh data,
       // preserving its day/route/explored-time selection.
       setForecastGen((g) => g + 1);
@@ -455,6 +640,7 @@ export default function App() {
           <Setup controller={controller}
             resumeSession={resumeRoute}
             onResumeHandled={() => setResumeRoute(null)}
+            onRecordingChange={setRecording}
             onDone={async () => { await refresh(); setScreen("routes"); }}
             onCancel={() => setScreen("routes")} />
         ) : (
@@ -526,6 +712,64 @@ export default function App() {
         </div>
       )}
       {showSettings && <SettingsPanel units={displayUnits} onChange={changeUnits} cruiseSpeedKmh={cruiseSpeedKmh} onChangeCruiseSpeed={changeCruiseSpeed} conservatism={conservatism} onChangeConservatism={changeConservatism} onClose={() => setShowSettings(false)} />}
+      {quitConfirm && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 60, display: "grid", placeItems: "center",
+          background: "rgba(0,0,0,0.6)", padding: 28,
+        }}>
+          <div style={{
+            maxWidth: 320, background: "#1d1b38", borderRadius: 18, padding: "22px 22px",
+            border: "1px solid rgba(255,255,255,0.14)", textAlign: "center", color: "#fff",
+          }}>
+            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 8 }}>
+              {recording ? "Recording in progress" : "Quit this app?"}
+            </div>
+            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: uncertainExit ? 10 : 18 }}>
+              {recording
+                ? (screen === "setup"
+                    ? "You're recording a new route. If you quit now, reopen the app to pick up recording right where you left off."
+                    : "You're recording a ride. If you quit now, reopen the app to pick up recording right where you left off.")
+                : "Do you want to quit this app?"}
+            </div>
+            {uncertainExit && (
+              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)", lineHeight: 1.5, marginBottom: 18 }}>
+                This browser tab may need one more back press (or your browser's close-tab button) to fully close.
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={cancelQuit} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>
+                {recording ? "Keep recording" : "Stay"}
+              </button>
+              <button onClick={confirmQuit} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 14, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>
+                {recording ? "Quit anyway" : "Quit"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {awaitingExit && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 60, display: "grid", placeItems: "center",
+          background: "rgba(0,0,0,0.6)", padding: 28,
+        }}>
+          <div style={{
+            maxWidth: 280, background: "#1d1b38", borderRadius: 18, padding: "22px 22px",
+            border: "1px solid rgba(255,255,255,0.14)", textAlign: "center", color: "#fff",
+          }}>
+            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 17, fontWeight: 600, marginBottom: 8 }}>
+              Tap "back" again to close
+            </div>
+            {uncertainExit && (
+              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)", lineHeight: 1.5, marginBottom: 14 }}>
+                This browser tab may not close on its own — you can also use your browser's close-tab button.
+              </div>
+            )}
+            <button onClick={cancelAwaitingExit} style={{ width: "100%", padding: 10, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -540,11 +784,17 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
   const [selectedDayMs, setSelectedDayMs] = useState(startOfToday);
   const [dayVerdict, setDayVerdict] = useState(null);
   const [fetching, setFetching] = useState(false);
-  // Explore: per-(route, day) what-if time overrides, held in session only.
-  // Key "routeId:dayMs" → "HH:MM". Never persisted; survives background refresh
-  // and route/day switches, cleared only on full reload.
+  // Explore: per-(route, day) what-if time overrides. Key "routeId:dayMs" →
+  // "HH:MM" (or {hhmm, depart:true} for a "Go now" instance). Persisted across
+  // app restarts (see the restore/persist effects below); survives background
+  // refresh and route/day switches.
   const [explored, setExplored] = useState({});
   const [showExplore, setShowExplore] = useState(false);
+  // Guards the persistence effects below so this component's fresh-mount
+  // defaults (today, {}) don't get written to settings before the restore
+  // (async — an IndexedDB read) has actually run and had a chance to load the
+  // real last-viewed values.
+  const [hydrated, setHydrated] = useState(false);
 
   const exploreKey = `${activeRouteId}:${selectedDayMs}`;
   // An override is either null, a plain "HH:MM" (respects the route's mode), or
@@ -552,6 +802,42 @@ function Home({ controller, activeRouteId, routes, setActiveRouteId, nowMs, fore
   const exploredEntry = explored[exploreKey] || null;
   const exploredHHMM = exploredEntry ? (exploredEntry.hhmm ?? exploredEntry) : null;
   const exploredDepart = !!(exploredEntry && exploredEntry.depart);
+
+  // Restore the last-viewed day and any explored (what-if) times, once, on
+  // mount. A restored day or explore-entry that's now in the past is dropped —
+  // stale, not useful to come back to — rather than restored and then
+  // immediately snapped forward, so the "Explore" badge doesn't flash on.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [savedDayMs, savedExplored] = await Promise.all([
+        controller.store.getSetting("lastSelectedDayMs", null).catch(() => null),
+        controller.store.getSetting("exploredOverrides", null).catch(() => null),
+      ]);
+      if (cancelled) return;
+      if (savedDayMs != null && savedDayMs >= startOfToday) setSelectedDayMs(savedDayMs);
+      if (savedExplored && typeof savedExplored === "object") {
+        const fresh = {};
+        for (const [key, val] of Object.entries(savedExplored)) {
+          const dayMs = Number(key.split(":")[1]);
+          if (Number.isFinite(dayMs) && dayMs >= startOfToday) fresh[key] = val;
+        }
+        setExplored(fresh);
+      }
+      setHydrated(true);
+    })();
+    return () => { cancelled = true; };
+  }, [controller]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist the day/explore selection so relaunching returns to the same view.
+  useEffect(() => {
+    if (!hydrated) return;
+    controller.store.setSetting("lastSelectedDayMs", selectedDayMs).catch(() => {});
+  }, [controller, selectedDayMs, hydrated]);
+  useEffect(() => {
+    if (!hydrated) return;
+    controller.store.setSetting("exploredOverrides", explored).catch(() => {});
+  }, [controller, explored, hydrated]);
 
   // If the calendar day rolls over (midnight) and the selection was an old
   // "today", snap it forward so the strip and selection stay coherent.
@@ -792,7 +1078,7 @@ function PlanBody({ verdict, dayVerdict, fetching, routeLon, accent, showDebug, 
             </button>
           </div>
           {showExplore && (
-            <ExplorePicker timeMode={timeMode} current={exploredHHMM || verdict.arrivalHHMM}
+            <ExplorePicker timeMode={timeMode} current={exploredHHMM || to24hHHMM(isDepart ? verdict.departureMs : verdict.arrivalMs)}
               hasOverride={!!exploredHHMM} canGoNow={canGoNow}
               onApply={onExplore} onGoNow={onGoNow} onRestore={onRestore} onCancel={() => setShowExplore(false)} />
           )}
@@ -1630,6 +1916,15 @@ const fmtStopwatch = (s) => {
   const p2 = (n) => String(n).padStart(2, "0");
   return hh > 0 ? `${hh}:${p2(mm)}:${p2(ss)}` : `${mm}:${p2(ss)}`;
 };
+// Elapsed seconds already banked in a resumed recording session — same
+// calculation as findResumableSession() in app.js. Used to seed the on-screen
+// timer immediately on resume, instead of starting from 0 and jumping once the
+// first GPS fix lands and corrects it.
+const resumedElapsedSec = (session) => {
+  if (!session) return 0;
+  const openPauseMs = session.pausedAt ? (Date.now() - session.pausedAt) : 0;
+  return Math.max(0, (Date.now() - session.startedAt - (session.totalPausedMs || 0) - openPauseMs) / 1000);
+};
 const CLASS_COLOR = {
   windy: "#e0a45e", // legacy key (windy now displays as headwind|tailwind)
   headwind: "#5b8fc7", tailwind: "#e0a45e", // verdict accent colours
@@ -2273,7 +2568,7 @@ const lbl = { display: "block", fontSize: 12.5, color: "rgba(255,255,255,0.6)", 
  * browser doesn't suspend watchPosition when the screen locks / app backgrounds.
  * On Finish, hands the raw traversal up via onRecorded (the parent gates it).
  * ========================================================================== */
-function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResumeHandled }) {
+function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResumeHandled, onRecordingChange }) {
   const [state, setState] = useState("armed"); // armed | recording | blocked
   const [blocked, setBlocked] = useState(null); // gate-failure message
   const [gpsError, setGpsError] = useState(null); // {code,message} when geolocation fails
@@ -2318,6 +2613,13 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
     const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, [state]);
+  // Report live-recording status up to the app shell — same signal Capture
+  // already sends for ride recording — so nav lock (tab bar) and the back-
+  // button quit guard treat an in-progress new-route recording the same way.
+  useEffect(() => {
+    onRecordingChange?.(state === "recording");
+    return () => onRecordingChange?.(false);
+  }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const resumeStartedRef = useRef(false);
   useEffect(() => {
@@ -2331,7 +2633,7 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
   }, [resumeSession]);
 
   const begin = async (resume = null) => {
-    setState("recording"); setElapsed(0); setPaused(false); setGpsError(null);
+    setState("recording"); setElapsed(resumedElapsedSec(resume)); setPaused(false); setGpsError(null);
     setLive({ distanceM: 0, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, lastSpeedAccM: null, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null };
     acquireWake();
@@ -2421,7 +2723,7 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
         </div>
         <div style={{ display: "flex", gap: 12 }}>
           <button onClick={onCancel} style={backupBtn}>Cancel</button>
-          <button onClick={begin} style={{ ...backupBtn, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Record again</button>
+          <button onClick={() => begin()} style={{ ...backupBtn, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Record again</button>
         </div>
       </div>
     );
@@ -2471,7 +2773,7 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
       <div style={{ fontSize: 13, color: "rgba(255,255,255,0.8)", lineHeight: 1.5, marginBottom: 18, padding: "12px 14px", borderRadius: 12, background: "rgba(224,164,94,0.12)", border: "1px solid rgba(224,164,94,0.35)" }}>
         Keep this app open and visible while recording. The ability to record GPS data in the background is not currently available. (It is a possible future enhancement.)
       </div>
-      <button onClick={begin} style={{ width: "100%", padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Start recording</button>
+      <button onClick={() => begin()} style={{ width: "100%", padding: 15, borderRadius: 14, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 16, fontWeight: 600, background: "#e0a45e", color: "#1a1f3a", border: "none" }}>Start recording</button>
     </div>
   );
 }
@@ -2495,7 +2797,7 @@ function MethodOption({ title, desc, onClick, disabled }) {
  * Setup — create a route: choose a method (record / reverse / GPX), then the
  * shared details form (name, tuning, schedule).
  * ========================================================================== */
-function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled }) {
+function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled, onRecordingChange }) {
   const [method, setMethod] = useState(resumeSession ? "record" : null); // null=chooser, "gpx", "reverse"
   const [gpxText, setGpxText] = useState(null);
   const [processed, setProcessed] = useState(null); // reverse/record path: pre-built geometry
@@ -2635,6 +2937,7 @@ function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled })
       {method === "record" && !preview && (
         <RouteRecorder controller={controller}
           resumeSession={resumeSession} onResumeHandled={onResumeHandled}
+          onRecordingChange={onRecordingChange}
           onCancel={() => { setMethod(null); setErr(null); }}
           onRecorded={(rec, res) => {
             // res = { ok:true, processed, preview } from the recorder's gate.
@@ -2984,7 +3287,7 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
   // Begin recording. If GPS says we're well away from the route's start, ask
   // first — guards against accidentally recording from the wrong place.
   const beginRecording = async (resume = null) => {
-    setState("riding"); setElapsed(0); setPaused(false); setConfirm(null); setAdjustMin(0); setGpsError(null);
+    setState("riding"); setElapsed(resumedElapsedSec(resume)); setPaused(false); setConfirm(null); setAdjustMin(0); setGpsError(null);
     setLive({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
     // Needle speed seeds at 0 (rider stationary). Arrival pace is dormant (null)
     // and seeded at the 1 km along-route mark with the average speed so far, then
