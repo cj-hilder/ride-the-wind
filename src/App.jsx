@@ -30,6 +30,7 @@ import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, f
 import { effortNorm, V0_MIN, V0_MAX } from "./lib/windModel.js";
 import { DEFAULT_K } from "./lib/windModel.js";
 import { rideK as computeRideK } from "./lib/learning.js";
+import { installBackGuard, resolveBackAction, requestAppExit } from "./lib/backGuard.js";
 
 /* Error boundary around the active screen. A render error in one screen (e.g. a
  * transient bad shape during a forecast refresh) must NOT tear down the whole
@@ -288,6 +289,9 @@ export default function App() {
     return () => { cancelled = true; };
   }, [controller]);
   const [showSettings, setShowSettings] = useState(false);
+  // Android back button: "Quit this app?" is only asked when there's nothing
+  // else for back to dismiss (see the guard effect below).
+  const [quitAsk, setQuitAsk] = useState(false);
   const [displayUnits, setDisplayUnits] = useState(DEFAULT_UNITS);
   const [cruiseSpeedKmh, setCruiseSpeedKmh] = useState(null); // global rider cruising speed → curve v0
   const [nowTick, setNowTick] = useState(Date.now()); // drives the Plan day strip; bumped on midnight rollover
@@ -369,6 +373,76 @@ export default function App() {
     setShowHelp(false);
     await controller.store.setSetting("helpSeen", true);
   }, [controller]);
+
+  /* ── Android back button ────────────────────────────────────────────────────
+   * Without a guard, back exits an installed PWA instantly from anywhere. The
+   * guard intercepts every press and hands it here, so back closes an open
+   * panel and otherwise asks before leaving.
+   *
+   * Arming is a callable rather than a bare mount effect because the Quit path
+   * deliberately disarms (see confirmQuit) and a tap can bring it back. The ref
+   * doubles as the "already armed" flag: every install pushes history
+   * sentinels, so arming twice would stack two buffers. The handler reads live
+   * state from a ref so re-arming isn't needed on every state change. */
+  const backStateRef = useRef({});
+  backStateRef.current = {
+    quitAsking: quitAsk, settingsOpen: showSettings, helpOpen: showHelp,
+  };
+  const uninstallBackRef = useRef(null);
+  const armBackGuard = useCallback(() => {
+    if (typeof window === "undefined") return;
+    if (uninstallBackRef.current) return; // already armed — don't stack buffers
+    uninstallBackRef.current = installBackGuard({
+      history: window.history,
+      addEventListener: window.addEventListener.bind(window),
+      removeEventListener: window.removeEventListener.bind(window),
+      onBack: () => {
+        switch (resolveBackAction(backStateRef.current)) {
+          // Back closes Help the same way its own button does — including
+          // recording helpSeen, so first launch isn't greeted twice.
+          case "closeHelp": acceptHelp(); break;
+          case "closeSettings": setShowSettings(false); break;
+          case "dismissQuit": setQuitAsk(false); break;
+          default: setQuitAsk(true); break;
+        }
+      },
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    armBackGuard();
+    return () => {
+      const un = uninstallBackRef.current;
+      uninstallBackRef.current = null;
+      if (un) un();
+    };
+  }, [armBackGuard]);
+
+  // Confirmed Quit. Stops intercepting, walks back out of the guard's history
+  // entries, then asks the window to close.
+  //
+  // The hint waits for onReady: it must only say "press back once more" once
+  // we're actually standing on the app's own history entry, otherwise the user
+  // has several sentinels still to chew through and the advice is wrong. Chrome
+  // refuses close() silently, so there's no success signal to branch on — if the
+  // close does land the app is gone and the hint is never seen.
+  const [quitHint, setQuitHint] = useState(false);
+  const confirmQuit = useCallback(() => {
+    const uninstall = uninstallBackRef.current;
+    uninstallBackRef.current = null;
+    requestAppExit({
+      uninstall, win: window,
+      onReady: () => setQuitHint(true),
+    });
+  }, []);
+
+  // Changed your mind while the hint is showing: a tap re-arms the guard and
+  // puts everything back. Re-arming inside a real tap matters — a push made
+  // during a user gesture is the only kind Chrome won't mark skippable.
+  const cancelQuit = useCallback(() => {
+    setQuitHint(false);
+    setQuitAsk(false);
+    armBackGuard();
+  }, [armBackGuard]);
 
   const refresh = useCallback(async (opts = {}) => {
     if (!opts.quiet) { setLoading(true); setProgress({ done: 0, total: 0 }); setLoadError(null); }
@@ -568,6 +642,34 @@ export default function App() {
         </div>
       )}
       {showSettings && <SettingsPanel units={displayUnits} onChange={changeUnits} cruiseSpeedKmh={cruiseSpeedKmh} onChangeCruiseSpeed={changeCruiseSpeed} conservatism={conservatism} onChangeConservatism={changeConservatism} onClose={() => setShowSettings(false)} />}
+      {quitAsk && (
+        <div
+          // While the hint is up the guard is disarmed, so this overlay — which
+          // covers the viewport — is what tap-to-stay listens on. pointerdown,
+          // not click, so the tap that cancels is the same gesture that re-arms
+          // the history buffer.
+          onPointerDown={quitHint ? cancelQuit : undefined}
+          style={{ position: "fixed", inset: 0, zIndex: 100, display: "grid", placeItems: "center", background: "rgba(0,0,0,0.6)", padding: 28 }}>
+          <div style={{ maxWidth: 320, background: "#1d1b38", color: "#fff", borderRadius: 18, padding: 22, border: "1px solid rgba(255,255,255,0.14)", textAlign: "center" }}>
+            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 8 }}>Quit this app?</div>
+            {recording && !quitHint && (
+              <div style={{ fontSize: 13.5, color: "#e0a45e", lineHeight: 1.5, marginBottom: 14 }}>
+                A recording is in progress. You’ll be offered it again next time you open the app.
+              </div>
+            )}
+            {quitHint ? (
+              <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginTop: 10 }}>
+                Press back once more to leave
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+                <button onClick={() => setQuitAsk(false)} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>Stay</button>
+                <button onClick={confirmQuit} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 14, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>Quit</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
