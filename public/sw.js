@@ -16,13 +16,10 @@
  * is SKIP_WAITING, for picking up a new version.
  * ========================================================================== */
 
-// Cache version is stamped at build time by generate-env.mjs, which does a
-// literal text replace of the placeholder below before Vite copies this file
-// from public/ to dist/ — see that script for why. (Vite's own define/replace
-// mechanism does NOT reach files under public/; they're copied verbatim,
-// which is exactly why this used to silently never update — see git history
-// / the "no change in behaviour after deploy" investigation if curious.)
-const VERSION = "1.6.0-dev-1787565007413";
+// Cache version is stamped at build time (see the BUILD_ID replace in the
+// deploy step / vite define). When the bundle changes, the version changes,
+// so old shells are purged automatically on activate — no hand-editing.
+const VERSION = (self.__RTW_BUILD_ID__ || "dev");
 const SHELL_CACHE = "rtw-shell-" + VERSION;
 // Note: the old "rtw-data-v1" forecast cache is retired — forecasts are cached
 // by the app (IndexedDB) now. activate() deletes every cache except the current

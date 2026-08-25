@@ -293,149 +293,6 @@ export default function App() {
   const [nowTick, setNowTick] = useState(Date.now()); // drives the Plan day strip; bumped on midnight rollover
   const [forecastGen, setForecastGen] = useState(0); // bumped whenever routes/forecasts refresh, so Plan recomputes in place
 
-  // Back-button guard. A hardware/gesture back press with no history entries
-  // of our own just exits the app immediately — no confirmation, no chance to
-  // notice a recording is running. We keep one buffer entry in the joint
-  // history at all times; consuming it fires `popstate` here instead of
-  // actually leaving, which gives us a chance to intercept it.
-  //
-  // Priority, closest thing to Android's own back-stack convention:
-  //   1. an open Help/Settings panel just closes (very common "back to
-  //      dismiss" reflex — shouldn't escalate to a quit prompt),
-  //   2. an active recording (ride OR new-route) always gets the confirm
-  //      dialog, even mid-wizard — this is the scenario that actually
-  //      motivated the guard, so it takes priority over everything below,
-  //   3. otherwise, the setup wizard cancels straight back to Routes with no
-  //      prompt (nothing to lose — its own in-panel "‹" button steps through
-  //      record/preview/method one level at a time; the hardware back button
-  //      is coarser and just backs out entirely, a known simplification),
-  //   4. otherwise, ask before quitting.
-  const [quitConfirm, setQuitConfirm] = useState(false);
-  // Shown after "Quit" is tapped, while we're waiting to see whether the
-  // self-triggered back() below actually closed anything (see confirmQuit).
-  const [awaitingExit, setAwaitingExit] = useState(false);
-  // Set right before we trigger our own history.back() in confirmQuit(), so
-  // the popstate that call produces is recognized as self-triggered rather
-  // than a fresh user back-press — otherwise the listener re-arms the guard
-  // and re-shows the dialog in response to its own exit attempt, and "Quit"
-  // can never actually leave.
-  const quittingRef = useRef(false);
-  // Handle for the deferred exit attempt in confirmQuit(), so cancelAwaitingExit
-  // can call it off if the user backs out before it fires.
-  const quitTimeoutRef = useRef(null);
-  // Whether we can actually expect "Quit" to close anything. An installed
-  // PWA/TWA typically finishes the activity once nothing's left before the
-  // history floor — a real exit. A plain browser tab with a real page
-  // underneath (the user navigated here from somewhere in the same tab) also
-  // lands on a real exit. The only genuinely uncertain case is a plain tab
-  // sitting at the floor of its own history (opened fresh, e.g. from a
-  // bookmark or typed URL) — there's nothing to go back to, so our
-  // JS-triggered back() silently no-ops. `history.length` is captured once,
-  // on first render, before our own guard ever calls pushState — after that
-  // it keeps growing regardless of what's really underneath, so a live read
-  // later would tell us nothing.
-  const isStandalone = typeof window !== "undefined" && (
-    window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true
-  );
-  const initialHistoryLengthRef = useRef(history.length);
-  const uncertainExit = !isStandalone && initialHistoryLengthRef.current <= 1;
-  // Establish the initial guard entry exactly once, on mount. This must NOT
-  // live inside the effect below: that effect's dependency array has to
-  // include showHelp/showSettings/recording/screen so its listener closure
-  // stays fresh, but those change constantly during ordinary use (switching
-  // tabs, opening Settings, starting a recording) — if pushState ran on every
-  // re-run of that effect too, each such change would silently stack another
-  // unconsumed guard entry, and back would need one press per accumulated
-  // entry before it ever reached a real exit.
-  useEffect(() => {
-    history.pushState({ rtwGuard: true }, "", location.href);
-  }, []);
-  useEffect(() => {
-    const onPopState = () => {
-      if (quittingRef.current) {
-        // The pop produced by our own history.back() in confirmQuit(). Reset
-        // immediately rather than leaving this permanently true: if the
-        // exit attempt actually succeeded, this component is about to be
-        // torn down anyway and none of this matters; if it didn't (the
-        // uncertain-exit case — nothing before us to go back to), we're
-        // still here, and every back press for the rest of the session must
-        // go back to being guarded normally, not silently fall through as
-        // if we were forever mid-exit.
-        quittingRef.current = false;
-        setAwaitingExit(false);
-        return;
-      }
-      // Re-arm immediately (before deciding what to do) so a rapid second
-      // back-press — e.g. while the dialog is still rendering — is also
-      // caught here rather than falling through to a real exit. This is the
-      // ONLY other place pushState is called — exactly once per consumed
-      // back-press, never as a side effect of unrelated state changes.
-      history.pushState({ rtwGuard: true }, "", location.href);
-      // Dismissing Help via back should count the same as its own close
-      // button — otherwise helpSeen never gets marked and it re-shows on
-      // every future launch for anyone who dismisses it this way. Inlined
-      // rather than calling acceptHelp() directly: that's declared later in
-      // this component, and referencing it here (this effect's dependency
-      // array is evaluated during the same render, before that line runs)
-      // would throw a temporal-dead-zone error.
-      if (showHelp) {
-        setShowHelp(false);
-        controller.store.setSetting("helpSeen", true).catch(() => {});
-        return;
-      }
-      if (showSettings) { setShowSettings(false); return; }
-      // A live recording always gets the confirm dialog, even from the setup
-      // wizard — silently dropping back to Routes would abandon an
-      // in-progress new-route recording exactly as unceremoniously as the
-      // bare back button used to.
-      if (!recording && screen === "setup") { setScreen("routes"); return; }
-      setQuitConfirm(true);
-    };
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, [controller, showHelp, showSettings, recording, screen]);
-  const confirmQuit = () => {
-    setQuitConfirm(false);
-    setAwaitingExit(true);
-    // Marking quittingRef synchronously, before anything else, so that
-    // whenever the self-triggered pop below actually arrives it's correctly
-    // recognized regardless of timing.
-    quittingRef.current = true;
-    // Defer the actual exit attempt to the next tick. history.back()'s
-    // popstate can fire tightly enough (same tick, before React paints) to
-    // land before the setAwaitingExit(true) above ever reaches the screen —
-    // React just sees true-then-false batched together and renders neither,
-    // so the toast never appears, and the guard ends up silently disarmed
-    // before the user ever presses back themselves. Giving React one clear
-    // tick to commit and paint first guarantees the toast is genuinely
-    // visible before we attempt to leave.
-    quitTimeoutRef.current = setTimeout(() => {
-      quitTimeoutRef.current = null;
-      // Best-effort actual exit. `window.close()` only works for windows
-      // opened by script — a no-op here in most browsers/PWA shells,
-      // harmless either way. `history.back()` steps past our guard entry;
-      // whether that finishes an installed PWA/TWA (it typically does, once
-      // nothing's left before the root entry) or does nothing at all (a
-      // plain browser tab with no prior page) is up to the platform —
-      // there's no web API that can force a tab or app closed
-      // unconditionally.
-      try { window.close(); } catch {}
-      history.back();
-    }, 60);
-  };
-  const cancelAwaitingExit = () => {
-    // Call off the deferred exit attempt if the user cancels within its
-    // brief window, before it's had a chance to fire.
-    if (quitTimeoutRef.current) { clearTimeout(quitTimeoutRef.current); quitTimeoutRef.current = null; }
-    // The user backed out of the "tap back again" panel some other way (e.g.
-    // reopened the app to the same tab) without ever pressing back again.
-    // Re-arm properly rather than leaving the guard disarmed.
-    quittingRef.current = false;
-    setAwaitingExit(false);
-    history.pushState({ rtwGuard: true }, "", location.href);
-  };
-  const cancelQuit = () => setQuitConfirm(false);
-
   // First launch (helpSeen unset) → show the welcome/help panel once.
   useEffect(() => {
     controller.store.getSetting("helpSeen", false).then((seen) => {
@@ -640,7 +497,6 @@ export default function App() {
           <Setup controller={controller}
             resumeSession={resumeRoute}
             onResumeHandled={() => setResumeRoute(null)}
-            onRecordingChange={setRecording}
             onDone={async () => { await refresh(); setScreen("routes"); }}
             onCancel={() => setScreen("routes")} />
         ) : (
@@ -712,64 +568,6 @@ export default function App() {
         </div>
       )}
       {showSettings && <SettingsPanel units={displayUnits} onChange={changeUnits} cruiseSpeedKmh={cruiseSpeedKmh} onChangeCruiseSpeed={changeCruiseSpeed} conservatism={conservatism} onChangeConservatism={changeConservatism} onClose={() => setShowSettings(false)} />}
-      {quitConfirm && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 60, display: "grid", placeItems: "center",
-          background: "rgba(0,0,0,0.6)", padding: 28,
-        }}>
-          <div style={{
-            maxWidth: 320, background: "#1d1b38", borderRadius: 18, padding: "22px 22px",
-            border: "1px solid rgba(255,255,255,0.14)", textAlign: "center", color: "#fff",
-          }}>
-            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 19, fontWeight: 600, marginBottom: 8 }}>
-              {recording ? "Recording in progress" : "Quit this app?"}
-            </div>
-            <div style={{ fontSize: 14, color: "rgba(255,255,255,0.7)", lineHeight: 1.5, marginBottom: uncertainExit ? 10 : 18 }}>
-              {recording
-                ? (screen === "setup"
-                    ? "You're recording a new route. If you quit now, reopen the app to pick up recording right where you left off."
-                    : "You're recording a ride. If you quit now, reopen the app to pick up recording right where you left off.")
-                : "Do you want to quit this app?"}
-            </div>
-            {uncertainExit && (
-              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)", lineHeight: 1.5, marginBottom: 18 }}>
-                This browser tab may need one more back press (or your browser's close-tab button) to fully close.
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={cancelQuit} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>
-                {recording ? "Keep recording" : "Stay"}
-              </button>
-              <button onClick={confirmQuit} style={{ flex: 1, padding: 12, borderRadius: 12, cursor: "pointer", fontFamily: "'Fraunces',serif", fontSize: 14, fontWeight: 600, background: "#d9534f", color: "#fff", border: "none" }}>
-                {recording ? "Quit anyway" : "Quit"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {awaitingExit && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 60, display: "grid", placeItems: "center",
-          background: "rgba(0,0,0,0.6)", padding: 28,
-        }}>
-          <div style={{
-            maxWidth: 280, background: "#1d1b38", borderRadius: 18, padding: "22px 22px",
-            border: "1px solid rgba(255,255,255,0.14)", textAlign: "center", color: "#fff",
-          }}>
-            <div style={{ fontFamily: "'Fraunces',serif", fontSize: 17, fontWeight: 600, marginBottom: 8 }}>
-              Tap "back" again to close
-            </div>
-            {uncertainExit && (
-              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)", lineHeight: 1.5, marginBottom: 14 }}>
-                This browser tab may not close on its own — you can also use your browser's close-tab button.
-              </div>
-            )}
-            <button onClick={cancelAwaitingExit} style={{ width: "100%", padding: 10, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.18)" }}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -2568,7 +2366,7 @@ const lbl = { display: "block", fontSize: 12.5, color: "rgba(255,255,255,0.6)", 
  * browser doesn't suspend watchPosition when the screen locks / app backgrounds.
  * On Finish, hands the raw traversal up via onRecorded (the parent gates it).
  * ========================================================================== */
-function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResumeHandled, onRecordingChange }) {
+function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResumeHandled }) {
   const [state, setState] = useState("armed"); // armed | recording | blocked
   const [blocked, setBlocked] = useState(null); // gate-failure message
   const [gpsError, setGpsError] = useState(null); // {code,message} when geolocation fails
@@ -2613,13 +2411,6 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
     const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, [state]);
-  // Report live-recording status up to the app shell — same signal Capture
-  // already sends for ride recording — so nav lock (tab bar) and the back-
-  // button quit guard treat an in-progress new-route recording the same way.
-  useEffect(() => {
-    onRecordingChange?.(state === "recording");
-    return () => onRecordingChange?.(false);
-  }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const resumeStartedRef = useRef(false);
   useEffect(() => {
@@ -2797,7 +2588,7 @@ function MethodOption({ title, desc, onClick, disabled }) {
  * Setup — create a route: choose a method (record / reverse / GPX), then the
  * shared details form (name, tuning, schedule).
  * ========================================================================== */
-function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled, onRecordingChange }) {
+function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled }) {
   const [method, setMethod] = useState(resumeSession ? "record" : null); // null=chooser, "gpx", "reverse"
   const [gpxText, setGpxText] = useState(null);
   const [processed, setProcessed] = useState(null); // reverse/record path: pre-built geometry
@@ -2937,7 +2728,6 @@ function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled, o
       {method === "record" && !preview && (
         <RouteRecorder controller={controller}
           resumeSession={resumeSession} onResumeHandled={onResumeHandled}
-          onRecordingChange={onRecordingChange}
           onCancel={() => { setMethod(null); setErr(null); }}
           onRecorded={(rec, res) => {
             // res = { ok:true, processed, preview } from the recorder's gate.
