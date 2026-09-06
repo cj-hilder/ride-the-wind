@@ -2,60 +2,13 @@
 
 **[Open the app → ridethewind.nz](https://ridethewind.nz/)**
 
-A Progressive Web App that predicts your bike commute time from the forecast
-wind and tells you when to leave. For a fixed arrival ("at work by 8:30") it
-works out when to set off; for a fixed departure ("leaving work at 5") it tells
-you when you'll arrive.
+A Progressive Web App that predicts bike commute times from forecast
+wind.
 
 **Free and open source**, released under the MIT License by Chris Hilder — free
 to use, study, modify, and share. Your routes and rides stay on your device.
 
-## Using it
-
-Three tabs:
-
-- **Plan** — pick a route and tap any day in the week strip to see when to leave
-  (or when you'll arrive). A live countdown appears as the time approaches.
-  *Explore* checks a different time on that day; *Go now* shows the ride if you
-  left this minute.
-- **Ride** — records an actual ride by GPS on a live instrument panel (elapsed,
-  speed, a clock showing your predicted arrival, and progress along the route),
-  with pause for stops. At the end you can nudge the time or discard it; accepted
-  rides tune the model. You can also enter a ride you did earlier from the route's
-  ride list.
-- **Routes** — add and tune routes, and set the uncertainty allowance.
-
-You add a route in one of three ways: **record it by GPS** as you ride (the
-simplest — the first traversal also becomes the route's first ride), **import a
-GPX file** (plan one in a route planner, or reuse one from another app), or
-**reverse an existing route** to make its return trip. Each route is tuned from
-two things you set: your **still-air speed** and a **ground effect** — how
-sheltered or exposed the route is, which sets how much wind slows or speeds you.
-That's enough to use it from day one. Each destination needs two routes, one
-each way.
-
-## How it works
-
-- For each route it samples the wind along your actual path and works out how
-  much the head- and tailwind components will speed up or slow down the ride,
-  with **separate head- and tailwind sensitivities** (shelter is often
-  directional).
-- The forecast combines the high-resolution deterministic model with a
-  **51-member ECMWF ensemble** — about fifty separate wind forecasts per route.
-  The deterministic run is folded into the ensemble as one weighted member,
-  weighted toward it at short lead (where it resolves local terrain) and fading
-  to pure ensemble by the next day. The central estimate and its spread emerge
-  from that single population, so the spread reflects genuine forecast
-  agreement, not a guess. Departures lean conservative so you're rarely late;
-  how much of the spread to apply is a tunable uncertainty-allowance setting.
-- It **learns each route** from the rides you log. It's usable from the first
-  ride (starting from the speed and ground effect you set) and well-tuned after about
-  ten rides in each direction, then keeps adapting as your fitness changes. When
-  it has learned a route the tuning controls show what it has learned; nudge a
-  control to switch back to setting the times by hand.
-
-There are no notifications: a PWA can't reliably wake to alert you when closed,
-so the app shows the live countdown while open instead. Everything runs locally
+Everything runs locally
 in the browser; the only network calls are to the
 [Open-Meteo](https://open-meteo.com) forecast and ensemble APIs.
 
