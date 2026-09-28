@@ -6,7 +6,7 @@ A Progressive Web App that predicts bike commute times from forecast
 wind.
 
 **Free and open source**, released under the MIT License by Chris Hilder — free
-to use, study, modify, and share. Your routes and rides stay on your device.
+to use, study, modify, and share. Routes and rides stay on the local device.
 
 Everything runs locally
 in the browser; the only network calls are to the
@@ -26,9 +26,7 @@ run the test suites in the project root with `node test*.mjs`.
 ## Deploy
 
 Pushing to `main` triggers a Cloudflare Pages build (`npm run build`, output
-`dist/`), which deploys to [ridethewind.nz](https://ridethewind.nz/). The
-GitHub Pages workflow that previously served this app has been disabled; the
-project now lives at its own domain rather than a `github.io` subdirectory.
+`dist/`), which deploys to [ridethewind.nz](https://ridethewind.nz/). 
 
 ### Versioning a release
 
