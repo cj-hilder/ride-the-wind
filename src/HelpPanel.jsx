@@ -55,11 +55,14 @@ export default function HelpPanel({ onClose }) {
 <p style={p}>
 Ride the Wind is a weather forecasting app for bike commuters. It scans the forecast to answer two questions at a glance:
 </p>
-<ul style={ol}><li>How will the wind affect my ride?
-</li><li>What should I wear?
+<ul style={ol}><li>How much will the wind slow down or speed up my ride?
+</li><li>Will it be wet?
 </li></ul>
 <p style={p}>
-It uses an easily configured model to predict the effect of the forecast wind on your ride speed, and if appropriate it suggests how early or late to leave. It also alerts you to temperature, rain, and other weather that could affect your choice of clothing.
+It uses a physics-based model to predict the effect of the forecast wind on your ride speed. 
+Once you've recorded a few rides and tuned the settings it gives remarkably accurate predictions. 
+It uses those predictions to recommend how early or late to leave. It also alerts you to temperature, 
+rain, and other weather that could affect your choice of clothing.
 </p><p style={p}>
 This saves you having to interpret a general weather forecast for your particular route, and gives you only the information you need to know for your ride.
 </p>
@@ -87,17 +90,19 @@ This saves you having to interpret a general weather forecast for your particula
             <b>1. Plan</b> shows the forecast ride times and recommended departures for the week ahead. It also indicates temperature and alerts you when rain, snow, fog, thunderstorms, strong gusts or crosswinds are forecast for your ride. Tap the temperature to display more forecast details.
           </p>
           <p style={p}>
-            <b>2. Ride</b> lets you record actual ride times which are then used to tune the model and make more accurate predictions. There is a speedometer and clock that display while recording, as well as a progress indicator and predicted arrival time indicator.
+            <b>2. Ride</b> lets you record actual ride times which are then used to tune the model and make more accurate predictions. There is a speedo and clock that display while recording, as well as a progress indicator and predicted arrival time indicator. 
+            The look and feel of the speedo is inspired by 80's style muscle cars, and the clock is inspired by classic divers watches with a rotating bezel to indicate expected arrival time.
           </p>
           <p style={p}>
-            <b>3. Routes</b> is where you add new routes and hand tune your routes. This tab also includes a ride editor so you can enter rides you forgot to record and edit rides that were recorded incorrectly.
+            <b>3. Routes</b> is where you add new routes and hand tune the model. This tab also includes a ride editor so you can enter rides you forgot to record and edit rides that were recorded incorrectly.
           </p>
         </div>
 
         <div style={section}>
           <h3 style={h3}>Tuning a route</h3>
           <p style={p}>
-            Tuning a route means setting the <b>still‑air time</b> and <b>ground effect</b>. Those are the two tunable numbers used to predict ride times. Still air time is your average time taken to ride the route when there is no wind. A rough estimate (or the app's default value) is good enough as a starting point. Ground effect is the percentage of the forecast wind that you actually feel on this route. Start with the app's default value until you have a few windy rides recorded.
+            Tuning a route means setting the <b>still‑air time</b> and <b>ground effect</b> of the route. Those are the two tunable numbers for a route. 
+            They are used in conjunction with your personal <b>cruising speed</b> to predict ride times. Still air time is your average time taken to ride the route when there is no wind. A rough estimate (or the app's default value) is good enough as a starting point. Ground effect is the percentage of the forecast wind that you actually feel on this route. Start with the app's default value until you have a few windy rides recorded.
           </p>
           <p style={p}>
             As you record rides the app learns your real numbers and takes over the tuning. You might need several rides in each direction. If the learned times aren't working for you, just switch to manual and set them by hand. All rides can be viewed and edited, so you can control which rides are used for learning. Once you are happy with the numbers there is no need to keep recording and editing unless your average still air time changes (you get fitter, a new bike, etc).
