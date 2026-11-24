@@ -5,6 +5,8 @@ import {
   SPEEDO_START_DEG, SPEEDO_SWEEP_DEG, SPEEDO_MAX_KMH,
   newGpsWarmup, gpsWarmupStep,
   needleTauMsDoppler, newAccBaseline, accBaselinePush, NEEDLE_DOPPLER_TAU_MAX_MS,
+  clampNeedleAccel, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DECEL_MPS2, NEEDLE_TAU_SCALE,
+  speedoTauScale, speedoResponseStep, speedoSettleSec, SPEEDO_RESPONSE_DEFAULT, SPEEDO_RESPONSE_SCALES, SPEEDO_RESPONSE_LABELS,
 } from './src/lib/rideReadout.js';
 
 let pass = 0, fail = 0;
@@ -268,6 +270,27 @@ console.log('\nneedleTauMsDoppler (per-phone relative τ):');
   ok('baseline tracks typical accuracy, robust to one lucky fix', near(base, 9.4), `${base}`);
   for (let i = 0; i < 100; i++) accBaselinePush(b, 5);
   ok('baseline window rolls (old values age out)', b.recent.length === 60 && near(accBaselinePush(b, null), 5));
+}
+
+console.log('\nclampNeedleAccel (asymmetric):');
+{
+  ok('accel limited to 1.75 m/s² × dt', near(clampNeedleAccel(5, 15, 1000), 5 + NEEDLE_MAX_ACCEL_MPS2));
+  ok('braking allowed up to 4 m/s² × dt', near(clampNeedleAccel(8, 0, 1000), 8 - NEEDLE_MAX_DECEL_MPS2));
+  ok('braking faster than accelerating', NEEDLE_MAX_DECEL_MPS2 > NEEDLE_MAX_ACCEL_MPS2);
+  ok('within bounds passes through', near(clampNeedleAccel(5, 6, 1000), 6) && near(clampNeedleAccel(5, 3, 1000), 3));
+  ok('scales with dt', near(clampNeedleAccel(5, 15, 2000), 5 + 2 * NEEDLE_MAX_ACCEL_MPS2));
+}
+
+console.log('\nspeedo response setting:');
+{
+  ok('default step keeps previous behaviour', speedoTauScale(SPEEDO_RESPONSE_DEFAULT) === NEEDLE_TAU_SCALE);
+  ok('labels match steps', SPEEDO_RESPONSE_LABELS.length === SPEEDO_RESPONSE_SCALES.length);
+  ok('steps run quick → smooth', SPEEDO_RESPONSE_SCALES.every((v, i, a) => i === 0 || v > a[i - 1]));
+  ok('missing setting → default', speedoResponseStep(undefined) === SPEEDO_RESPONSE_DEFAULT && speedoResponseStep(null) === SPEEDO_RESPONSE_DEFAULT);
+  ok('out-of-range / garbage → default', speedoResponseStep(9) === SPEEDO_RESPONSE_DEFAULT && speedoResponseStep(-1) === SPEEDO_RESPONSE_DEFAULT && speedoResponseStep('x') === SPEEDO_RESPONSE_DEFAULT);
+  ok('string from slider accepted', speedoResponseStep('0') === 0 && speedoTauScale('4') === SPEEDO_RESPONSE_SCALES[4]);
+  ok('settle readout: Balanced ≈ 3 s', near(speedoSettleSec(SPEEDO_RESPONSE_DEFAULT), 3));
+  ok('settle readout: Quick ≈ 1 s', near(speedoSettleSec(0), 1));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

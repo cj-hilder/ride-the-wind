@@ -23,7 +23,7 @@ import { solarTimes } from "./lib/solar.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
-  needleTauMs, needleTauMsFromSpeedAcc, needleTauMsDoppler, newAccBaseline, accBaselinePush, accBaseline, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, newGpsWarmup, gpsWarmupStep, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
+  needleTauMs, needleTauMsFromSpeedAcc, needleTauMsDoppler, newAccBaseline, accBaselinePush, accBaseline, speedoTauScale, speedoResponseStep, speedoSettleSec, SPEEDO_RESPONSE_DEFAULT, SPEEDO_RESPONSE_SCALES, SPEEDO_RESPONSE_LABELS, clampNeedleAccel, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, newGpsWarmup, gpsWarmupStep, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedUnitLabel, defaultCruiseSpeedKmh, formatDisplayNumber } from "./lib/format.js";
@@ -369,6 +369,22 @@ export default function App() {
     setForecastGen((g) => g + 1); // after persist, so the Home recompute reads the new value
   }, [controller]);
 
+  // Speedo response — device-level needle damping (Quick → Smooth), stored as a
+  // step index. Read by each ride at start (loadSpeedoScale).
+  const [speedoResponse, setSpeedoResponse] = useState(SPEEDO_RESPONSE_DEFAULT);
+  useEffect(() => {
+    let cancelled = false;
+    controller.store.getSetting("speedoResponse", SPEEDO_RESPONSE_DEFAULT).then((v) => {
+      if (!cancelled) setSpeedoResponse(speedoResponseStep(v));
+    });
+    return () => { cancelled = true; };
+  }, [controller]);
+  const changeSpeedoResponse = useCallback(async (v) => {
+    const step = speedoResponseStep(v);
+    setSpeedoResponse(step);
+    await controller.store.setSetting("speedoResponse", step);
+  }, [controller]);
+
   const acceptHelp = useCallback(async () => {
     setShowHelp(false);
     await controller.store.setSetting("helpSeen", true);
@@ -641,7 +657,7 @@ export default function App() {
           </div>
         </div>
       )}
-      {showSettings && <SettingsPanel units={displayUnits} onChange={changeUnits} cruiseSpeedKmh={cruiseSpeedKmh} onChangeCruiseSpeed={changeCruiseSpeed} conservatism={conservatism} onChangeConservatism={changeConservatism} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsPanel units={displayUnits} onChange={changeUnits} cruiseSpeedKmh={cruiseSpeedKmh} onChangeCruiseSpeed={changeCruiseSpeed} conservatism={conservatism} onChangeConservatism={changeConservatism} speedoResponse={speedoResponse} onChangeSpeedoResponse={changeSpeedoResponse} onClose={() => setShowSettings(false)} />}
       {quitAsk && (
         <div
           // While the hint is up the guard is disarmed, so this overlay — which
@@ -1438,7 +1454,17 @@ function ModePill({ mode, onChange, disabled }) {
  * the top reflects the current (tentative) selection. Changes are applied live
  * via onChange (which persists + re-primes the format seam).
  * ========================================================================== */
-function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, conservatism, onChangeConservatism, onClose }) {
+// Apply the user's Speedo response setting to the needle state for this ride.
+// Async (settings live in IndexedDB): the default scale is used until it
+// resolves, which is well within GPS warm-up, so the needle never sees it.
+function loadSpeedoScale(controller, emaRef) {
+  const em = emaRef.current;
+  controller.store.getSetting("speedoResponse", SPEEDO_RESPONSE_DEFAULT)
+    .then((v) => { if (emaRef.current === em) em.tauScale = speedoTauScale(v); })
+    .catch(() => { /* keep default */ });
+}
+
+function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, conservatism, onChangeConservatism, speedoResponse = SPEEDO_RESPONSE_DEFAULT, onChangeSpeedoResponse, onClose }) {
   const u = { ...DEFAULT_UNITS, ...(units || {}) };
   const set = (key, value) => onChange({ ...u, [key]: value });
 
@@ -1528,6 +1554,26 @@ function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, c
           </div>
           <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginTop: 8, lineHeight: 1.5 }}>
             Your usual cruising speed — how fast you typically ride on the flat with no wind. The wind effect model is valid for cruising speeds between {fmtBound(cruiseLo)} and {fmtBound(cruiseHi)} {cruiseUnit}. Your average speed over an entire route will usually be different from your cruising speed and may be outside this range, but if your cruising speed is outside this range predicted times will be less accurate.
+          </div>
+        </div>
+
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.12)", margin: "0 0 18px" }} />
+
+        {/* Speedo response — device-level needle damping */}
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)", fontWeight: 600 }}>Speedo response</span>
+            <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{SPEEDO_RESPONSE_LABELS[speedoResponse]}</span>
+          </div>
+          <input type="range" min={0} max={SPEEDO_RESPONSE_SCALES.length - 1} step={1} value={speedoResponse}
+            onChange={(e) => onChangeSpeedoResponse?.(e.target.value)}
+            aria-label="Speedo response, quick to smooth"
+            style={{ width: "100%", accentColor: "#e0a45e" }} />
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, color: "rgba(255,255,255,0.45)", marginTop: 2 }}>
+            <span>Quick</span><span>Smooth</span>
+          </div>
+          <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginTop: 6, lineHeight: 1.5 }}>
+            How quickly the speedometer needle follows your speed. Quicker settings react faster but wobble more; smoother settings are steadier but lag behind changes. The needle settles in about {formatDisplayNumber(Math.round(speedoSettleSec(speedoResponse) * 10) / 10)} s with a good GPS signal, and more slowly when the signal is weak. The best setting depends on your phone's GPS, so try a ride or two and adjust.
           </div>
         </div>
 
@@ -2528,7 +2574,8 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
   const begin = async (resume = null) => {
     setState("recording"); setElapsed(resumedElapsedSec(resume)); setPaused(false); setGpsError(null);
     setLive({ distanceM: 0, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null, initCoarse: false });
-    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, lastSpeedAccM: null, warmed: false, warmDistM: 0, warmSec: null, gw: newGpsWarmup(), accBase: newAccBaseline() };
+    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, lastSpeedAccM: null, warmed: false, warmDistM: 0, warmSec: null, gw: newGpsWarmup(), accBase: newAccBaseline(), tauScale: speedoTauScale(SPEEDO_RESPONSE_DEFAULT) };
+    loadSpeedoScale(controller, emaRef);
     acquireWake();
     const handle = await controller.recordRoute({
       resumeSession: resume,
@@ -2559,16 +2606,15 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
             //    else position-derived. Same needle pipeline as ride capture.
             let instMps = useDoppler ? gpsSpeedMps : Math.max(0, speedMps || 0);
             if (instMps > SPEED_SANE_MAX_MPS) instMps = useDoppler ? SPEED_SANE_MAX_MPS : 0;
-            // 2) acceleration clamp (source-agnostic physical bound)
-            const maxDelta = NEEDLE_MAX_ACCEL_MPS2 * (dt / 1000);
-            instMps = Math.max(em.speedMps - maxDelta, Math.min(em.speedMps + maxDelta, instMps));
-            // 3) adaptive τ from the source-appropriate accuracy, ×NEEDLE_TAU_SCALE
+            // 2) acceleration clamp (source-agnostic physical bound; brakes harder than it accelerates)
+            instMps = clampNeedleAccel(em.speedMps, instMps, dt);
+            // 3) adaptive τ from the source-appropriate accuracy, × the user's speedo-response scale
             const baseTau = useDoppler
               ? ((speedAccMps != null || em.lastSpeedAccM != null)
                   ? needleTauMsFromSpeedAcc(em.lastSpeedAccM, speedAccMps)
                   : needleTauMsDoppler(em.lastAccM, accuracyM, accBaseline(em.accBase)))
               : needleTauMs(em.lastAccM, accuracyM);
-            const tau = baseTau * NEEDLE_TAU_SCALE;
+            const tau = baseTau * em.tauScale;
             em.speedMps = emaStep(em.speedMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), tau);
             em.lastSpeedAccM = speedAccMps != null ? speedAccMps : em.lastSpeedAccM;
           }
@@ -3209,7 +3255,9 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
       moveDistM: 0, moveSec: 0, lastSpeedAccM: null,
       lastFixT: null, lastAlongM: null, lastAccM: null,
       polyline: routePolyline(route),
+      tauScale: speedoTauScale(SPEEDO_RESPONSE_DEFAULT),
     };
+    loadSpeedoScale(controller, emaRef);
     setExpectLine(null);
     setForecastSec(null);
     // Fetch the go-now prediction first (duration + head/tailwind word), then
@@ -3287,7 +3335,7 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
           // Both paths share the SAME filter: sane-max, acceleration clamp, and a
           // dt-capped adaptive-τ EMA. τ is driven by the source-appropriate
           // accuracy — VELOCITY accuracy (coords.speedAccuracy) for Doppler,
-          // POSITION accuracy for differencing — and scaled by NEEDLE_TAU_SCALE
+          // POSITION accuracy for differencing — and scaled by the user's Speedo response setting (em.tauScale)
           // (1.20: the road-tested balance of responsiveness vs damping).
           const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
           const useDoppler = gpsSpeedMps != null && gpsSpeedMps >= 0;
@@ -3295,10 +3343,9 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
             // 1) instantaneous speed sample
             let instMps = useDoppler ? gpsSpeedMps : Math.max(0, speedMps || 0);
             if (instMps > SPEED_SANE_MAX_MPS) instMps = useDoppler ? SPEED_SANE_MAX_MPS : 0;
-            // 2) acceleration clamp (source-agnostic physical bound)
-            const maxDelta = NEEDLE_MAX_ACCEL_MPS2 * (dt / 1000);
-            instMps = Math.max(em.speedMps - maxDelta, Math.min(em.speedMps + maxDelta, instMps));
-            // 3) adaptive τ from the source-appropriate accuracy, ×NEEDLE_TAU_SCALE
+            // 2) acceleration clamp (source-agnostic physical bound; brakes harder than it accelerates)
+            instMps = clampNeedleAccel(em.speedMps, instMps, dt);
+            // 3) adaptive τ from the source-appropriate accuracy, × the user's speedo-response scale
             const baseTau = useDoppler
               ? ((speedAccMps != null || em.lastSpeedAccM != null)
                   ? needleTauMsFromSpeedAcc(em.lastSpeedAccM, speedAccMps)
@@ -3306,7 +3353,7 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
                   // to this phone's own typical accuracy, capped — see needleTauMsDoppler
                   : needleTauMsDoppler(em.lastAccM, accuracyM, accBaseline(em.accBase)))
               : needleTauMs(em.lastAccM, accuracyM);
-            const tau = baseTau * NEEDLE_TAU_SCALE;
+            const tau = baseTau * em.tauScale;
             const dtForAlpha = Math.min(dt, NEEDLE_MAX_DT_MS);
             em.speedMps = emaStep(em.speedMps, instMps, dtForAlpha, tau);
           }

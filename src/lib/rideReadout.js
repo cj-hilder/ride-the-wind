@@ -38,6 +38,42 @@ export const NEEDLE_TAU_SCALE = 1.20;        // multiplier on the adaptive τ �
                                              // responsiveness vs damping for the Doppler-primary needle
 export const GPS_ACCURACY_HARD_M = 50;       // above this a fix is still dropped for the needle (garbage)
 
+/**
+ * (A) Physical jump-limiter: clamp a new speed sample relative to the current
+ * needle speed. Asymmetric — riders brake much harder than they accelerate, so
+ * a symmetric 1.75 m/s² bound made the needle lag on every firm stop.
+ */
+export function clampNeedleAccel(prevMps, instMps, dtMs) {
+  const s = dtMs / 1000;
+  return Math.max(prevMps - NEEDLE_MAX_DECEL_MPS2 * s, Math.min(prevMps + NEEDLE_MAX_ACCEL_MPS2 * s, instMps));
+}
+
+// ── Speedo response (user setting) ──────────────────────────────────────────
+// Users choose how damped the needle is, Quick → Smooth. Each step is a
+// multiplier on the whole adaptive τ curve (replacing the fixed
+// NEEDLE_TAU_SCALE), so the needle still slows on degraded fixes — just
+// proportionally. Stored as a step index; the default step is NEEDLE_TAU_SCALE.
+export const SPEEDO_RESPONSE_SCALES = [0.4, 0.7, NEEDLE_TAU_SCALE, 1.6, 2.0];
+export const SPEEDO_RESPONSE_LABELS = ["Quick", "Brisk", "Balanced", "Steady", "Smooth"];
+export const SPEEDO_RESPONSE_DEFAULT = 2;
+
+/** Clamp a stored step to a valid index (bad/missing → default). */
+export function speedoResponseStep(v) {
+  if (v == null || v === "") return SPEEDO_RESPONSE_DEFAULT;
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n >= 0 && n < SPEEDO_RESPONSE_SCALES.length ? n : SPEEDO_RESPONSE_DEFAULT;
+}
+
+/** τ multiplier for a stored speedo-response step. */
+export function speedoTauScale(step) {
+  return SPEEDO_RESPONSE_SCALES[speedoResponseStep(step)];
+}
+
+/** Settling time (s, one τ) at good signal for a step — for the Settings readout. */
+export function speedoSettleSec(step) {
+  return (NEEDLE_TAU_MIN_MS * speedoTauScale(step)) / 1000;
+}
+
 // ── GPS warm-up ─────────────────────────────────────────────────────────────
 // The needle and average speed stay at 0 until GPS has "warmed up", which kills
 // acquisition spikes in the first few seconds. Phones report accuracy very
@@ -112,7 +148,8 @@ export function gpsWarmupStep(w, { fixT, accuracyM, gpsSpeedMps }) {
   const coarse = elapsed >= WARMUP_COARSE_HINT_MS && best != null && best > WARMUP_COARSE_ACC_M;
   return { warmed: false, justWarmed: false, pct: w.pct, coarse };
 }
-export const NEEDLE_MAX_ACCEL_MPS2 = 1.75;   // (A) sane cycling accel; per-sample speed change is clamped to this × dt
+export const NEEDLE_MAX_ACCEL_MPS2 = 1.75;   // (A) sane cycling accel; per-sample speed INCREASE is clamped to this × dt
+export const NEEDLE_MAX_DECEL_MPS2 = 4.0;    // (A) firm braking is 3–4 m/s², so allow faster DECREASES than increases
 export const NEEDLE_MAX_DT_MS = 6000;        // (B) cap the dt used for α so one sample after a gap can't seize the needle
 
 /**

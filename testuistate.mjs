@@ -53,6 +53,7 @@ const DEVICE_LOCAL = [
   'lastSelectedDayMs', // last viewed day on the Plan strip (absolute epoch — stale once exported)
   'exploredOverrides', // per-(route,day) what-if times, keyed by day (likewise stale)
   'helpSeen',          // welcome panel dismissal; showing it once on a new device is reasonable
+  'speedoResponse',    // needle damping — tuned to this phone's GPS, so it stays with the device
 ];
 
 console.log('Static guard — every persisted key is classified:');
