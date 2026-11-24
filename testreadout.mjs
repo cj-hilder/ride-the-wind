@@ -4,6 +4,7 @@ import {
   needleTauMs, NEEDLE_TAU_MIN_MS, NEEDLE_TAU_MAX_MS, NEEDLE_ACC_REF_M,
   SPEEDO_START_DEG, SPEEDO_SWEEP_DEG, SPEEDO_MAX_KMH,
   newGpsWarmup, gpsWarmupStep,
+  needleTauMsDoppler, newAccBaseline, accBaselinePush, NEEDLE_DOPPLER_TAU_MAX_MS,
 } from './src/lib/rideReadout.js';
 
 let pass = 0, fail = 0;
@@ -250,6 +251,23 @@ console.log('\ngpsWarmupStep (universal GPS warm-up):');
     ok('approximate location → coarse hint after 15 s', !r.out[10].coarse && r.out[16].coarse);
     ok('no coarse hint for ordinary 25 m accuracy', run(seq(20, (i) => [i, 25, 0])).out.every((x) => !x.coarse));
   }
+}
+
+console.log('\nneedleTauMsDoppler (per-phone relative τ):');
+{
+  ok('phone at its own 10 m baseline gets τ_min', near(needleTauMsDoppler(10, 10, 10), NEEDLE_TAU_MIN_MS));
+  ok('old absolute rule would have been ~6× slower at 10 m', needleTauMs(10, 10) > 5 * NEEDLE_TAU_MIN_MS);
+  ok('4 m phone unchanged vs absolute rule', near(needleTauMsDoppler(4, 4, 4), needleTauMs(4, 4)));
+  ok('baseline never tighter than 4 m reference', near(needleTauMsDoppler(6, 6, 2), needleTauMs(6, 6)));
+  ok('degraded fix (2× baseline) slows needle', needleTauMsDoppler(20, 20, 10) > 3 * NEEDLE_TAU_MIN_MS);
+  ok('capped at NEEDLE_DOPPLER_TAU_MAX_MS', near(needleTauMsDoppler(50, 50, 4), NEEDLE_DOPPLER_TAU_MAX_MS));
+  ok('null baseline → absolute reference (capped)', near(needleTauMsDoppler(4, 4, null), NEEDLE_TAU_MIN_MS));
+  const b = newAccBaseline();
+  for (let i = 0; i < 50; i++) accBaselinePush(b, i % 5 === 0 ? 16 : 9.4);
+  const base = accBaselinePush(b, 3); // one lucky fix shouldn't drag the baseline down
+  ok('baseline tracks typical accuracy, robust to one lucky fix', near(base, 9.4), `${base}`);
+  for (let i = 0; i < 100; i++) accBaselinePush(b, 5);
+  ok('baseline window rolls (old values age out)', b.recent.length === 60 && near(accBaselinePush(b, null), 5));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

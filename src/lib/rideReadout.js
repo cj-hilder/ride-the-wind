@@ -144,6 +144,58 @@ export function needleTauMsFromSpeedAcc(speedAccPrev, speedAccNow) {
   return Math.max(NEEDLE_TAU_MIN_MS, Math.min(NEEDLE_TAU_MAX_MS, tau));
 }
 
+// ── Doppler needle τ without speedAccuracy ──────────────────────────────────
+// Browsers generally don't expose coords.speedAccuracy, so the Doppler needle
+// used to fall back to needleTauMs(position accuracy), referenced to an
+// absolute 4 m. τ grows with accuracy², so a phone whose normal accuracy is
+// ~10 m smoothed ~6× harder than one at 4 m — sluggish on many devices. And
+// position accuracy is only a loose proxy for Doppler speed error anyway.
+// Instead, reference position accuracy to THIS phone's own typical accuracy
+// (a low percentile of recent fixes), so each device's normal state gets the
+// snappy τ and only a genuine degradation slows the needle; and cap τ lower.
+export const NEEDLE_BASELINE_WINDOW = 60;      // recent fixes the per-phone baseline is drawn from
+export const NEEDLE_BASELINE_PCTL = 0.2;       // percentile of that window taken as "typical good"
+export const NEEDLE_DOPPLER_TAU_MAX_MS = 8000; // cap (×NEEDLE_TAU_SCALE → ~10 s) for the Doppler path
+
+/** Fresh per-ride accuracy baseline tracker. */
+export function newAccBaseline() { return { recent: [] }; }
+
+/**
+ * Add one fix's horizontal accuracy (m) to the baseline tracker `b` (mutated)
+ * and return the phone's current typical accuracy: the NEEDLE_BASELINE_PCTL
+ * percentile of the last NEEDLE_BASELINE_WINDOW reported values, or null if
+ * none yet. Null/garbage accuracies are ignored.
+ */
+export function accBaselinePush(b, accuracyM) {
+  if (typeof accuracyM === "number" && accuracyM >= 0 && Number.isFinite(accuracyM)) {
+    b.recent.push(accuracyM);
+    if (b.recent.length > NEEDLE_BASELINE_WINDOW) b.recent.shift();
+  }
+  return accBaseline(b);
+}
+
+/** Current typical accuracy from tracker `b`, or null if empty. */
+export function accBaseline(b) {
+  if (!b || !b.recent.length) return null;
+  const sorted = [...b.recent].sort((x, y) => x - y);
+  return sorted[Math.floor(NEEDLE_BASELINE_PCTL * (sorted.length - 1))];
+}
+
+/**
+ * τ for the Doppler needle when speedAccuracy is unavailable: position-accuracy
+ * variance relative to the phone's own baseline (never a tighter reference than
+ * NEEDLE_ACC_REF_M, so phones already at ~4 m behave as before), clamped to
+ * [NEEDLE_TAU_MIN_MS, NEEDLE_DOPPLER_TAU_MAX_MS].
+ */
+export function needleTauMsDoppler(accPrev, accNow, baselineM) {
+  const ref = Math.max(NEEDLE_ACC_REF_M, (typeof baselineM === "number" && baselineM > 0) ? baselineM : NEEDLE_ACC_REF_M);
+  const clamp = (a) => Math.max(NEEDLE_ACC_FLOOR_M, a);
+  const ap = clamp((accPrev == null || Number.isNaN(accPrev)) ? ref : accPrev);
+  const an = clamp((accNow == null || Number.isNaN(accNow)) ? ref : accNow);
+  const tau = NEEDLE_TAU_MIN_MS * ((ap * ap + an * an) / (2 * ref * ref));
+  return Math.max(NEEDLE_TAU_MIN_MS, Math.min(NEEDLE_DOPPLER_TAU_MAX_MS, tau));
+}
+
 export function needleTauMs(accPrev, accNow) {
   // Clamp each reported accuracy UP to a realistic floor: consumer GPS is
   // essentially never truly sub-2.5 m, so a device claiming (or lying) better is

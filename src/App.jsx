@@ -23,7 +23,7 @@ import { solarTimes } from "./lib/solar.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
-  needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, newGpsWarmup, gpsWarmupStep, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
+  needleTauMs, needleTauMsFromSpeedAcc, needleTauMsDoppler, newAccBaseline, accBaselinePush, accBaseline, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, newGpsWarmup, gpsWarmupStep, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedUnitLabel, defaultCruiseSpeedKmh, formatDisplayNumber } from "./lib/format.js";
@@ -2528,7 +2528,7 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
   const begin = async (resume = null) => {
     setState("recording"); setElapsed(resumedElapsedSec(resume)); setPaused(false); setGpsError(null);
     setLive({ distanceM: 0, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null, initCoarse: false });
-    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, lastSpeedAccM: null, warmed: false, warmDistM: 0, warmSec: null, gw: newGpsWarmup() };
+    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, lastSpeedAccM: null, warmed: false, warmDistM: 0, warmSec: null, gw: newGpsWarmup(), accBase: newAccBaseline() };
     acquireWake();
     const handle = await controller.recordRoute({
       resumeSession: resume,
@@ -2566,7 +2566,7 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
             const baseTau = useDoppler
               ? ((speedAccMps != null || em.lastSpeedAccM != null)
                   ? needleTauMsFromSpeedAcc(em.lastSpeedAccM, speedAccMps)
-                  : needleTauMs(em.lastAccM, accuracyM))
+                  : needleTauMsDoppler(em.lastAccM, accuracyM, accBaseline(em.accBase)))
               : needleTauMs(em.lastAccM, accuracyM);
             const tau = baseTau * NEEDLE_TAU_SCALE;
             em.speedMps = emaStep(em.speedMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), tau);
@@ -2574,6 +2574,7 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
           }
         }
         if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; }
+        if (needleUsable) accBaselinePush(em.accBase, accuracyM);
         // Average from the warm-up anchor (0 until warmed), same as ride capture.
         let avgKmh = 0;
         if (em.warmed && em.warmSec != null) {
@@ -3204,7 +3205,7 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
     const paceTauMs = baselineSec ? Math.min((baselineSec * 1000) / 2, PACE_TAU_MAX_MS) : PACE_EMA_TAU_MS;
     emaRef.current = {
       speedMps: 0, paceMps: seedPaceMps, paceSeeded: seedPaceMps != null, paceTauMs,
-      warmed: false, warmDistM: 0, warmSec: null, gw: newGpsWarmup(),
+      warmed: false, warmDistM: 0, warmSec: null, gw: newGpsWarmup(), accBase: newAccBaseline(),
       moveDistM: 0, moveSec: 0, lastSpeedAccM: null,
       lastFixT: null, lastAlongM: null, lastAccM: null,
       polyline: routePolyline(route),
@@ -3301,7 +3302,9 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
             const baseTau = useDoppler
               ? ((speedAccMps != null || em.lastSpeedAccM != null)
                   ? needleTauMsFromSpeedAcc(em.lastSpeedAccM, speedAccMps)
-                  : needleTauMs(em.lastAccM, accuracyM)) // fallback: position accuracy
+                  // no speedAccuracy (most browsers): position accuracy relative
+                  // to this phone's own typical accuracy, capped — see needleTauMsDoppler
+                  : needleTauMsDoppler(em.lastAccM, accuracyM, accBaseline(em.accBase)))
               : needleTauMs(em.lastAccM, accuracyM);
             const tau = baseTau * NEEDLE_TAU_SCALE;
             const dtForAlpha = Math.min(dt, NEEDLE_MAX_DT_MS);
@@ -3336,6 +3339,7 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
 
         const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
         if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; em.lastSpeedAccM = speedAccMps; }
+        if (needleUsable) accBaselinePush(em.accBase, accuracyM);
         if (goodFix && !proj.offRoute && !tickPaused) em.lastAlongM = proj.alongM;
         // Average speed measured from the warm-up anchor (0 until warmed), so
         // acquisition-noise distance over a near-zero time can't read as ~40 km/h.
