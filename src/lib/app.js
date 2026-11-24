@@ -1653,6 +1653,51 @@ export function createAppController(deps = {}) {
     };
   }
 
+  /**
+   * Estimate a just-recorded route's STILL-AIR time from the ride's actual time,
+   * removing the forecast wind's effect at the given ground effect (the form's
+   * k, normally the default). A single ride can't separate still-air time from
+   * ground effect, but assuming k lets the wind be backed out — a better seed
+   * than the raw time, which may have been ridden in a strong head/tailwind.
+   * (And it's self-consistent: k later fitted from this ride against this
+   * baseline lands back on the assumed k instead of being pushed to an extreme.)
+   *
+   * Forecast: fresh at the route's own stations, else the one captured during
+   * the recording. Returns { stillAirSec, windFactor } or null when no forecast
+   * covers the ride (caller keeps the raw time).
+   */
+  async function estimateRecordedStillAir(processed, recording, { kHead = DEFAULT_K, kTail = DEFAULT_K } = {}) {
+    const actualSec = recording && recording.actualSec;
+    if (!(actualSec > 0) || !processed || !(processed.totalDistance > 0)) return null;
+    const endMs = recording.endedAt;
+    const covers = (ss) => ss.length && ss.every((st) => seriesCovers(st.series, endMs));
+    let stationSeries = await stationSeriesFor(processed).catch(() => []);
+    if (!covers(stationSeries)) {
+      stationSeries = Array.isArray(recording.forecastWind) ? recording.forecastWind : [];
+      if (!covers(stationSeries)) return null;
+    }
+    const cruise = await cruiseSpeedKmh();
+    // Prediction time is ~linear in the baseline, but segment weighting depends
+    // on speed, so iterate: baseline ← actual / (predicted/baseline).
+    let stillAirSec = actualSec, windFactor = 0;
+    for (let i = 0; i < 3; i++) {
+      const p = makePredictor({
+        route: processed, rides: [],
+        config: {
+          baselineMode: "manual", sliderBaselineSec: stillAirSec,
+          kMode: "manual", split: kHead !== kTail, sliderKHead: kHead, sliderKTail: kTail,
+          cruiseSpeedKmh: cruise,
+        },
+        stationSeries, opts: { nowMs: now() },
+      })(endMs);
+      const ratio = p.predictedSec / stillAirSec;
+      if (!(ratio > 0.2) || !Number.isFinite(ratio)) return null;
+      stillAirSec = actualSec / ratio;
+      windFactor = p.windFactor;
+    }
+    return { stillAirSec, windFactor };
+  }
+
   async function finalizeRecordedRoute(recording, setup) {
     const result = processTrace(recording.trace);
     if (!result.ok) return result;
@@ -2067,7 +2112,7 @@ export function createAppController(deps = {}) {
     store,
     createRoute, createRouteFromProcessed, createReverseRoute, previewReverse, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
     getHomeVerdict, listRoutesWithVerdict,
-    recordRide, recordManualRide, listRides, startRide, recordRoute, previewTrace, finalizeRecordedRoute, distanceToStart, distanceToEnd, rideExpectation, ridePrediction, routeTuning, updateExampleSeeds,
+    recordRide, recordManualRide, listRides, startRide, recordRoute, previewTrace, finalizeRecordedRoute, estimateRecordedStillAir, distanceToStart, distanceToEnd, rideExpectation, ridePrediction, routeTuning, updateExampleSeeds,
     updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,
     findResumableSession, discardSession,
     start,

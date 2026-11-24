@@ -447,6 +447,58 @@ console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRec
 }
 clock = new Date(2026,4,31,21,30).getTime(); // restore after geo stub advanced it
 
+console.log('\nRecorded route: wind-corrected still-air estimate (estimateRecordedStillAir):');
+{
+  const { effortNorm, DEFAULT_K } = await import('./src/lib/windModel.js');
+  clock = new Date(2026,5,1,8,0).getTime(); // inside the stub forecast window
+  const dLon = 5 / 111320;
+  const recordWith = async (app) => {
+    let cb = null;
+    const geo = { watchPosition: (s) => { cb = s; return 1; }, clearWatch: () => {} };
+    const h = await app.recordRoute({ geo }); let rec = null; h.onFinish((r) => { rec = r; });
+    for (let i = 0; i < 300; i++) { clock += 1000; cb({ coords: { latitude: 0, longitude: i * dLon, accuracy: 5 } }); }
+    await new Promise((r) => setTimeout(r, 0));
+    h.manualFinish();
+    return rec;
+  };
+  // East-heading route. Wind FROM 90° = headwind, FROM 270° = tailwind.
+  const hApp = mkApp(stubForecast(90, 25));
+  const recH = await recordWith(hApp);
+  const pvH = hApp.previewTrace(recH.trace);
+  const estH = await hApp.estimateRecordedStillAir(pvH.processed, recH);
+  ok('headwind ride → still-air time shorter than ride time', estH && estH.stillAirSec < recH.actualSec * 0.97, `${estH && estH.stillAirSec.toFixed(0)} vs ${recH.actualSec}`);
+  ok('headwind windFactor positive', estH && estH.windFactor > 0);
+
+  const tApp = mkApp(stubForecast(270, 25));
+  const recT = await recordWith(tApp);
+  const estT = await tApp.estimateRecordedStillAir(tApp.previewTrace(recT.trace).processed, recT);
+  ok('tailwind ride → still-air time longer than ride time', estT && estT.stillAirSec > recT.actualSec * 1.03, `${estT && estT.stillAirSec.toFixed(0)} vs ${recT.actualSec}`);
+
+  const sApp = mkApp(stubForecast(90, 0));
+  const recS = await recordWith(sApp);
+  const estS = await sApp.estimateRecordedStillAir(sApp.previewTrace(recS.trace).processed, recS);
+  ok('still air → estimate equals ride time', estS && Math.abs(estS.stillAirSec - recS.actualSec) < 1, `${estS && estS.stillAirSec}`);
+
+  const nApp = mkApp(() => Promise.reject(new Error('offline')));
+  const recN = await recordWith(nApp);
+  ok('no forecast → null (caller keeps raw time)', (await nApp.estimateRecordedStillAir(nApp.previewTrace(recN.trace).processed, recN)) === null);
+
+  // Self-consistency: seed the route with the corrected still-air time at the
+  // default k, save → the windy first ride's learned k lands back on ~default,
+  // instead of being driven to an extreme by a wrong baseline.
+  const b = estH.stillAirSec;
+  const resH = await hApp.finalizeRecordedRoute(recH, {
+    name: 'Headwind Rec', seedStillAirSec: Math.round(b),
+    seedHeadwind20Sec: Math.round(b * (1 + effortNorm(DEFAULT_K * 20, 24))),
+    seedTailwind20Sec: Math.round(b * (1 + effortNorm(-DEFAULT_K * 20, 24))),
+    baselineMode: 'learn', kMode: 'learn', targetArrival: '08:45', activeDays: ['MO'],
+  });
+  const tun = await hApp.routeTuning(resH.route.id);
+  ok('first ride logged', resH.firstRideLogged === true);
+  ok('learned k from the one windy ride ≈ default', Math.abs(tun.learned.kHead - DEFAULT_K) < 0.05, `${tun.learned.kHead.toFixed(3)} (${tun.learned.kHeadSource})`);
+}
+clock = new Date(2026,4,31,21,30).getTime();
+
 console.log('\nRide prediction (leaving-now duration for arrival seeding):');
 {
   const pApp = mkApp(stubForecast(90, 25)); // headwind

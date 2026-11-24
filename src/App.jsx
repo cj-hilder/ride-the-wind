@@ -2787,6 +2787,9 @@ function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled })
   // rides recorded" — the same behaviour the editor shows for a starved route.
   const [modes, setModes] = useState({ baselineMode: "learn", kMode: "learn" });
   const [saving, setSaving] = useState(false);
+  // Set when a recorded route's still-air time was wind-corrected (see
+  // estimateRecordedStillAir) — drives the explanatory note under Ride times.
+  const [windAdjusted, setWindAdjusted] = useState(null);
   const fileRef = useRef();
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const onModeChange = (which, m) => setModes((p) => ({ ...p, [which]: m }));
@@ -2926,7 +2929,21 @@ function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled })
             // pauses excluded) rather than a generic default — it's the best
             // estimate we have, and the first ride then refines it.
             const recKmh = recordedSpeedKmh(res.preview.totalDistance, rec.actualSec);
-            if (recKmh != null) set("speedKmh", recKmh);
+            setWindAdjusted(null);
+            if (recKmh != null) {
+              set("speedKmh", recKmh);
+              // Then refine: back out the forecast wind at the form's ground
+              // effect (one ride can't learn k, so assume it). Applied only if
+              // the user hasn't already changed the time in the meantime.
+              controller.estimateRecordedStillAir(res.processed, rec, { kHead: form.kHead, kTail: form.kTail })
+                .then((est) => {
+                  const adjKmh = est ? recordedSpeedKmh(res.preview.totalDistance, est.stillAirSec) : null;
+                  if (adjKmh == null) return;
+                  setForm((f) => (f.speedKmh === recKmh ? { ...f, speedKmh: adjKmh } : f));
+                  setWindAdjusted({ kmh: adjKmh, rawSec: rec.actualSec, windFactor: est.windFactor, kHead: form.kHead, kTail: form.kTail });
+                })
+                .catch(() => { /* keep the raw ride time */ });
+            }
           }} />
       )}
 
@@ -2975,6 +2992,11 @@ function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled })
                 }
                 setForm((f) => ({ ...f, speedKmh: next.speedKmh, kHead: next.kHead, kTail: next.kTail, split: next.split }));
               }} example={preview.example} />
+            {windAdjusted && form.speedKmh === windAdjusted.kmh && form.kHead === windAdjusted.kHead && form.kTail === windAdjusted.kTail && Math.abs(windAdjusted.windFactor) >= 0.01 && (
+              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginTop: 4, lineHeight: 1.5 }}>
+                Your ride took {formatElapsed(Math.round(windAdjusted.rawSec / 60) * 60)}. The forecast {windAdjusted.windFactor > 0 ? "headwind" : "tailwind"} {windAdjusted.windFactor > 0 ? "slowed you" : "sped you up"} by about {Math.round(Math.abs(windAdjusted.windFactor) * 100)}%, so the still-air time above has that removed, assuming the default ground effect.
+              </div>
+            )}
           </Block>
           <Block n="4" title="When you ride">
             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
