@@ -37,8 +37,81 @@ export const NEEDLE_TAU_MAX_MS = 40000;      // ceiling τ for a poor fix (≈ d
 export const NEEDLE_TAU_SCALE = 1.20;        // multiplier on the adaptive τ — road-tested balance of
                                              // responsiveness vs damping for the Doppler-primary needle
 export const GPS_ACCURACY_HARD_M = 50;       // above this a fix is still dropped for the needle (garbage)
-export const NEEDLE_WARMUP_ACC_M = 8;        // needle stays at 0 until the first fix at least this accurate
-                                             // (kills GPS-acquisition spikes in the first few seconds)
+
+// ── GPS warm-up ─────────────────────────────────────────────────────────────
+// The needle and average speed stay at 0 until GPS has "warmed up", which kills
+// acquisition spikes in the first few seconds. Phones report accuracy very
+// differently (iOS in coarse steps ~5/10/16/35/65 m; Android a 68% radius whose
+// floor ranges from ~2 m to ~10+ m by make), so a single absolute threshold
+// stalls on some devices forever. Warm-up therefore passes on ANY of:
+//   1. a fix ≤ WARMUP_GOOD_ACC_M                       (good lock, any phone)
+//   2. accuracy has plateaued: best ≤ WARMUP_PLATEAU_MAX_ACC_M with no >10%
+//      improvement for WARMUP_PLATEAU_MS, on a fix carrying Doppler speed
+//      (coords.speed is generally null until a real satellite lock)
+//   3. WARMUP_TIMEOUT_MS elapsed and the current fix ≤ WARMUP_TIMEOUT_MAX_ACC_M
+//      (also the path for devices that report no accuracy at all, or never
+//      report coords.speed)
+// Downstream, the needle EMA already down-weights poorer fixes, so a slightly
+// looser gate is safe.
+export const WARMUP_GOOD_ACC_M = 10;
+export const WARMUP_PLATEAU_MAX_ACC_M = 20;
+export const WARMUP_PLATEAU_MS = 8000;
+export const WARMUP_PLATEAU_IMPROVE_FRAC = 0.10; // an improvement smaller than this doesn't restart the plateau clock
+export const WARMUP_TIMEOUT_MS = 30000;
+export const WARMUP_TIMEOUT_MAX_ACC_M = 30;      // = GPS_ACCURACY_GATE_M, what route projection accepts
+export const WARMUP_COARSE_ACC_M = 100;          // still worse than this → likely approximate location
+export const WARMUP_COARSE_HINT_MS = 15000;      // …after this long → show the Precise Location hint
+
+/** Fresh warm-up state; one per ride. */
+export function newGpsWarmup() {
+  return { warmed: false, startT: null, bestAccM: null, plateauT: null, pct: 0 };
+}
+
+/**
+ * Advance the warm-up state `w` (mutated) with one fix. Returns
+ * { warmed, justWarmed, pct, coarse }: pct is a monotonic 0–100 progress figure
+ * for the "GPS initialising N%" readout (held ≤ 99 until actually warmed);
+ * coarse is true when accuracy is so poor for so long that location is probably
+ * set to approximate.
+ */
+export function gpsWarmupStep(w, { fixT, accuracyM, gpsSpeedMps }) {
+  if (w.warmed) return { warmed: true, justWarmed: false, pct: 100, coarse: false };
+  if (fixT == null) return { warmed: false, justWarmed: false, pct: w.pct, coarse: false };
+  if (w.startT == null) w.startT = fixT;
+  const elapsed = Math.max(0, fixT - w.startT);
+  const acc = (typeof accuracyM === "number" && accuracyM >= 0) ? accuracyM : null;
+  const doppler = typeof gpsSpeedMps === "number" && gpsSpeedMps >= 0;
+
+  if (acc != null) {
+    if (w.bestAccM == null || acc < w.bestAccM * (1 - WARMUP_PLATEAU_IMPROVE_FRAC)) w.plateauT = fixT; // meaningful gain
+    if (w.bestAccM == null || acc < w.bestAccM) w.bestAccM = acc;
+  }
+  const best = w.bestAccM;
+  const plateauMs = w.plateauT != null ? fixT - w.plateauT : 0;
+
+  const good = acc != null && acc <= WARMUP_GOOD_ACC_M;
+  const plateau = doppler && acc != null && acc <= WARMUP_PLATEAU_MAX_ACC_M
+    && best <= WARMUP_PLATEAU_MAX_ACC_M && plateauMs >= WARMUP_PLATEAU_MS;
+  const timeout = elapsed >= WARMUP_TIMEOUT_MS && (acc == null || acc <= WARMUP_TIMEOUT_MAX_ACC_M);
+
+  if (good || plateau || timeout) {
+    w.warmed = true; w.pct = 100;
+    return { warmed: true, justWarmed: true, pct: 100, coarse: false };
+  }
+
+  // Progress = whichever route is closest to passing.
+  let p = 0;
+  if (best != null) {
+    p = Math.max(p, WARMUP_GOOD_ACC_M / best);
+    if (best <= WARMUP_PLATEAU_MAX_ACC_M) p = Math.max(p, plateauMs / WARMUP_PLATEAU_MS);
+    if (best <= WARMUP_TIMEOUT_MAX_ACC_M) p = Math.max(p, elapsed / WARMUP_TIMEOUT_MS);
+  } else {
+    p = elapsed / WARMUP_TIMEOUT_MS; // no accuracy reported at all
+  }
+  w.pct = Math.max(w.pct, Math.min(99, Math.round(p * 100)));
+  const coarse = elapsed >= WARMUP_COARSE_HINT_MS && best != null && best > WARMUP_COARSE_ACC_M;
+  return { warmed: false, justWarmed: false, pct: w.pct, coarse };
+}
 export const NEEDLE_MAX_ACCEL_MPS2 = 1.75;   // (A) sane cycling accel; per-sample speed change is clamped to this × dt
 export const NEEDLE_MAX_DT_MS = 6000;        // (B) cap the dt used for α so one sample after a gap can't seize the needle
 

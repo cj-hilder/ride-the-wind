@@ -23,7 +23,7 @@ import { solarTimes } from "./lib/solar.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
-  needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, NEEDLE_WARMUP_ACC_M, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
+  needleTauMs, needleTauMsFromSpeedAcc, NEEDLE_TAU_SCALE, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, newGpsWarmup, gpsWarmupStep, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedUnitLabel, defaultCruiseSpeedKmh, formatDisplayNumber } from "./lib/format.js";
@@ -2527,8 +2527,8 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
 
   const begin = async (resume = null) => {
     setState("recording"); setElapsed(resumedElapsedSec(resume)); setPaused(false); setGpsError(null);
-    setLive({ distanceM: 0, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
-    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, lastSpeedAccM: null, warmed: false, warmDistM: 0, warmSec: null, bestAccM: null };
+    setLive({ distanceM: 0, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null, initCoarse: false });
+    emaRef.current = { speedMps: 0, lastFixT: null, lastAccM: null, lastSpeedAccM: null, warmed: false, warmDistM: 0, warmSec: null, gw: newGpsWarmup() };
     acquireWake();
     const handle = await controller.recordRoute({
       resumeSession: resume,
@@ -2541,16 +2541,18 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
         // fix timestamps (not Date.now()), warm-up gate, accel jump-limiter (A)
         // and dt cap (B). See the ride-capture tick for the rationale.
         const em = emaRef.current;
+        // GPS warm-up (see gpsWarmupStep): needle + average held at 0 until done.
+        const warm = gpsWarmupStep(em.gw, { fixT, accuracyM, gpsSpeedMps });
+        if (warm.justWarmed) {
+          em.warmed = true;
+          // Anchor the average here (as in ride capture): acquisition-phase
+          // distance over a near-zero elapsed otherwise reads as ~40 km/h.
+          em.warmDistM = distanceM;
+          em.warmSec = elapsedSec;
+        }
         const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
         if (em.lastFixT != null && needleUsable) {
           const dt = fixT - em.lastFixT;
-          if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) {
-            em.warmed = true;
-            // Anchor the average here (as in ride capture): acquisition-phase
-            // distance over a near-zero elapsed otherwise reads as ~40 km/h.
-            em.warmDistM = distanceM;
-            em.warmSec = elapsedSec;
-          }
           if (dt > 0 && em.warmed) {
             const useDoppler = gpsSpeedMps != null && gpsSpeedMps >= 0;
             // 1) instantaneous sample — device Doppler speed when available,
@@ -2572,11 +2574,6 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
           }
         }
         if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; }
-        // Track the best (lowest) accuracy seen for the "GPS initialising" readout
-        // shown during warm-up. The pseudo-percentage 8/best×100 approaches 100 as
-        // fixes sharpen; monotonic (best only improves) so it never ticks backward.
-        if (accuracyM != null && (em.bestAccM == null || accuracyM < em.bestAccM)) em.bestAccM = accuracyM;
-        const initPct = em.bestAccM != null ? Math.min(100, Math.round((NEEDLE_WARMUP_ACC_M / em.bestAccM) * 100)) : null;
         // Average from the warm-up anchor (0 until warmed), same as ride capture.
         let avgKmh = 0;
         if (em.warmed && em.warmSec != null) {
@@ -2584,7 +2581,7 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
           const dDist = distanceM - em.warmDistM;
           if (dSec > 0 && dDist > 0) avgKmh = (dDist / dSec) * 3.6;
         }
-        setLive({ distanceM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh, initialising: !em.warmed, initPct });
+        setLive({ distanceM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh, initialising: !em.warmed, initPct: warm.pct, initCoarse: warm.coarse });
       },
     }).catch((e) => { alert(e.message); setState("armed"); releaseWake(); });
     handle?.onFinish?.((rec) => {
@@ -2635,7 +2632,9 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
           centerMessage={gpsError
             ? { text: gpsError.code === 1 ? "Location permission denied" : gpsError.code === 3 ? "GPS timed out — no signal" : "GPS not available", color: "#d9534f" }
             : (live.initialising
-              ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
+              ? (live.initCoarse
+                ? { text: "Weak GPS — is Precise Location on?", color: "#e0a45e" }
+                : { text: live.initPct ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" })
               : { text: "Recording new route", color: "#d9534f" })}
           onPause={togglePause} onFinish={finish} finishLabel="Finish"
           bottom={<div style={{ textAlign: "center", fontFamily: "'Fraunces',serif", fontSize: 18, fontWeight: 600 }}>{formatDistance(live.distanceM / 1000, undefined, { dp: 2 })}</div>}
@@ -3180,7 +3179,7 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
   // first — guards against accidentally recording from the wrong place.
   const beginRecording = async (resume = null) => {
     setState("riding"); setElapsed(resumedElapsedSec(resume)); setPaused(false); setConfirm(null); setAdjustMin(0); setGpsError(null);
-    setLive({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null });
+    setLive({ distanceM: 0, alongM: 0, offRoute: false, speedKmh: 0, avgKmh: 0, initialising: true, initPct: null, initCoarse: false });
     // Needle speed seeds at 0 (rider stationary). Arrival pace is dormant (null)
     // and seeded at the 1 km along-route mark with the average speed so far, then
     // refined by the 45-min EMA. Pace samples use ALONG-ROUTE distance (gap- and
@@ -3205,7 +3204,7 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
     const paceTauMs = baselineSec ? Math.min((baselineSec * 1000) / 2, PACE_TAU_MAX_MS) : PACE_EMA_TAU_MS;
     emaRef.current = {
       speedMps: 0, paceMps: seedPaceMps, paceSeeded: seedPaceMps != null, paceTauMs,
-      warmed: false, warmDistM: 0, warmSec: null, bestAccM: null,
+      warmed: false, warmDistM: 0, warmSec: null, gw: newGpsWarmup(),
       moveDistM: 0, moveSec: 0, lastSpeedAccM: null,
       lastFixT: null, lastAlongM: null, lastAccM: null,
       polyline: routePolyline(route),
@@ -3240,6 +3239,16 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
         setGpsError(null); // a fix arrived → clear any prior error (no-op if already null)
         const em = emaRef.current;
         const goodFix = accuracyM == null || accuracyM <= GPS_ACCURACY_GATE_M;
+        // GPS warm-up (see gpsWarmupStep): GPS is very inaccurate for the first
+        // few seconds, so hold the needle and average at 0 until it settles —
+        // otherwise acquisition garbage seeds a visible startup jump. A
+        // stationary start at 0 is the honest prior.
+        const warm = gpsWarmupStep(em.gw, { fixT, accuracyM, gpsSpeedMps });
+        if (warm.justWarmed) {
+          em.warmed = true;
+          em.warmDistM = distanceM;
+          em.warmSec = elapsedSec;
+        }
 
         // Project the fix onto the route for progress + pace (gap-immune).
         // PAUSED ticks deliberately carry no position (they exist only to keep the
@@ -3268,15 +3277,6 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
           // back) whenever delivery was bunched. Using fix time keeps distance and
           // dt over the SAME interval.
           const dt = fixT - em.lastFixT;
-          // Warm-up: GPS is very inaccurate for the first few seconds, so hold the
-          // needle at 0 until the first genuinely-good fix arrives — otherwise the
-          // acquisition garbage seeds a visible startup jump. A stationary start at
-          // 0 is the honest prior.
-          if (!em.warmed && accuracyM != null && accuracyM <= NEEDLE_WARMUP_ACC_M) {
-            em.warmed = true;
-            em.warmDistM = distanceM;
-            em.warmSec = elapsedSec;
-          }
           // ── NEEDLE ───────────────────────────────────────────────────────────
           // Doppler primary: coords.speed (the GNSS chip's own Doppler velocity)
           // is a cleaner signal than differencing positions — road-tested to give
@@ -3337,10 +3337,6 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
         const needleUsable = accuracyM == null || accuracyM <= GPS_ACCURACY_HARD_M;
         if (needleUsable || em.lastFixT == null) { em.lastFixT = fixT; em.lastAccM = accuracyM; em.lastSpeedAccM = speedAccMps; }
         if (goodFix && !proj.offRoute && !tickPaused) em.lastAlongM = proj.alongM;
-        // "GPS initialising" readout during warm-up: best (lowest) accuracy so far,
-        // 8/best×100 → approaches 100 as fixes sharpen; monotonic.
-        if (accuracyM != null && (em.bestAccM == null || accuracyM < em.bestAccM)) em.bestAccM = accuracyM;
-        const initPct = em.bestAccM != null ? Math.min(100, Math.round((NEEDLE_WARMUP_ACC_M / em.bestAccM) * 100)) : null;
         // Average speed measured from the warm-up anchor (0 until warmed), so
         // acquisition-noise distance over a near-zero time can't read as ~40 km/h.
         let avgKmh = 0;
@@ -3349,7 +3345,7 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
           const dDist = distanceM - em.warmDistM;
           if (dSec > 0 && dDist > 0) avgKmh = (dDist / dSec) * 3.6;
         }
-        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh, initialising: !em.warmed, initPct });
+        setLive({ distanceM, alongM: proj.alongM, offRoute: proj.offRoute, offRouteM: proj.offRouteM, speedKmh: (em.speedMps || 0) * 3.6, avgKmh, initialising: !em.warmed, initPct: warm.pct, initCoarse: warm.coarse });
       },
       onFinish: (r) => {
         releaseWake();
@@ -3525,7 +3521,9 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
             centerMessage={gpsError
               ? { text: gpsError.code === 1 ? "Location permission denied" : gpsError.code === 3 ? "GPS timed out — no signal" : "GPS not available", color: "#d9534f" }
               : (live.initialising
-                ? { text: live.initPct != null ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" }
+                ? (live.initCoarse
+                ? { text: "Weak GPS — is Precise Location on?", color: "#e0a45e" }
+                : { text: live.initPct ? `GPS initialising ${live.initPct}%` : "GPS initialising…", color: "#e0a45e" })
                 : (live.offRoute && live.offRouteM != null
                   ? { text: `Off route by ${formatDistanceAdaptive(live.offRouteM)}`, color: "#e0a45e" }
                   : null))}

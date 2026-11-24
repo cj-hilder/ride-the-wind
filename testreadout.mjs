@@ -3,6 +3,7 @@ import {
   averageSpeedKmh, emaStep, routePolyline, projectToRoute, OFF_ROUTE_M,
   needleTauMs, NEEDLE_TAU_MIN_MS, NEEDLE_TAU_MAX_MS, NEEDLE_ACC_REF_M,
   SPEEDO_START_DEG, SPEEDO_SWEEP_DEG, SPEEDO_MAX_KMH,
+  newGpsWarmup, gpsWarmupStep,
 } from './src/lib/rideReadout.js';
 
 let pass = 0, fail = 0;
@@ -200,6 +201,55 @@ console.log('\nArrival while PAUSED (progress + pace frozen, wall clock advancin
   ok('arrival slips 1s per 1s while stopped', a30 - a0 === 30000, `${a30 - a0}`);
   ok('arrival keeps slipping over a longer pause', a90 - a0 === 90000, `${a90 - a0}`);
   ok('arrival remains in the future during a pause', a90 > t0 + 90000, `${a90} vs ${t0 + 90000}`);
+}
+
+console.log('\ngpsWarmupStep (universal GPS warm-up):');
+{
+  // Feed a sequence of [tSec, accuracyM, dopplerSpeed|null]; return the step
+  // results and the time (s) warm-up passed, or null.
+  const run = (fixes) => {
+    const w = newGpsWarmup(); const out = []; let at = null;
+    for (const [t, acc, spd] of fixes) {
+      const r = gpsWarmupStep(w, { fixT: 1e12 + t * 1000, accuracyM: acc, gpsSpeedMps: spd });
+      out.push(r); if (r.justWarmed) at = t;
+    }
+    return { out, at };
+  };
+  const seq = (n, f) => Array.from({ length: n }, (_, i) => f(i));
+
+  ok('good fix (≤10 m) warms immediately', run([[0, 40, null], [1, 9.4, 0]]).at === 1);
+  ok('old-phone behaviour kept: 8 m fix warms', run([[0, 30, null], [1, 8, 0]]).at === 1);
+  {
+    // New-phone case: plateaus at ~12 m with Doppler, never ≤ 10 m.
+    const r = run([[0, 35, null], [1, 16, 0], [2, 12, 0], ...seq(12, (i) => [3 + i, 12, 0])]);
+    ok('plateau at 12 m warms after ~8 s of no improvement', r.at === 10, `at=${r.at}`);
+  }
+  {
+    const r = run([[0, 35, null], [1, 16, null], [2, 12, null], ...seq(40, (i) => [3 + i, 12, null])]);
+    ok('plateau needs Doppler; without it the 30 s timeout warms', r.at === 30, `at=${r.at}`);
+  }
+  {
+    // Steady meaningful improvement keeps restarting the plateau clock.
+    const accs = [20, 17, 15, 13, 11.5];
+    const r = run(accs.map((a, i) => [i * 3, a, 0]));
+    ok('steady >10% improvement does not count as a plateau', r.at === null, `at=${r.at}`);
+  }
+  ok('plateau above 20 m does not warm', run(seq(20, (i) => [i, 25, 0])).at === null);
+  ok('25 m warms at 30 s timeout', run(seq(35, (i) => [i, 25, 0])).at === 30);
+  ok('never warms at 60 m (indoors)', run(seq(60, (i) => [i, 60, 0])).at === null);
+  ok('no accuracy reported → warms at timeout', run(seq(35, (i) => [i, null, 0])).at === 30);
+  {
+    const r = run([[0, 40, null], [1, 16, 0], [2, 12, 0], ...seq(10, (i) => [3 + i, 12, 0])]);
+    const pcts = r.out.map((x) => x.pct);
+    ok('pct is monotonic', pcts.every((p, i) => i === 0 || p >= pcts[i - 1]), pcts.join(','));
+    ok('pct stays < 100 until warmed', r.out.every((x) => x.warmed || x.pct < 100));
+    ok('pct is 100 once warmed', r.out[r.out.length - 1].pct === 100);
+  }
+  {
+    const r = run(seq(20, (i) => [i, 1500, null]));
+    ok('approximate location → coarse hint after 15 s', !r.out[10].coarse && r.out[16].coarse);
+    ok('no coarse hint for ordinary 25 m accuracy', run(seq(20, (i) => [i, 25, 0])).out.every((x) => !x.coarse));
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
