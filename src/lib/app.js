@@ -286,6 +286,10 @@ export function createAppController(deps = {}) {
   // starts near its own end (out-and-back / loop / testing from home) can't
   // self-finish before actually setting off.
   const FINISH_ARM_DIST_M = 200;
+  // Recording a new route: sample the forecast at the first fix, then every
+  // this-many metres, up to a cap (see recordRoute).
+  const RECORD_FORECAST_EVERY_M = 5000;
+  const RECORD_FORECAST_MAX = 4;
   // Percentile across ensemble members for the worst-case wetness upgrade. A high
   // percentile (not the literal wettest member) so one freak run doesn't cry wolf:
   // "a meaningful minority of scenarios are this wet".
@@ -1507,6 +1511,27 @@ export function createAppController(deps = {}) {
     await session.init(trace.length);
     const headerNow = () => ({ startedAt, totalPausedMs, pausedAt: pauseStartedAt });
 
+    // Forecast captured DURING the recording, so the route's first ride can be
+    // logged even if there's no signal when the user saves (the route's real
+    // stations aren't known until the trace is processed, so we sample at the
+    // first fix and then every RECORD_FORECAST_EVERY_M along the way). Fetches
+    // are fire-and-forget; failures just leave fewer samples. Not persisted
+    // across an app restart — a resumed recording re-captures from its next fix.
+    const capturedForecast = [];
+    let forecastAnchor = null;
+    let forecastPending = 0;
+    function maybeCaptureForecast(fix) {
+      if (capturedForecast.length + forecastPending >= RECORD_FORECAST_MAX) return;
+      if (forecastAnchor && haversineLocal(forecastAnchor.lat, forecastAnchor.lon, fix.lat, fix.lon) < RECORD_FORECAST_EVERY_M) return;
+      forecastAnchor = { lat: fix.lat, lon: fix.lon };
+      forecastPending++;
+      Promise.resolve()
+        .then(() => fetchForecastFor(fix.lat, fix.lon))
+        .then((series) => { if (series && series.length) capturedForecast.push({ lat: fix.lat, lon: fix.lon, series }); })
+        .catch(() => { forecastAnchor = null; /* retry from the next fix */ })
+        .finally(() => { forecastPending--; });
+    }
+
     const watchId = geoApi.watchPosition(
       (pos) => {
         const fix = { lat: pos.coords.latitude, lon: pos.coords.longitude, t: now(),
@@ -1514,6 +1539,7 @@ export function createAppController(deps = {}) {
           accuracyM: (typeof pos.coords.accuracy === "number" && pos.coords.accuracy >= 0) ? pos.coords.accuracy : null,
           gpsSpeedMps: (typeof pos.coords.speed === "number" && pos.coords.speed >= 0) ? pos.coords.speed : null,
           speedAccMps: (typeof pos.coords.speedAccuracy === "number" && pos.coords.speedAccuracy >= 0) ? pos.coords.speedAccuracy : null };
+        maybeCaptureForecast(fix);
         // Speed fields for this fix, computed the same way whether or not we're
         // paused. Speed dt from GPS fix timestamps (see startRide for rationale);
         // fall back to the app clock if gpsT missing/implausible.
@@ -1568,6 +1594,7 @@ export function createAppController(deps = {}) {
         trace, startedAt, endedAt,
         actualSec: (endedAt - startedAt - pausedMs) / 1000,
         pausedSec: pausedMs / 1000,
+        forecastWind: capturedForecast.slice(), // fallback for first-ride logging at save
       };
     }
     function stop() { geoApi.clearWatch(watchId); }
@@ -1594,8 +1621,10 @@ export function createAppController(deps = {}) {
   /**
    * Finalize a recorded route: gate + process the raw trace into geometry, create
    * the route, and log the recording traversal as the route's FIRST ride (normal
-   * classification/curation). Returns { ok:true, route } or { ok:false, reason }
-   * when the quality gate blocks it.
+   * classification/curation). Returns { ok:true, route, firstRideLogged } or
+   * { ok:false, reason } when the quality gate blocks it. firstRideLogged is
+   * false when no forecast was available (none at save time and none captured
+   * during the recording) or logging failed; the route is still created.
    */
   /**
    * Preview a recorded GPS trace for the New route form: run the quality gate +
@@ -1628,8 +1657,15 @@ export function createAppController(deps = {}) {
     const result = processTrace(recording.trace);
     if (!result.ok) return result;
     const route = await createRouteFromProcessed(result.processed, setup);
+    // Log the recording as the route's first ride. Prefer a fresh forecast at the
+    // route's own stations; fall back to the forecast captured during the
+    // recording (no signal at save time). Never fail the save over this, but
+    // REPORT it — silently skipping left users with a ride-less route and no
+    // idea why.
+    let firstRideLogged = false;
     try {
-      const forecastWind = await stationSeriesFor(route).catch(() => []);
+      let forecastWind = await stationSeriesFor(route).catch(() => []);
+      if (!forecastWind.length && Array.isArray(recording.forecastWind)) forecastWind = recording.forecastWind;
       if (forecastWind.length) {
         await recordRide({
           routeId: route.id,
@@ -1639,9 +1675,12 @@ export function createAppController(deps = {}) {
           distanceM: route.totalDistance,
           forecastWind,
         });
+        firstRideLogged = true;
       }
-    } catch { /* first-ride logging is best-effort; the route still stands */ }
-    return { ok: true, route };
+    } catch (e) {
+      console.warn("finalizeRecordedRoute: first ride not logged", e);
+    }
+    return { ok: true, route, firstRideLogged };
   }
 
   async function routeTuning(routeId) {

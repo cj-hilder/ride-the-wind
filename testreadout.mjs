@@ -3,7 +3,7 @@ import {
   averageSpeedKmh, emaStep, routePolyline, projectToRoute, OFF_ROUTE_M,
   needleTauMs, NEEDLE_TAU_MIN_MS, NEEDLE_TAU_MAX_MS, NEEDLE_ACC_REF_M,
   SPEEDO_START_DEG, SPEEDO_SWEEP_DEG, SPEEDO_MAX_KMH,
-  newGpsWarmup, gpsWarmupStep,
+  newGpsWarmup, gpsWarmupStep, recordedSpeedKmh,
   needleTauMsDoppler, newAccBaseline, accBaselinePush, NEEDLE_DOPPLER_TAU_MAX_MS,
   clampNeedleAccel, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DECEL_MPS2, NEEDLE_TAU_SCALE,
   speedoTauScale, speedoResponseStep, speedoSettleSec, SPEEDO_RESPONSE_DEFAULT, SPEEDO_RESPONSE_SCALES, SPEEDO_RESPONSE_LABELS,
@@ -291,6 +291,15 @@ console.log('\nspeedo response setting:');
   ok('string from slider accepted', speedoResponseStep('0') === 0 && speedoTauScale('4') === SPEEDO_RESPONSE_SCALES[4]);
   ok('settle readout: Balanced ≈ 3 s', near(speedoSettleSec(SPEEDO_RESPONSE_DEFAULT), 3));
   ok('settle readout: Quick ≈ 1 s', near(speedoSettleSec(0), 1));
+}
+
+console.log('\nrecordedSpeedKmh:');
+{
+  ok('10 km in 30 min → 20 km/h', near(recordedSpeedKmh(10000, 1800), 20));
+  ok('missing time → null', recordedSpeedKmh(10000, 0) === null && recordedSpeedKmh(10000, undefined) === null);
+  ok('missing distance → null', recordedSpeedKmh(0, 1800) === null);
+  ok('implausibly slow → null', recordedSpeedKmh(100, 3600) === null);
+  ok('implausibly fast → null', recordedSpeedKmh(100000, 1800) === null);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

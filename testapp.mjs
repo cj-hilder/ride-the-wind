@@ -402,6 +402,48 @@ console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRec
   let rec2 = null; h2.onFinish((r) => { rec2 = r; }); geo2._emitAll(); h2.manualFinish();
   const blocked = await gApp.finalizeRecordedRoute(rec2, { name: 'Too Short', seedStillAirSec: 100, targetArrival: '08:45', activeDays: ['MO'] });
   ok('too-short recording blocked', blocked.ok === false && typeof blocked.reason === 'string');
+
+  ok('first ride reported as logged', res.firstRideLogged === true);
+
+  // No signal at SAVE time: the forecast captured during the recording is used.
+  {
+    let online = true;
+    const base = stubForecast(90, 20);
+    const flaky = (lat, lon) => online ? base(lat, lon) : Promise.reject(new Error('offline'));
+    const fApp = mkApp(flaky);
+    const geoF = makeGeo(150);
+    const hF = await fApp.recordRoute({ geo: geoF });
+    let recF = null; hF.onFinish((r) => { recF = r; });
+    geoF._emitAll();
+    await new Promise((r) => setTimeout(r, 0)); // let the background forecast fetch settle
+    hF.manualFinish();
+    ok('recording captured a forecast sample', recF.forecastWind.length >= 1, `${recF.forecastWind.length}`);
+    online = false;
+    const resF = await fApp.finalizeRecordedRoute(recF, {
+      name: 'Offline Save', seedStillAirSec: 200, seedHeadwind20Sec: 260, seedTailwind20Sec: 150,
+      baselineMode: 'learn', kMode: 'learn', targetArrival: '08:45', activeDays: ['MO'],
+    });
+    const ridesF = await fApp.listRides(resF.route.id);
+    ok('offline save still logs the first ride', resF.firstRideLogged === true && ridesF.length === 1, `${resF.firstRideLogged} ${ridesF.length}`);
+  }
+
+  // No forecast at all (offline throughout): route created, failure REPORTED.
+  {
+    const nApp = mkApp(() => Promise.reject(new Error('offline')));
+    const geoN = makeGeo(150);
+    const hN = await nApp.recordRoute({ geo: geoN });
+    let recN = null; hN.onFinish((r) => { recN = r; });
+    geoN._emitAll();
+    await new Promise((r) => setTimeout(r, 0));
+    hN.manualFinish();
+    const resN = await nApp.finalizeRecordedRoute(recN, {
+      name: 'No Forecast', seedStillAirSec: 200, seedHeadwind20Sec: 260, seedTailwind20Sec: 150,
+      baselineMode: 'learn', kMode: 'learn', targetArrival: '08:45', activeDays: ['MO'],
+    });
+    ok('no-forecast save still creates the route', resN.ok === true && !!resN.route);
+    ok('no-forecast save reports the missing first ride', resN.firstRideLogged === false);
+    ok('no-forecast route has no rides', (await nApp.listRides(resN.route.id)).length === 0);
+  }
 }
 clock = new Date(2026,4,31,21,30).getTime(); // restore after geo stub advanced it
 

@@ -74,6 +74,19 @@ export function speedoSettleSec(step) {
   return (NEEDLE_TAU_MIN_MS * speedoTauScale(step)) / 1000;
 }
 
+/**
+ * Average moving speed (km/h) of a just-recorded route, used to start the New
+ * route form's still-air time from the real ride instead of a generic default.
+ * Null when the inputs are missing or the result isn't a plausible ride speed.
+ */
+export const RECORDED_SPEED_MIN_KMH = 3;
+export const RECORDED_SPEED_MAX_KMH = 60;
+export function recordedSpeedKmh(distanceM, actualSec) {
+  if (!(distanceM > 0) || !(actualSec > 0)) return null;
+  const kmh = (distanceM / actualSec) * 3.6;
+  return kmh >= RECORDED_SPEED_MIN_KMH && kmh <= RECORDED_SPEED_MAX_KMH ? kmh : null;
+}
+
 // ── GPS warm-up ─────────────────────────────────────────────────────────────
 // The needle and average speed stay at 0 until GPS has "warmed up", which kills
 // acquisition spikes in the first few seconds. Phones report accuracy very

@@ -23,11 +23,12 @@ import { solarTimes } from "./lib/solar.js";
 import {
   speedToAngle, polarPoint, clockAngles, arrivalBezel, expectedArrivalMs,
   emaStep, routePolyline, projectToRoute,
-  needleTauMs, needleTauMsFromSpeedAcc, needleTauMsDoppler, newAccBaseline, accBaselinePush, accBaseline, speedoTauScale, speedoResponseStep, speedoSettleSec, SPEEDO_RESPONSE_DEFAULT, SPEEDO_RESPONSE_SCALES, SPEEDO_RESPONSE_LABELS, clampNeedleAccel, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, newGpsWarmup, gpsWarmupStep, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
+  needleTauMs, needleTauMsFromSpeedAcc, needleTauMsDoppler, newAccBaseline, accBaselinePush, accBaseline, recordedSpeedKmh, speedoTauScale, speedoResponseStep, speedoSettleSec, SPEEDO_RESPONSE_DEFAULT, SPEEDO_RESPONSE_SCALES, SPEEDO_RESPONSE_LABELS, clampNeedleAccel, PACE_EMA_TAU_MS, PACE_MOVING_MIN_MPS, SPEED_SANE_MAX_MPS, GPS_ACCURACY_GATE_M, GPS_ACCURACY_HARD_M, newGpsWarmup, gpsWarmupStep, NEEDLE_MAX_DT_MS, SPEEDO_MAX_KMH,
 } from "./lib/rideReadout.js";
 import HelpPanel from "./HelpPanel.jsx";
 import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedUnitLabel, defaultCruiseSpeedKmh, formatDisplayNumber } from "./lib/format.js";
 import { effortNorm, V0_MIN, V0_MAX } from "./lib/windModel.js";
+import { rangeTouchCommits, RANGE_MOUSE_AFTER_TOUCH_MS } from "./lib/rangeGesture.js";
 import { DEFAULT_K } from "./lib/windModel.js";
 import { rideK as computeRideK } from "./lib/learning.js";
 import { installBackGuard, resolveBackAction, requestAppExit } from "./lib/backGuard.js";
@@ -1464,6 +1465,33 @@ function loadSpeedoScale(controller, emaRef) {
     .catch(() => { /* keep default */ });
 }
 
+/* Commit/revert handlers for a range slider that commits on release. A touch
+ * commits only if it was a deliberate horizontal drag (rangeTouchCommits);
+ * a scroll swipe or tap that started on the slider reverts it. Mouse release
+ * and keyboard commit as usual, except the emulated mouse events a phone sends
+ * after a tap. Spread the result onto the <input type="range">. */
+function useRangeGesture(onCommit, onRevert) {
+  const g = useRef(null);
+  const lastTouch = useRef(0);
+  const end = (e, commit) => {
+    const gg = g.current; g.current = null; lastTouch.current = Date.now();
+    if (commit && gg && rangeTouchCommits(gg.dx, gg.dy)) onCommit(Number(e.target.value));
+    else onRevert();
+  };
+  return {
+    onTouchStart: (e) => { const t = e.touches[0]; g.current = { x: t.clientX, y: t.clientY, dx: 0, dy: 0 }; },
+    onTouchMove: (e) => {
+      const t = e.touches[0], gg = g.current; if (!gg || !t) return;
+      gg.dx = Math.max(gg.dx, Math.abs(t.clientX - gg.x));
+      gg.dy = Math.max(gg.dy, Math.abs(t.clientY - gg.y));
+    },
+    onTouchEnd: (e) => end(e, true),
+    onTouchCancel: (e) => end(e, false),
+    onMouseUp: (e) => { if (Date.now() - lastTouch.current > RANGE_MOUSE_AFTER_TOUCH_MS) onCommit(Number(e.target.value)); },
+    onKeyUp: (e) => onCommit(Number(e.target.value)),
+  };
+}
+
 function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, conservatism, onChangeConservatism, speedoResponse = SPEEDO_RESPONSE_DEFAULT, onChangeSpeedoResponse, onClose }) {
   const u = { ...DEFAULT_UNITS, ...(units || {}) };
   const set = (key, value) => onChange({ ...u, [key]: value });
@@ -1473,6 +1501,11 @@ function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, c
   // sync if the prop changes underneath (e.g. import).
   const [consLocal, setConsLocal] = useState(conservatism);
   useEffect(() => { setConsLocal(conservatism); }, [conservatism]);
+  const consGesture = useRangeGesture((v) => onChangeConservatism(v), () => setConsLocal(conservatism));
+  // Speedo response: same local-mirror + scroll-safe commit pattern.
+  const [speedoLocal, setSpeedoLocal] = useState(speedoResponse);
+  useEffect(() => { setSpeedoLocal(speedoResponse); }, [speedoResponse]);
+  const speedoGesture = useRangeGesture((v) => onChangeSpeedoResponse?.(v), () => setSpeedoLocal(speedoResponse));
 
   // Cruising speed: stored canonical (km/h), shown/stepped in the ride-speed
   // unit in WHOLE units. Work in display units for the +/- logic, convert once
@@ -1531,8 +1564,7 @@ function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, c
           </div>
           <input type="range" min={0} max={100} step={5} value={consLocal}
             onChange={(e) => setConsLocal(Number(e.target.value))}
-            onMouseUp={(e) => onChangeConservatism(e.target.value)}
-            onTouchEnd={(e) => onChangeConservatism(e.target.value)}
+            {...consGesture}
             style={{ width: "100%", accentColor: "#e0a45e" }} />
           <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginTop: 6, lineHeight: 1.5 }}>
             Ride the Wind uses multiple forecast models to calculate a spread of forecast wind speeds. Your uncertainty allowance controls how much of that spread is applied to your ride times. Higher will have you leave earlier to be more likely on time.
@@ -1563,17 +1595,18 @@ function SettingsPanel({ units, onChange, cruiseSpeedKmh, onChangeCruiseSpeed, c
         <div style={{ marginBottom: 18 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
             <span style={{ fontSize: 13.5, color: "rgba(255,255,255,0.8)", fontWeight: 600 }}>Speedo response</span>
-            <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{SPEEDO_RESPONSE_LABELS[speedoResponse]}</span>
+            <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 14, color: "#e0a45e" }}>{SPEEDO_RESPONSE_LABELS[speedoLocal]}</span>
           </div>
-          <input type="range" min={0} max={SPEEDO_RESPONSE_SCALES.length - 1} step={1} value={speedoResponse}
-            onChange={(e) => onChangeSpeedoResponse?.(e.target.value)}
+          <input type="range" min={0} max={SPEEDO_RESPONSE_SCALES.length - 1} step={1} value={speedoLocal}
+            onChange={(e) => setSpeedoLocal(Number(e.target.value))}
+            {...speedoGesture}
             aria-label="Speedo response, quick to smooth"
             style={{ width: "100%", accentColor: "#e0a45e" }} />
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, color: "rgba(255,255,255,0.45)", marginTop: 2 }}>
             <span>Quick</span><span>Smooth</span>
           </div>
           <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", marginTop: 6, lineHeight: 1.5 }}>
-            How quickly the speedometer needle follows your speed. Quicker settings react faster but wobble more; smoother settings are steadier but lag behind changes. The needle settles in about {formatDisplayNumber(Math.round(speedoSettleSec(speedoResponse) * 10) / 10)} s with a good GPS signal, and more slowly when the signal is weak. The best setting depends on your phone's GPS, so try a ride or two and adjust.
+            How quickly the speedometer needle follows your speed. Quicker settings react faster but wobble more; smoother settings are steadier but lag behind changes. The needle settles in about {formatDisplayNumber(Math.round(speedoSettleSec(speedoLocal) * 10) / 10)} s with a good GPS signal, and more slowly when the signal is weak. The best setting depends on your phone's GPS, so try a ride or two and adjust.
           </div>
         </div>
 
@@ -1763,6 +1796,10 @@ function TerrainControls({ distanceM, value, onChange, modes, onModeChange, lear
 function TerrainSlider({ title, k, baselineSec, readOnly, sign, showBoth, example, mode, source, rides, onCommit }) {
   const [local, setLocal] = useState(kClampUI(k));
   useEffect(() => { setLocal(kClampUI(k)); }, [k]);
+  const gesture = useRangeGesture(
+    (v) => { if (!readOnly) onCommit(v); },
+    () => setLocal(kClampUI(k)),
+  );
   const effK = kClampUI(k);
   const offLow = readOnly && k < TERRAIN_MIN;
   const offHigh = readOnly && k > TERRAIN_MAX;
@@ -1796,8 +1833,7 @@ function TerrainSlider({ title, k, baselineSec, readOnly, sign, showBoth, exampl
       </div>
       <input type="range" min={TERRAIN_MIN} max={TERRAIN_MAX} step={0.01} value={shownK} disabled={readOnly}
         onChange={(e) => { if (!readOnly) setLocal(Number(e.target.value)); }}
-        onMouseUp={(e) => { if (!readOnly) onCommit(Number(e.target.value)); }}
-        onTouchEnd={(e) => { if (!readOnly) onCommit(Number(e.target.value)); }}
+        {...gesture}
         style={{ width: "100%", accentColor: "#e0a45e", opacity: readOnly ? 0.7 : 1 }} />
       {/* Top line: wind-EXPOSURE progression, evenly spaced. Positions are
           approximate — the terms just walk from most-sheltered to wind-
@@ -2806,6 +2842,9 @@ function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled })
       if (recording) {
         const res = await controller.finalizeRecordedRoute(recording, setup);
         if (!res.ok) { setErr(res.reason || "Recording couldn't be used."); setSaving(false); return; }
+        if (res.firstRideLogged === false) {
+          alert("Route saved, but this ride couldn't be added to it because no wind forecast was available (check your connection). You can add it today from the route's ride list with Add ride.");
+        }
       } else if (processed) {
         await controller.createRouteFromProcessed(processed, setup);
       } else {
@@ -2883,6 +2922,11 @@ function Setup({ controller, onDone, onCancel, resumeSession, onResumeHandled })
             setProcessed(res.processed);
             setPreview(res.preview);
             if (!form.name) set("name", "");
+            // Start the still-air time from the ride just recorded (moving time,
+            // pauses excluded) rather than a generic default — it's the best
+            // estimate we have, and the first ride then refines it.
+            const recKmh = recordedSpeedKmh(res.preview.totalDistance, rec.actualSec);
+            if (recKmh != null) set("speedKmh", recKmh);
           }} />
       )}
 
