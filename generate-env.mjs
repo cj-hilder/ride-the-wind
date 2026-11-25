@@ -41,3 +41,13 @@ const kept = fs.existsSync(envFile)
   : [];
 fs.writeFileSync(envFile, env + kept.map((l) => l + "\n").join(""));
 console.log(`✅ ${envFile} written: v${pkg.version} · ${hash} · ${date}`);
+
+// Stamp the service worker's cache-busting build id (read by public/sw.js via
+// importScripts). The old `sed` step lives in the GitHub Pages workflow, which
+// the live Cloudflare deploy never runs, so the shell cache key stayed "dev"
+// forever. Writing a separate generated file (gitignored) rather than editing
+// public/sw.js in place keeps the tracked worker untouched by every build.
+// Ported from Temperatura.
+const buildId = `${hash}-${date}`;
+fs.writeFileSync("public/build-id.js", `self.__RTW_BUILD_ID__ = "${buildId}";\n`);
+console.log(`✅ public/build-id.js written: ${buildId}`);

@@ -4,3 +4,4 @@ dist/
 *.log
 .env.production
 .env.development
+public/build-id.js

@@ -16,9 +16,17 @@
  * is SKIP_WAITING, for picking up a new version.
  * ========================================================================== */
 
-// Cache version is stamped at build time (see the BUILD_ID replace in the
-// deploy step / vite define). When the bundle changes, the version changes,
-// so old shells are purged automatically on activate — no hand-editing.
+// Cache version. generate-env.mjs writes ./build-id.js on every build and dev
+// start, setting self.__RTW_BUILD_ID__ from the commit hash and date. It used
+// to be stamped by a `sed` step in the GitHub Pages workflow only, so the live
+// site (Cloudflare Workers Builds, no GitHub Actions) always ran as "dev" and
+// old shells were never purged. When the build id changes, so does this
+// cache name, and activate() deletes the old one. The browser's update check
+// byte-compares imported scripts too, so a new build-id.js alone is enough to
+// install a new worker even though this file is unchanged.
+// try/catch: a missing build-id.js (a checkout that never ran generate-env)
+// must not stop the worker installing; it just falls back to "dev".
+try { importScripts("./build-id.js"); } catch (e) { /* fall back to "dev" */ }
 const VERSION = (self.__RTW_BUILD_ID__ || "dev");
 const SHELL_CACHE = "rtw-shell-" + VERSION;
 // Note: the old "rtw-data-v1" forecast cache is retired — forecasts are cached
