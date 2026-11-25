@@ -31,7 +31,9 @@ import {
   seriesCovers,
   V0_NOMINAL,
   recordForecastBackoffMs,
+  RateLimitError,
 } from "./windModel.js";
+import { pruneUsage, allowanceSummary } from "./allowance.js";
 import * as learning from "./learning.js";
 import {
   evaluateAlert,
@@ -99,17 +101,85 @@ export function createAppController(deps = {}) {
 
   const store = new Store({ backend, learning });
 
-  const fetchForecastFor =
+  const now = deps.now || (() => Date.now());
+
+  // ----- Open-Meteo allowance ---------------------------------------------
+  // Every response's X-RateLimit headers feed a usage tally (see allowance.js);
+  // a 429 blocks ALL Open-Meteo requests until the reported reset, and callers
+  // fall back to a saved forecast no older than FORECAST_FALLBACK_MAX_MS.
+  let usageEntries = [];
+  let usageLoaded = null;
+  let lastServerUsage = null;
+  let rateLimitedUntil = 0;
+  let usagePersistTimer = null;
+  function ensureUsageLoaded() {
+    if (!usageLoaded) {
+      usageLoaded = store.getSetting("omUsage", [])
+        .then((v) => { usageEntries = pruneUsage(Array.isArray(v) ? v.concat(usageEntries) : usageEntries, now()); })
+        .catch(() => {});
+    }
+    return usageLoaded;
+  }
+  function noteUsage(u) {
+    if (!u) return;
+    lastServerUsage = u;
+    if (u.status >= 200 && u.status < 300 && u.cost > 0) {
+      usageEntries = pruneUsage(usageEntries.concat([{ at: now(), cost: u.cost }]), now());
+      clearTimeout(usagePersistTimer);
+      usagePersistTimer = setTimeout(() => { store.setSetting("omUsage", usageEntries).catch(() => {}); }, 2000);
+    }
+  }
+  function noteRateLimited(e) {
+    if (e && e.rateLimited) rateLimitedUntil = Math.max(rateLimitedUntil, e.until || now() + 60000);
+  }
+  function rateLimitedError() {
+    return new RateLimitError("Open-Meteo allowance used up", { until: rateLimitedUntil });
+  }
+  // Wrap a fetcher: refuse immediately while blocked (spending nothing), report
+  // usage, and record a 429's block. deps fetchers (tests) get the same guard.
+  function guarded(fetcher) {
+    return async (lat, lon) => {
+      if (now() < rateLimitedUntil) throw rateLimitedError();
+      try {
+        return await fetcher(lat, lon, { onUsage: noteUsage });
+      } catch (e) {
+        noteRateLimited(e);
+        throw e;
+      }
+    };
+  }
+
+  const fetchForecastFor = guarded(
     deps.fetchForecastFor ||
-    (async (lat, lon) => realFetchForecast(lat, lon)); // returns parsed series
+    (async (lat, lon, o) => realFetchForecast(lat, lon, o))); // returns parsed series
 
   // Optional ensemble fetcher → per-member wind series. Defaults to Open-Meteo
   // ensemble; if it throws, the range falls back to the deterministic method.
-  const fetchEnsembleFor =
+  const fetchEnsembleFor = guarded(
     deps.fetchEnsembleFor ||
-    (async (lat, lon) => realFetchEnsemble(lat, lon));
+    (async (lat, lon, o) => realFetchEnsemble(lat, lon, o)));
 
-  const now = deps.now || (() => Date.now());
+  // Saved forecasts used in place of a fresh one (allowance used up, offline),
+  // keyed by station → the copy's fetch time; cleared when a fresh one lands.
+  const staleServed = new Map();
+
+  /**
+   * Forecast-source status for the UI: whether Open-Meteo is refusing
+   * requests (and until when), the oldest saved forecast currently standing in
+   * for a fresh one, and allowance use.
+   */
+  async function forecastStatus() {
+    await ensureUsageLoaded();
+    const t = now();
+    let staleSinceMs = null;
+    for (const at of staleServed.values()) if (staleSinceMs == null || at < staleSinceMs) staleSinceMs = at;
+    return {
+      rateLimited: t < rateLimitedUntil,
+      until: t < rateLimitedUntil ? rateLimitedUntil : null,
+      staleSinceMs,
+      allowance: allowanceSummary(usageEntries, lastServerUsage, t),
+    };
+  }
 
   // ----- Ephemeral example route (first-run onboarding) ------------------
   // Shown ONLY when the user has zero real routes, so a brand-new user can see
@@ -252,6 +322,9 @@ export function createAppController(deps = {}) {
   // (which churned storage and evicted as it went).
   const FORECAST_KEEP_MS = 48 * 60 * 60 * 1000; // older than this is not a useful fallback
   const FORECAST_CACHE_MAX = 200;               // backstop only, far above any real working set
+  // A saved forecast stands in for a fresh one (offline, allowance used up)
+  // only while it's this recent — older ones say too little about today.
+  const FORECAST_FALLBACK_MAX_MS = 24 * 60 * 60 * 1000;
 
   // Rehydrate once, lazily: every fetch path awaits this first, so a reopen sees
   // the previous session's forecasts (with their true fetch times) before
@@ -260,6 +333,7 @@ export function createAppController(deps = {}) {
   function ensureForecastCache() {
     if (!cacheReady) {
       cacheReady = (async () => {
+        await ensureUsageLoaded();
         try {
           for (const row of await store.loadForecastEntries()) {
             if (!row || !row.payload || !(row.at > 0)) continue;
@@ -296,6 +370,42 @@ export function createAppController(deps = {}) {
   // "a meaningful minority of scenarios are this wet".
   const ENSEMBLE_RAIN_PCT = 85;
 
+  // In-flight requests per station, shared by every caller that wants the same
+  // station while it's loading. The TTL cache only helps once a request has
+  // finished, and one screen load asks for the same stations from several
+  // places at once (home list, Plan day, range, rain), so without this each
+  // caller sent its own request — measured: every ensemble station fetched 3×
+  // per load, ~65% of the Open-Meteo allowance used wasted.
+  const inflightDet = new Map();
+  const inflightEns = new Map();
+  function shared(inflight, key, start) {
+    let p = inflight.get(key);
+    if (!p) {
+      p = start().finally(() => inflight.delete(key));
+      inflight.set(key, p);
+    }
+    return p;
+  }
+  function fetchDetShared(key, lat, lon) {
+    return shared(inflightDet, key, async () => {
+      const series = await fetchForecastFor(lat, lon);
+      const at = now();
+      forecastCache.set(key, { series, at });
+      staleServed.delete(key);
+      persistForecast(key, "det", series, at);
+      return series;
+    });
+  }
+  function fetchEnsShared(key, lat, lon) {
+    return shared(inflightEns, key, async () => {
+      const members = await fetchEnsembleFor(lat, lon);
+      const at = now();
+      ensembleCache.set(key, { members, at });
+      persistForecast(key, "ens", members, at);
+      return members;
+    });
+  }
+
   async function stationSeriesFor(route) {
     await ensureForecastCache();
     const stations = chooseStations(route);
@@ -308,17 +418,18 @@ export function createAppController(deps = {}) {
         return { lat: st.lat, lon: st.lon, series: hit.series };
       }
       try {
-        const series = await fetchForecastFor(st.lat, st.lon);
-        const at = now();
-        forecastCache.set(key, { series, at });
-        persistForecast(key, "det", series, at);
+        const series = await fetchDetShared(key, st.lat, st.lon);
         return { lat: st.lat, lon: st.lon, series };
       } catch (e) {
-        // Offline (or the API is down) but we have an older copy: a stale
-        // forecast beats no forecast. Crucially we do NOT restamp `at`, so the
-        // UI can report the real age instead of claiming it's current — and
-        // seriesCovers still rejects it if it no longer reaches the ride.
-        if (hit) return { lat: st.lat, lon: st.lon, series: hit.series };
+        // Offline, API down, or allowance used up, but we have a recent enough
+        // older copy: a stale forecast beats no forecast. Crucially we do NOT
+        // restamp `at`, so the UI can report the real age instead of claiming
+        // it's current — and seriesCovers still rejects it if it no longer
+        // reaches the ride.
+        if (hit && now() - hit.at <= FORECAST_FALLBACK_MAX_MS) {
+          staleServed.set(key, hit.at);
+          return { lat: st.lat, lon: st.lon, series: hit.series };
+        }
         throw e;
       }
     }));
@@ -351,15 +462,12 @@ export function createAppController(deps = {}) {
           return { lat: st.lat, lon: st.lon, members: hit.members };
         }
         try {
-          const members = await fetchEnsembleFor(st.lat, st.lon);
-          const at = now();
-          ensembleCache.set(key, { members, at });
-          persistForecast(key, "ens", members, at);
+          const members = await fetchEnsShared(key, st.lat, st.lon);
           return { lat: st.lat, lon: st.lon, members };
         } catch (e) {
           // Same offline policy as the deterministic path: reuse the older copy
           // at its true age rather than losing the spread entirely.
-          if (hit) return { lat: st.lat, lon: st.lon, members: hit.members };
+          if (hit && now() - hit.at <= FORECAST_FALLBACK_MAX_MS) return { lat: st.lat, lon: st.lon, members: hit.members };
           throw e;
         }
       }));
@@ -1101,7 +1209,10 @@ export function createAppController(deps = {}) {
       const effortHead = wf1 === 0 ? 0
         : (wf1 > 0 ? invHead(wf1, v0Dbg) : -invTail(-wf1, v0Dbg));
       const fetchedAt = forecastFetchedAt(route);
+      const allowance = allowanceSummary(usageEntries, lastServerUsage, now());
       debug = {
+        allowancePct: allowance.pct,
+        allowanceWindow: allowance.window,
         windFromDeg: Math.round(w.fromDeg),
         windFromLabel: compass16(w.fromDeg),
         windSpeedKmh: Math.round(spd / tt),
@@ -1124,7 +1235,11 @@ export function createAppController(deps = {}) {
         slowSec: range ? Math.round(range.highSec) : null,
         fastSec: range ? Math.round(range.lowSec) : null,
         forecastUpdatedMs: fetchedAt,
-        forecastNextUpdateMs: fetchedAt != null ? fetchedAt + FORECAST_TTL : null,
+        // While Open-Meteo is refusing requests, the next update can't come
+        // before the reset it gave us.
+        forecastNextUpdateMs: fetchedAt != null
+          ? Math.max(fetchedAt + FORECAST_TTL, now() < rateLimitedUntil ? rateLimitedUntil : 0)
+          : null,
         kIdHead: resolved.kHeadSource === "learned",
         kIdTail: resolved.kTailSource === "learned",
         // Rain diagnostics — the actual figures the wetness token is computed
@@ -2125,7 +2240,7 @@ export function createAppController(deps = {}) {
     store,
     createRoute, createRouteFromProcessed, createReverseRoute, previewReverse, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
     getHomeVerdict, listRoutesWithVerdict,
-    recordRide, recordManualRide, listRides, startRide, recordRoute, previewTrace, finalizeRecordedRoute, estimateRecordedStillAir, distanceToStart, distanceToEnd, rideExpectation, ridePrediction, routeTuning, updateExampleSeeds,
+    forecastStatus, recordRide, recordManualRide, listRides, startRide, recordRoute, previewTrace, finalizeRecordedRoute, estimateRecordedStillAir, distanceToStart, distanceToEnd, rideExpectation, ridePrediction, routeTuning, updateExampleSeeds,
     updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,
     findResumableSession, discardSession,
     start,

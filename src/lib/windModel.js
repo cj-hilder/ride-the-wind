@@ -33,6 +33,40 @@ const DEG = Math.PI / 180;
 export const W_REF_KMH = 20; // reference wind for normalisation (per spec §2.2)
 
 /**
+ * Read Open-Meteo's allowance headers from a response (exposed via CORS):
+ * X-RateLimit-Cost / -Limit / -Remaining / -Window (s) / -Reset (epoch s), and
+ * Retry-After on a 429. Returns null if none are present (e.g. a test double).
+ */
+export function parseRateLimitHeaders(res, nowMs = Date.now()) {
+  const h = res && res.headers;
+  if (!h || typeof h.get !== "function") return null;
+  const num = (k) => { const v = h.get(k); const n = v == null ? NaN : parseFloat(v); return Number.isFinite(n) ? n : null; };
+  const cost = num("x-ratelimit-cost"), limit = num("x-ratelimit-limit"), remaining = num("x-ratelimit-remaining");
+  const windowSec = num("x-ratelimit-window"), resetSec = num("x-ratelimit-reset"), retryAfterSec = num("retry-after");
+  if (cost == null && limit == null && remaining == null && retryAfterSec == null) return null;
+  return {
+    cost, limit, remaining, windowSec,
+    resetMs: resetSec != null ? resetSec * 1000 : null,
+    retryAfterMs: retryAfterSec != null ? retryAfterSec * 1000 : null,
+    status: res.status, at: nowMs,
+  };
+}
+
+/** Error thrown when Open-Meteo refuses with 429 (allowance used up). */
+export class RateLimitError extends Error {
+  constructor(message, { until = null, usage = null } = {}) {
+    super(message);
+    this.rateLimited = true;
+    this.until = until;   // epoch ms when requests may resume (best estimate)
+    this.usage = usage;
+  }
+}
+// A 429 whose wait is no longer than this is a momentary burst limit, worth
+// one quick retry; anything longer means the allowance is used up.
+const RATE_LIMIT_QUICK_RETRY_MAX_MS = 2000;
+const RATE_LIMIT_DEFAULT_WAIT_MS = 60000;
+
+/**
  * Fetch JSON with time limits and automatic retries.
  *
  * Two time limits per attempt, because the two ways a phone request goes wrong
@@ -84,6 +118,7 @@ async function fetchJsonWithRetry(f, url, {
   stallRetries = FETCH_STALL_RETRIES,
   httpRetries = 1,
   label = "Open-Meteo",
+  onUsage = null,
 } = {}) {
   let stalls = 0, httpFails = 0;
   for (;;) {
@@ -93,6 +128,21 @@ async function fetchJsonWithRetry(f, url, {
     try {
       const res = await Promise.race([f(url, ctrl ? { signal: ctrl.signal } : undefined), head.promise]);
       head.clear();
+      const usage = parseRateLimitHeaders(res);
+      if (usage && onUsage) { try { onUsage(usage); } catch { /* reporting must never break a fetch */ } }
+      if (res.status === 429) {
+        // Allowance used up (or a momentary burst). Wait time from Retry-After,
+        // else the window reset, else a minute.
+        const knownWaitMs = usage && usage.retryAfterMs != null ? usage.retryAfterMs
+          : usage && usage.resetMs != null ? Math.max(0, usage.resetMs - Date.now())
+          : null;
+        const rlErr = new RateLimitError(`${label} allowance used up`, {
+          until: Date.now() + (knownWaitMs ?? RATE_LIMIT_DEFAULT_WAIT_MS), usage,
+        });
+        rlErr.httpStatus = 429;
+        rlErr.waitMs = knownWaitMs; // null = server didn't say → treat as a burst
+        throw rlErr;
+      }
       if (!res.ok) {
         const httpErr = new Error(`${label} HTTP ${res.status}`);
         httpErr.httpStatus = res.status;
@@ -103,10 +153,13 @@ async function fetchJsonWithRetry(f, url, {
     } catch (e) {
       if (e.httpStatus != null) {
         // Retry transient statuses once, after a backoff; others won't improve.
+        // A 429 is only retried when it's a momentary burst limit — retrying a
+        // used-up allowance just spends more of it.
+        if (e.rateLimited && e.waitMs != null && e.waitMs > RATE_LIMIT_QUICK_RETRY_MAX_MS) throw e;
         const transient = e.httpStatus === 429 || e.httpStatus >= 500;
         if (!transient || httpFails >= httpRetries) throw e;
         httpFails++;
-        await new Promise((r) => setTimeout(r, backoffMs * httpFails));
+        await new Promise((r) => setTimeout(r, e.rateLimited && e.waitMs != null ? Math.max(backoffMs, e.waitMs) : backoffMs * httpFails));
       } else {
         // Stall (timeout) or network failure: likely a dead pooled connection,
         // so retry straight away.
@@ -506,7 +559,7 @@ export function windFactorTimed({
  * @returns {Promise<Array<{time:number, speed:number, fromDeg:number}>>}
  */
 export async function fetchForecast(lat, lon, opts = {}) {
-  const { forecastDays = 8, pastDays = 1, fetchImpl, retryBackoffMs, timeoutMs } = opts;
+  const { forecastDays = 8, pastDays = 1, fetchImpl, retryBackoffMs, timeoutMs, onUsage } = opts;
   const f = fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
   if (!f) throw new Error("No fetch available; inject opts.fetchImpl.");
 
@@ -519,6 +572,7 @@ export async function fetchForecast(lat, lon, opts = {}) {
     `&wind_speed_unit=kmh&timeformat=unixtime&past_days=${pastDays}&forecast_days=${forecastDays}`;
 
   const data = await fetchJsonWithRetry(f, url, {
+    onUsage,
     ...(retryBackoffMs != null ? { backoffMs: retryBackoffMs } : {}),
     ...(timeoutMs != null ? { headerTimeoutMs: timeoutMs, bodyTimeoutMs: timeoutMs } : {}),
   });
@@ -535,7 +589,7 @@ export async function fetchForecast(lat, lon, opts = {}) {
  *          array of members, each a sorted series
  */
 export async function fetchEnsemble(lat, lon, opts = {}) {
-  const { forecastDays = 8, pastDays = 1, fetchImpl, model = "ecmwf_ifs025", timeoutMs, retryBackoffMs } = opts;
+  const { forecastDays = 8, pastDays = 1, fetchImpl, model = "ecmwf_ifs025", timeoutMs, retryBackoffMs, onUsage } = opts;
   const f = fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
   if (!f) throw new Error("No fetch available; inject opts.fetchImpl.");
 
@@ -547,6 +601,7 @@ export async function fetchEnsemble(lat, lon, opts = {}) {
   // The ensemble payload is ~16× larger (51 members), so allow its download longer.
   const data = await fetchJsonWithRetry(f, url, {
     label: "Open-Meteo ensemble",
+    onUsage,
     bodyTimeoutMs: ENSEMBLE_BODY_TIMEOUT_MS,
     ...(timeoutMs != null ? { headerTimeoutMs: timeoutMs, bodyTimeoutMs: timeoutMs } : {}),
     ...(retryBackoffMs != null ? { backoffMs: retryBackoffMs } : {}),

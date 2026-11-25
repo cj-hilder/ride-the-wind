@@ -766,5 +766,76 @@ console.log('\nPause keeps the speedometer live without feeding anything else:')
 }
 clock = new Date(2026,4,31,21,30).getTime(); // restore
 
+console.log('\nOpen-Meteo allowance used up (429): saved-forecast fallback + status:');
+{
+  const { RateLimitError } = await import('./src/lib/windModel.js');
+  clock = new Date(2026,5,1,7,0).getTime();
+  let mode = 'ok', calls = 0;
+  const good = stubForecast(90, 20);
+  const aApp = mkApp((lat, lon, o) => {
+    calls++;
+    if (mode === 'ok') { o?.onUsage?.({ cost: 1, limit: 600, remaining: 599, windowSec: 60, status: 200, at: clock }); return good(lat, lon); }
+    return Promise.reject(new RateLimitError('Open-Meteo allowance used up', { until: clock + 3600e3 }));
+  });
+  await aApp.createRoute(gpx, { name: 'A', seedStillAirSec: 1000, seedHeadwind20Sec: 1300, seedTailwind20Sec: 760, targetArrival: '08:45', activeDays: ['MO','TU','WE','TH','FR'] });
+  const fetchedAt = clock;
+  const v1 = await aApp.listRoutesWithVerdict();
+  ok('fresh forecast loads', v1.length === 1 && v1[0].verdict);
+  const st1 = await aApp.forecastStatus();
+  ok('allowance tallied from responses', st1.allowance.pct >= 0 && !st1.rateLimited && st1.staleSinceMs == null);
+
+  clock += 40 * 60e3; // past the 30-min cache → would refetch
+  mode = '429';
+  const v2 = await aApp.listRoutesWithVerdict();
+  ok('allowance used up → verdict still shown from saved forecast', v2[0] && v2[0].verdict);
+  const st2 = await aApp.forecastStatus();
+  ok('status: rate limited, with resume time', st2.rateLimited && st2.until === clock + 3600e3);
+  ok('status: names the saved forecast time', st2.staleSinceMs === fetchedAt, `${st2.staleSinceMs} vs ${fetchedAt}`);
+  ok('next update shown as the resume time while blocked', v2[0].debug && v2[0].debug.forecastNextUpdateMs === st2.until, `${v2[0].debug && v2[0].debug.forecastNextUpdateMs} vs ${st2.until}`);
+
+  const before = calls;
+  clock += 10 * 60e3;
+  await aApp.listRoutesWithVerdict();
+  ok('while blocked, no requests are sent (nothing more spent)', calls === before, `${calls - before} sent`);
+
+  clock += 25 * 3600e3; // saved forecast now > 24 h old, and still blocked
+  // The earlier block has expired by the clock jump; the server refuses again.
+  let err = null;
+  try { await aApp.listRoutesWithVerdict(); } catch (e) { err = e; }
+  ok('too-old saved forecast is not used → error says allowance used up', err && err.rateLimited === true, `${err && err.message}`);
+
+  mode = 'ok';
+  clock += 2 * 3600e3; // block over
+  const v4 = await aApp.listRoutesWithVerdict();
+  const st4 = await aApp.forecastStatus();
+  ok('after reset, fresh forecasts resume and the notice clears', v4[0].verdict && !st4.rateLimited && st4.staleSinceMs == null);
+}
+clock = new Date(2026,4,31,21,30).getTime(); // restore
+
+console.log('\nConcurrent loads share in-flight forecast requests:');
+{
+  clock = new Date(2026,5,1,7,0).getTime();
+  const detCalls = new Map(), ensCalls = new Map();
+  const count = (m, lat, lon) => { const k = `${lat.toFixed(2)},${lon.toFixed(2)}`; m.set(k, (m.get(k) || 0) + 1); };
+  const slow = (fn) => (lat, lon) => new Promise((r) => setTimeout(r, 5)).then(() => fn(lat, lon));
+  const det = stubForecast(90, 20), ens = stubEnsemble(90, 20);
+  const cApp = mkApp(
+    slow((lat, lon) => { count(detCalls, lat, lon); return det(lat, lon); }),
+    slow((lat, lon) => { count(ensCalls, lat, lon); return ens(lat, lon); }),
+  );
+  // Long enough route for several stations.
+  let lp = '';
+  for (let i = 0; i <= 200; i++) lp += `<trkpt lat="0" lon="${(i * 0.0009).toFixed(5)}"><ele>10</ele></trkpt>`;
+  const longGpx = `<?xml version="1.0"?><gpx><trk><trkseg>${lp}</trkseg></trk></gpx>`;
+  await cApp.createRoute(longGpx, { name: 'Long', seedStillAirSec: 3000, seedHeadwind20Sec: 3900, seedTailwind20Sec: 2300, targetArrival: '08:45', activeDays: ['MO','TU','WE','TH','FR'] });
+  // Several screens asking at once (home list ×3, as a load does).
+  await Promise.all([cApp.listRoutesWithVerdict(), cApp.listRoutesWithVerdict(), cApp.listRoutesWithVerdict()]);
+  const maxDet = Math.max(...detCalls.values()), maxEns = Math.max(...ensCalls.values());
+  ok('several stations in play', detCalls.size >= 2, `${detCalls.size}`);
+  ok('each forecast location requested once', maxDet === 1, JSON.stringify([...detCalls]));
+  ok('each ensemble location requested once', ensCalls.size >= 1 && maxEns === 1, JSON.stringify([...ensCalls]));
+}
+clock = new Date(2026,4,31,21,30).getTime(); // restore
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

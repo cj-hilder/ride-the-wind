@@ -256,6 +256,11 @@ export default function App() {
   const [routes, setRoutes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
+  // When the load failed because Open-Meteo's allowance is used up: the time
+  // requests may resume (for the error screen's guidance).
+  const [loadErrorUntil, setLoadErrorUntil] = useState(null);
+  // Forecast-source status after each refresh (allowance used up → banner).
+  const [forecastNotice, setForecastNotice] = useState(null);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [activeRouteId, setActiveRouteId] = useState(null);
   const activeRouteIdRef = useRef(null);
@@ -462,7 +467,7 @@ export default function App() {
   }, [armBackGuard]);
 
   const refresh = useCallback(async (opts = {}) => {
-    if (!opts.quiet) { setLoading(true); setProgress({ done: 0, total: 0 }); setLoadError(null); }
+    if (!opts.quiet) { setLoading(true); setProgress({ done: 0, total: 0 }); setLoadError(null); setLoadErrorUntil(null); }
     try {
       const list = await controller.listRoutesWithVerdict(
         opts.quiet ? undefined : (done, total) => setProgress({ done, total })
@@ -503,11 +508,16 @@ export default function App() {
       // Signal the Plan tab to recompute the displayed ride against fresh data,
       // preserving its day/route/explored-time selection.
       setForecastGen((g) => g + 1);
+      controller.forecastStatus().then(setForecastNotice).catch(() => {});
     } catch (e) {
+      controller.forecastStatus().then(setForecastNotice).catch(() => {});
       // A forecast fetch can fail (offline, API outage). Never leave the loader
       // hanging — surface it and let the user retry. A quiet background refresh
       // fails silently, keeping whatever is already on screen.
-      if (!opts.quiet) setLoadError(e && e.message ? e.message : "Couldn’t reach the forecast.");
+      if (!opts.quiet) {
+        setLoadError(e && e.message ? e.message : "Couldn’t reach the forecast.");
+        setLoadErrorUntil(e && e.rateLimited ? (e.until || null) : null);
+      }
     } finally {
       if (!opts.quiet) setLoading(false);
     }
@@ -566,12 +576,15 @@ export default function App() {
         input::placeholder { color: rgba(255,255,255,0.3);} input { color-scheme: dark; }
       `}</style>
 
+      {screen === "home" && !loading && !loadError && forecastNotice?.rateLimited && forecastNotice.staleSinceMs != null && (
+        <AllowanceBanner sinceMs={forecastNotice.staleSinceMs} untilMs={forecastNotice.until} />
+      )}
       <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
         <ScreenBoundary resetKey={screen}>
         {loading ? (
           <Loading progress={progress} />
         ) : loadError && screen === "home" ? (
-          <LoadErrorScreen message={loadError} onRetry={() => refresh()} />
+          <LoadErrorScreen message={loadError} allowanceUntil={loadErrorUntil} onRetry={() => refresh()} />
         ) : screen === "home" ? (
           <Home controller={controller} activeRouteId={activeRouteId} routes={routes}
             setActiveRouteId={setActiveRouteId} nowMs={nowTick} forecastGen={forecastGen} />
@@ -1157,6 +1170,9 @@ function DebugReadout({ debug }) {
         {/* 1d: forecast timing */}
         <div style={{ height: 1, background: "rgba(255,255,255,0.08)", margin: "6px 0" }} />
         <Row label="forecast updated">{fmtClock(debug.forecastUpdatedMs)}</Row>
+        {debug.allowancePct != null && (
+          <Row label="Open-Meteo allowance used">{debug.allowancePct}% {debug.allowanceWindow === "day" ? "(last 24 h)" : debug.allowanceWindow === "hour" ? "(last hour)" : "(this minute)"}</Row>
+        )}
         <Row label="next update">{fmtClock(debug.forecastNextUpdateMs)}</Row>
       </div>
     </div>
@@ -3811,18 +3827,32 @@ function Warn({ children }) {
 /* ============================================================================
  * HelpPanel — first-launch welcome + re-readable help (install, GPX, tuning)
  * ========================================================================== */
-function LoadErrorScreen({ message, onRetry }) {
+/* Shown above Home while Open-Meteo is refusing requests and the app is
+ * showing a saved forecast instead. */
+function AllowanceBanner({ sinceMs, untilMs }) {
+  return (
+    <div role="status" style={{ padding: "10px 16px", background: "rgba(224,164,94,0.16)", borderBottom: "1px solid rgba(224,164,94,0.45)", color: "#f3d3a8", fontSize: 12.5, lineHeight: 1.45 }}>
+      Open-Meteo forecast allowance used up. Showing the forecast from {formatTimeOfDay(sinceMs)}
+      {untilMs ? <>; fresh forecasts should be back around {formatTimeOfDay(untilMs)}.</> : "."}
+    </div>
+  );
+}
+
+function LoadErrorScreen({ message, allowanceUntil, onRetry }) {
   // Don't assert a cause we can't be sure of. A 429 (rate limit) is the server
   // throttling us, not the user's connection — give accurate guidance for it.
-  const rateLimited = message && /\b429\b/.test(message);
-  const guidance = rateLimited
+  const allowanceOut = allowanceUntil != null;
+  const rateLimited = allowanceOut || (message && /\b429\b/.test(message));
+  const guidance = allowanceOut
+    ? `Your Open-Meteo forecast allowance is used up, and there’s no recent forecast saved to fall back on. Forecasts should be available again around ${formatTimeOfDay(allowanceUntil)} — your routes are saved.`
+    : rateLimited
     ? "The forecast service is busy right now (too many requests). Wait a minute, then try again — your routes are saved."
     : "The forecast couldn’t be loaded. Try again in a moment — your routes are saved.";
   return (
     <div style={{ height: "100%", display: "grid", placeItems: "center", background: "linear-gradient(165deg,#12152b,#1d1b38 55%,#281f44)", color: "#fff", textAlign: "center", padding: 30 }}>
       <div style={{ maxWidth: 300 }}>
         <div style={{ fontFamily: "'Fraunces',serif", fontSize: 22, fontWeight: 600, marginBottom: 8 }}>
-          {rateLimited ? "Forecast service busy" : "Couldn’t load the forecast"}
+          {allowanceOut ? "Forecasts unavailable" : rateLimited ? "Forecast service busy" : "Couldn’t load the forecast"}
         </div>
         <div style={{ fontSize: 13.5, color: "rgba(255,255,255,0.6)", marginBottom: 18, lineHeight: 1.5 }}>
           {guidance}
