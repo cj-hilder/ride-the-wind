@@ -4,13 +4,15 @@
 // client SECRET is not here and must never be: it is a Worker secret in
 // production and a line in the uncommitted .env.development locally.
 //
-// PLACEHOLDER until Ride the Wind's own OAuth client exists (Google Cloud
-// Console → a Web application client with redirect URIs
+// Ride the Wind's own OAuth client, in its own Google Cloud project ("Ride the
+// Wind"): a Web application client with redirect URIs
 // https://ridethewind.nz/oauth-callback.html and
-// http://localhost:5173/oauth-callback.html). Not Temperatura's client: the
-// consent screen would name the wrong app, and the two apps would share one
-// hidden appDataFolder. While this is the placeholder, Connect is disabled.
-export const GOOGLE_CLIENT_ID = "REPLACE_WITH_RIDE_THE_WIND_CLIENT_ID.apps.googleusercontent.com";
+// http://localhost:5173/oauth-callback.html, scope drive.appdata only,
+// published to production. Not Temperatura's client: the consent screen
+// would name the wrong app, and the two apps would share one hidden
+// appDataFolder. Setting this back to a "REPLACE_…" placeholder disables
+// Connect.
+export const GOOGLE_CLIENT_ID = "742037583348-8un7b4j23qgvlv98v70altsf13fjba7i.apps.googleusercontent.com";
 export const GOOGLE_CLIENT_CONFIGURED = !GOOGLE_CLIENT_ID.startsWith("REPLACE_");
 
 // The only scope requested. It reaches the app's own hidden appDataFolder and
