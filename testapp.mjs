@@ -427,6 +427,23 @@ console.log('\nRecord route by GPS (recordRoute → previewTrace → finalizeRec
     ok('offline save still logs the first ride', resF.firstRideLogged === true && ridesF.length === 1, `${resF.firstRideLogged} ${ridesF.length}`);
   }
 
+  // Offline during recording: failed fetches back off instead of retrying on
+  // every GPS fix (~1/s), which could trip Open-Meteo's rate limit.
+  {
+    let calls = 0;
+    const bApp = mkApp(() => { calls++; return Promise.reject(new Error('offline')); });
+    let cb = null;
+    const geoB = { watchPosition: (s) => { cb = s; return 1; }, clearWatch: () => {} };
+    const hB = await bApp.recordRoute({ geo: geoB });
+    for (let i = 0; i < 120; i++) { // 2 minutes of fixes at 1/s
+      clock += 1000;
+      cb({ coords: { latitude: 0, longitude: i * dLon, accuracy: 5 } });
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    hB.manualFinish();
+    ok('offline recording backs off (≤ 3 attempts in 2 min, not ~120)', calls >= 1 && calls <= 3, `${calls} attempts`);
+  }
+
   // No forecast at all (offline throughout): route created, failure REPORTED.
   {
     const nApp = mkApp(() => Promise.reject(new Error('offline')));

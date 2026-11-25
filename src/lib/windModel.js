@@ -33,32 +33,103 @@ const DEG = Math.PI / 180;
 export const W_REF_KMH = 20; // reference wind for normalisation (per spec §2.2)
 
 /**
- * Fetch a URL with ONE automatic retry on a transient failure (HTTP 429 "too
- * many requests", 5xx, or a network error). At app open the home screen fires
- * several route verdicts concurrently, each doing a deterministic + ensemble
- * call, so the opening burst can momentarily trip Open-Meteo's short-window
- * rate limit — the classic "busy on first tap, fine on the next" symptom. A
- * single short backoff turns that manual retry into an automatic one; the
- * warmed per-station cache means the retry rarely bursts again. Returns the
- * Response (ok or not) — the caller still checks res.ok — or throws if even the
- * retry errors at the network level.
+ * Fetch JSON with time limits and automatic retries.
+ *
+ * Two time limits per attempt, because the two ways a phone request goes wrong
+ * look different:
+ *  - FIRST RESPONSE (headers) within `headerTimeoutMs` (5 s; normal is ~0.5 s,
+ *    ~1.7 s for the ensemble). A request sent on a dead connection never gets
+ *    one: after sleep or a Wi-Fi ↔ mobile switch, or a carrier/NAT dropping an
+ *    idle connection, the browser can reuse a pooled keep-alive connection that
+ *    silently died, and without a limit it waits for the OS to give up (often
+ *    20 s+). Open-Meteo is HTTP/1.1, so aborting closes that connection.
+ *  - DOWNLOAD (body) within `bodyTimeoutMs` — generous, since a slow mobile link
+ *    is legitimately slow, and the ensemble is ~160 KB.
+ * Pages can't ask the browser for a fresh connection, and the next attempt may
+ * pick up ANOTHER stale pooled connection (the app opens several at once), so
+ * a stall or network error gets up to `stallRetries` immediate retries — each
+ * one burns off a dead connection.
+ *
+ * HTTP 429/5xx get ONE retry after `backoffMs`: at app open the home screen
+ * fires several route verdicts at once, which can momentarily trip Open-Meteo's
+ * short-window rate limit; more retries would only add load. 400/404 never
+ * retry.
+ *
+ * Limits are enforced by a race as well as the AbortSignal, so an injected
+ * fetch that ignores the signal still times out. Returns parsed JSON or throws.
  */
-async function fetchWithRetry(f, url, { retries = 1, backoffMs = 800 } = {}) {
-  let lastErr = null;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, backoffMs * attempt));
+export const FETCH_HEADER_TIMEOUT_MS = 5000;
+export const FETCH_BODY_TIMEOUT_MS = 10000;
+export const ENSEMBLE_BODY_TIMEOUT_MS = 20000;
+export const FETCH_STALL_RETRIES = 2;
+const STALL_RETRY_PAUSE_MS = 100;
+
+function timeLimit(ms, label, phase, ctrl) {
+  let timer = null;
+  const promise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      try { ctrl && ctrl.abort(); } catch { /* ignore */ }
+      const e = new Error(`${label} ${phase} timed out after ${Math.round(ms / 100) / 10} s`);
+      e.timeout = true;
+      reject(e);
+    }, ms);
+  });
+  return { promise, clear: () => clearTimeout(timer) };
+}
+
+async function fetchJsonWithRetry(f, url, {
+  backoffMs = 800,
+  headerTimeoutMs = FETCH_HEADER_TIMEOUT_MS,
+  bodyTimeoutMs = FETCH_BODY_TIMEOUT_MS,
+  stallRetries = FETCH_STALL_RETRIES,
+  httpRetries = 1,
+  label = "Open-Meteo",
+} = {}) {
+  let stalls = 0, httpFails = 0;
+  for (;;) {
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const head = timeLimit(headerTimeoutMs, label, "response", ctrl);
+    let body = null;
     try {
-      const res = await f(url);
-      // Retry only transient statuses; return anything else (incl. ok) as-is.
-      if (res.ok || attempt === retries) return res;
-      if (res.status === 429 || res.status >= 500) continue;
-      return res; // non-transient (e.g. 400/404): don't waste a retry
+      const res = await Promise.race([f(url, ctrl ? { signal: ctrl.signal } : undefined), head.promise]);
+      head.clear();
+      if (!res.ok) {
+        const httpErr = new Error(`${label} HTTP ${res.status}`);
+        httpErr.httpStatus = res.status;
+        throw httpErr;
+      }
+      body = timeLimit(bodyTimeoutMs, label, "download", ctrl);
+      return await Promise.race([res.json(), body.promise]);
     } catch (e) {
-      lastErr = e; // network-level failure: retry, then rethrow
-      if (attempt === retries) throw lastErr;
+      if (e.httpStatus != null) {
+        // Retry transient statuses once, after a backoff; others won't improve.
+        const transient = e.httpStatus === 429 || e.httpStatus >= 500;
+        if (!transient || httpFails >= httpRetries) throw e;
+        httpFails++;
+        await new Promise((r) => setTimeout(r, backoffMs * httpFails));
+      } else {
+        // Stall (timeout) or network failure: likely a dead pooled connection,
+        // so retry straight away.
+        if (stalls >= stallRetries) throw e;
+        stalls++;
+        await new Promise((r) => setTimeout(r, Math.min(backoffMs, STALL_RETRY_PAUSE_MS)));
+      }
+    } finally {
+      head.clear();
+      if (body) body.clear();
     }
   }
-  throw lastErr || new Error("fetch failed");
+}
+
+/**
+ * Wait before the next background forecast attempt after `failures`
+ * consecutive failures (≥ 1): 30 s, 60 s, 120 s, … capped at 5 min.
+ */
+export const RECORD_FORECAST_BACKOFF_BASE_MS = 30000;
+export const RECORD_FORECAST_BACKOFF_MAX_MS = 5 * 60000;
+export function recordForecastBackoffMs(failures) {
+  const n = Math.max(1, Math.floor(failures || 1));
+  return Math.min(RECORD_FORECAST_BACKOFF_MAX_MS, RECORD_FORECAST_BACKOFF_BASE_MS * 2 ** (n - 1));
 }
 
 /* ------------------------------------------------------------------ *
@@ -435,7 +506,7 @@ export function windFactorTimed({
  * @returns {Promise<Array<{time:number, speed:number, fromDeg:number}>>}
  */
 export async function fetchForecast(lat, lon, opts = {}) {
-  const { forecastDays = 8, pastDays = 1, fetchImpl, retryBackoffMs } = opts;
+  const { forecastDays = 8, pastDays = 1, fetchImpl, retryBackoffMs, timeoutMs } = opts;
   const f = fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
   if (!f) throw new Error("No fetch available; inject opts.fetchImpl.");
 
@@ -447,9 +518,10 @@ export async function fetchForecast(lat, lon, opts = {}) {
     `&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m,temperature_2m,precipitation,precipitation_probability,snowfall,weather_code` +
     `&wind_speed_unit=kmh&timeformat=unixtime&past_days=${pastDays}&forecast_days=${forecastDays}`;
 
-  const res = await fetchWithRetry(f, url, retryBackoffMs != null ? { backoffMs: retryBackoffMs } : {});
-  if (!res.ok) throw new Error(`Open-Meteo HTTP ${res.status}`);
-  const data = await res.json();
+  const data = await fetchJsonWithRetry(f, url, {
+    ...(retryBackoffMs != null ? { backoffMs: retryBackoffMs } : {}),
+    ...(timeoutMs != null ? { headerTimeoutMs: timeoutMs, bodyTimeoutMs: timeoutMs } : {}),
+  });
   return parseForecast(data);
 }
 
@@ -463,7 +535,7 @@ export async function fetchForecast(lat, lon, opts = {}) {
  *          array of members, each a sorted series
  */
 export async function fetchEnsemble(lat, lon, opts = {}) {
-  const { forecastDays = 8, pastDays = 1, fetchImpl, model = "ecmwf_ifs025" } = opts;
+  const { forecastDays = 8, pastDays = 1, fetchImpl, model = "ecmwf_ifs025", timeoutMs, retryBackoffMs } = opts;
   const f = fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
   if (!f) throw new Error("No fetch available; inject opts.fetchImpl.");
 
@@ -472,9 +544,13 @@ export async function fetchEnsemble(lat, lon, opts = {}) {
     `&hourly=wind_speed_10m,wind_direction_10m,precipitation` +
     `&models=${model}&wind_speed_unit=kmh&timeformat=unixtime&past_days=${pastDays}&forecast_days=${forecastDays}`;
 
-  const res = await fetchWithRetry(f, url);
-  if (!res.ok) throw new Error(`Open-Meteo ensemble HTTP ${res.status}`);
-  const data = await res.json();
+  // The ensemble payload is ~16× larger (51 members), so allow its download longer.
+  const data = await fetchJsonWithRetry(f, url, {
+    label: "Open-Meteo ensemble",
+    bodyTimeoutMs: ENSEMBLE_BODY_TIMEOUT_MS,
+    ...(timeoutMs != null ? { headerTimeoutMs: timeoutMs, bodyTimeoutMs: timeoutMs } : {}),
+    ...(retryBackoffMs != null ? { backoffMs: retryBackoffMs } : {}),
+  });
   return parseEnsemble(data);
 }
 

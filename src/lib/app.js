@@ -30,6 +30,7 @@ import {
   computeWindFactor,
   seriesCovers,
   V0_NOMINAL,
+  recordForecastBackoffMs,
 } from "./windModel.js";
 import * as learning from "./learning.js";
 import {
@@ -1517,19 +1518,31 @@ export function createAppController(deps = {}) {
     // first fix and then every RECORD_FORECAST_EVERY_M along the way). Fetches
     // are fire-and-forget; failures just leave fewer samples. Not persisted
     // across an app restart — a resumed recording re-captures from its next fix.
+    // One fetch in flight at a time; after a failure, wait with exponential
+    // backoff before trying again (fixes arrive ~1/s, so retrying per fix would
+    // hammer Open-Meteo on a bad connection and risk its rate limit).
     const capturedForecast = [];
     let forecastAnchor = null;
-    let forecastPending = 0;
+    let forecastInFlight = false;
+    let forecastFailures = 0;
+    let forecastRetryAt = 0;
     function maybeCaptureForecast(fix) {
-      if (capturedForecast.length + forecastPending >= RECORD_FORECAST_MAX) return;
+      if (forecastInFlight || capturedForecast.length >= RECORD_FORECAST_MAX) return;
+      if (now() < forecastRetryAt) return;
       if (forecastAnchor && haversineLocal(forecastAnchor.lat, forecastAnchor.lon, fix.lat, fix.lon) < RECORD_FORECAST_EVERY_M) return;
-      forecastAnchor = { lat: fix.lat, lon: fix.lon };
-      forecastPending++;
+      forecastInFlight = true;
       Promise.resolve()
         .then(() => fetchForecastFor(fix.lat, fix.lon))
-        .then((series) => { if (series && series.length) capturedForecast.push({ lat: fix.lat, lon: fix.lon, series }); })
-        .catch(() => { forecastAnchor = null; /* retry from the next fix */ })
-        .finally(() => { forecastPending--; });
+        .then((series) => {
+          if (series && series.length) capturedForecast.push({ lat: fix.lat, lon: fix.lon, series });
+          forecastAnchor = { lat: fix.lat, lon: fix.lon };
+          forecastFailures = 0;
+        })
+        .catch(() => {
+          forecastFailures++;
+          forecastRetryAt = now() + recordForecastBackoffMs(forecastFailures);
+        })
+        .finally(() => { forecastInFlight = false; });
     }
 
     const watchId = geoApi.watchPosition(
