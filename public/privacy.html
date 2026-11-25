@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ride the Wind — Privacy Policy</title>
+<style>
+  :root { color-scheme: light dark; --bg: #ffffff; --fg: #1c1c1e; --muted: #6b6b70; --rule: #e2e2e6; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #121214; --fg: #ececf0; --muted: #a0a0a8; --rule: #2c2c30; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 42rem; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 28px 0 8px; padding-top: 16px; border-top: 1px solid var(--rule); }
+  .meta { color: var(--muted); margin: 0 0 20px; }
+  a { color: inherit; }
+  code { font-size: 0.9em; }
+</style>
+</head>
+<body>
+<main>
+<h1>Privacy Policy</h1>
+<p class="meta">Ride the Wind · Effective 25 November 2026</p>
+
+<p>Ride the Wind is a wind-aware bike commute app made by Chris Hilder. This policy explains what data
+the app handles and where that data goes. In short: your data stays on your phone, unless you choose to
+back it up to your own Google Drive. There are no accounts, no analytics, no advertising, and nothing is
+sold or shared.</p>
+
+<h2>Data stored on your device</h2>
+<p>Everything you create in Ride the Wind is stored only in your browser's storage on your device. That
+includes:</p>
+<ul>
+  <li>your routes, including the GPS track of any route you record</li>
+  <li>your rides: start and finish times, and the GPS track recorded while riding</li>
+  <li>each route's tuning, and your settings such as cruising speed and units</li>
+  <li>saved weather forecasts, kept so the app works offline</li>
+</ul>
+<p>None of this is sent to us. You can delete all of it at any time by uninstalling the app or clearing
+this site's data in your browser settings.</p>
+
+<h2>Location</h2>
+<p>The app uses your phone's GPS only while you record a route or a ride, and only after you allow it.
+Your location is stored on your device as part of that route or ride, and is not sent to us.</p>
+
+<h2>Weather forecasts</h2>
+<p>Forecasts come from <a href="https://open-meteo.com/">Open-Meteo</a>. To get them, the app sends
+Open-Meteo the coordinates of a few points along each of your routes (and, while you record a new route,
+of where you are). Open-Meteo receives these with your IP address, as any web service does. No account,
+name or other identifier is sent. Open-Meteo's own
+<a href="https://open-meteo.com/en/terms">terms and privacy policy</a> apply to those requests.</p>
+
+<h2>Google Drive backup (optional)</h2>
+<p>If you connect a Google account, Ride the Wind backs up your app data to that account's Google Drive.</p>
+<ul>
+  <li><strong>What the app can access.</strong> The app requests only the
+    <code>drive.appdata</code> permission. This gives it access to a hidden folder in your Drive that
+    belongs to Ride the Wind alone. The app cannot see, read or change any of your other Drive files.</li>
+  <li><strong>What is stored there.</strong> Backup files containing your routes, rides, route tuning and
+    settings, as listed above.</li>
+  <li><strong>Your Google account email address</strong> is read so that the app can show which account
+    is connected. It is kept only on your device.</li>
+  <li><strong>Sign-in tokens.</strong> After you connect, Google issues a token that lets the app back up
+    without asking you again. That token is stored on your device. When the app needs fresh access, it
+    sends the token to Ride the Wind's own small server endpoint, which adds the app's Google credentials
+    and passes the request to Google. That endpoint stores nothing and does not log tokens.</li>
+  <li><strong>Disconnecting.</strong> Disconnect in the app revokes its access to your Google account.
+    You can also revoke it at any time from your Google Account's security settings, under
+    third-party connections. Your existing backups stay in your Drive until you delete them.</li>
+  <li><strong>Deleting backups.</strong> In Google Drive on the web, open Settings, then Manage apps, find
+    Ride the Wind, and choose "Delete hidden app data".</li>
+</ul>
+<p>Ride the Wind's use and transfer of information received from Google APIs will adhere to the
+<a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data
+Policy</a>, including the Limited Use requirements. Data from your Google account is used only to back up
+and restore your own Ride the Wind data. It is never used for advertising, never sold, never transferred
+to anyone else, and never read by a person.</p>
+
+<h2>Hosting</h2>
+<p>The app is served by Cloudflare. Like any web host, Cloudflare processes your IP address and basic
+request details to deliver the app and protect the service, and may keep short-lived request logs.
+Ride the Wind does not use these logs to identify or track you.</p>
+
+<h2>Children</h2>
+<p>Ride the Wind is not directed at children under 13 and does not knowingly collect their data.</p>
+
+<h2>Changes</h2>
+<p>If this policy changes, the new version will be posted here with a new effective date.</p>
+
+<h2>Contact</h2>
+<p>Questions about this policy: <a href="mailto:chris@hilderbuild.com">chris@hilderbuild.com</a></p>
+<p>Under the New Zealand Privacy Act 2020 you can ask for access to, or correction of, personal
+information held about you. Ride the Wind holds none outside your own device and your own Google Drive,
+both of which you control directly.</p>
+
+<p class="meta"><a href="/terms.html">Terms of Service</a> · <a href="/">Open Ride the Wind</a></p>
+</main>
+</body>
+</html>

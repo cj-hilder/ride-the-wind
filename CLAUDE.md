@@ -18,4 +18,15 @@
   - Move time forward: replace `Date.now` with an offset version (the controller calls `Date.now()` each time), then `window.dispatchEvent(new Event('focus'))` to trigger a quiet refresh.
   - Open-Meteo allowance used up: replace `window.fetch` so open-meteo URLs return a `429` response with `Retry-After` and `X-RateLimit-*` headers. Combined with a time offset past the 30-min cache, this shows the allowance banner and fallback.
 
+- **Stale code in the preview:** the app registers its service worker on localhost too, and the worker serves same-origin files cache-first. Vite's dev modules aren't content-hashed, so after editing code the preview can keep running the OLD code. Before checking a change, unregister the worker and clear its cache in the page (`navigator.serviceWorker.getRegistrations()` → `unregister()`, `caches.keys()` → `caches.delete()`), then reload.
+
 Phone-specific behaviour (GPS accuracy, Android touch handling on range sliders, flaky mobile connections) can't be reproduced in the preview; say so and leave it to the user's live test.
+
+## Google Drive backup
+
+Ported from Temperatura (`/Users/caffeinechris/temperatura`, see its `docs/Temperatura.md` → "Google Drive backup" for the behaviour spec). Pure logic in `src/lib/driveBackup.js` (token source, Drive client, scheduler), `googleAuth.js` (PKCE popup), `googleToken.js` (the token relay), `googleClient.js` (client ID + scope); React wiring in `src/driveSync.js`; UI in `src/DriveSection.jsx` on the Routes screen. Tests: `testdrive.mjs`, `testtoken.mjs`.
+
+- **Server code:** only `/api/google-token`, in `worker/index.js` (Cloudflare Worker; `wrangler.jsonc` routes only `/api/*` to it) and mirrored on the Vite dev server in `vite.config.js`. It adds the client secret and relays to Google; it stores nothing.
+- **Backup triggers** are marked in one place, `markBackupOwed` / `backupWorthy` in `src/lib/app.js`. A new controller function that changes saved user data must be wrapped there, or its changes won't trigger a backup.
+- **Setup outside the repo:** a Google OAuth Web client for Ride the Wind (redirect URIs `https://ridethewind.nz/oauth-callback.html` and `http://localhost:5173/oauth-callback.html`, scope `drive.appdata` only), its client ID in `googleClient.js` (a placeholder disables Connect until then), and `GOOGLE_CLIENT_SECRET` as a Cloudflare Worker secret plus a line in the uncommitted `.env.development` for local sign-in (`generate-env.mjs` keeps lines it doesn't own).
+- **Testing the UI without Google:** the Drive state lives in the IndexedDB `settings` store under `drive*` keys (`driveRefreshToken`, `driveAccountEmail`, `driveLastBackupAt`, `driveNeedsReconnect`, …). Writing fake values shows the connected / reconnect states; delete every `drive*` key afterwards. With no secret configured, the dev token endpoint answers `not_configured`, so any real backup attempt fails cleanly. `oauth-callback.html` closes its own tab after ~300 ms.

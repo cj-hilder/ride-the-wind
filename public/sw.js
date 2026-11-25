@@ -68,6 +68,15 @@ self.addEventListener("fetch", (event) => {
   // give two conflicting answers to "how old is this forecast?".
 
   if (url.origin === self.location.origin) {
+    // Standalone pages beside the app (oauth-callback.html, privacy.html,
+    // terms.html) and /api/*: straight to the network, never cached. The
+    // document route below stores whatever a navigation returns AS the app
+    // shell (index.html), so letting Google's sign-in popup land there would
+    // make the next offline launch open the "Returning to Ride the Wind…"
+    // page instead of the app.
+    const isStandalonePage = /\.html$/.test(url.pathname) && url.pathname !== BASE + "index.html";
+    if (isStandalonePage || url.pathname.startsWith(BASE + "api/")) return;
+
     // The HTML document / SPA navigations: NETWORK-FIRST so a fresh deploy is
     // seen at once; fall back to the cached shell only when offline.
     if (event.request.mode === "navigate" || url.pathname === BASE || url.pathname === BASE + "index.html") {

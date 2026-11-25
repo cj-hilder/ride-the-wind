@@ -25,8 +25,12 @@ run the test suites in the project root with `node test*.mjs`.
 
 ## Deploy
 
-Pushing to `main` triggers a Cloudflare Pages build (`npm run build`, output
-`dist/`), which deploys to [ridethewind.nz](https://ridethewind.nz/). 
+Pushing to `main` triggers a Cloudflare Workers build (`npm run build`, then
+`wrangler deploy` with `wrangler.jsonc`), which deploys to
+[ridethewind.nz](https://ridethewind.nz/). The built app in `dist/` is served
+as static assets; the only server code is the `/api/google-token` endpoint for
+Google Drive backup (`worker/index.js`), which needs the `GOOGLE_CLIENT_SECRET`
+Worker secret set in the Cloudflare dashboard.
 
 ### Versioning a release
 

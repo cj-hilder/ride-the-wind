@@ -30,5 +30,14 @@ VITE_BUILD_DATE=${date}
 // `vite build` loads .env.production; `vite` (dev server) loads
 // .env.development. Write both so the version line works in either mode.
 const mode = process.argv[2] === "dev" ? "development" : "production";
-fs.writeFileSync(`.env.${mode}`, env);
-console.log(`✅ .env.${mode} written: v${pkg.version} · ${hash} · ${date}`);
+// Keep every line this script doesn't own. .env.development also holds
+// hand-added local secrets (GOOGLE_CLIENT_SECRET for the dev token endpoint,
+// see vite.config.js), and rewriting the file wholesale on every `npm run dev`
+// would silently delete them.
+const envFile = `.env.${mode}`;
+const owned = /^VITE_(APP_VERSION|BUILD_HASH|BUILD_DATE)=/;
+const kept = fs.existsSync(envFile)
+  ? fs.readFileSync(envFile, "utf8").split("\n").filter((l) => l.trim() && !owned.test(l))
+  : [];
+fs.writeFileSync(envFile, env + kept.map((l) => l + "\n").join(""));
+console.log(`✅ ${envFile} written: v${pkg.version} · ${hash} · ${date}`);

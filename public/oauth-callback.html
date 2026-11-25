@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Ride the Wind — Google Drive</title>
+<style>
+  :root { color-scheme: light dark; --bg: #ffffff; --fg: #1c1c1e; --muted: #6b6b70; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #121214; --fg: #ececf0; --muted: #a0a0a8; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 28rem; margin: 0 auto; padding: 48px 16px; text-align: center; }
+  p { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Returning to Ride the Wind…</h1>
+  <p id="detail">You can close this tab if it doesn't close itself.</p>
+</main>
+<script>
+  // Where Google's sign-in popup lands. It hands the result back to the app
+  // three ways, because Google's sign-in page cuts this popup off from the
+  // window that opened it (Cross-Origin-Opener-Policy), and on Android an
+  // installed app may open it as a separate Chrome tab. See
+  // src/lib/googleAuth.js for the receiving side. The service worker never
+  // caches this page (public/sw.js).
+  (function () {
+    var p = new URLSearchParams(location.search);
+    var result = { type: "ridethewind-oauth", code: p.get("code"), state: p.get("state"), error: p.get("error"), at: Date.now() };
+    try { if (window.opener) window.opener.postMessage(result, location.origin); } catch (e) {}
+    try { var ch = new BroadcastChannel("ridethewind-oauth"); ch.postMessage(result); ch.close(); } catch (e) {}
+    try { localStorage.setItem("ridethewind-oauth-result", JSON.stringify(result)); } catch (e) {}
+    // The code is single-use and worthless without the app's PKCE verifier,
+    // but there's still no reason to leave it in the address bar or history.
+    history.replaceState(null, "", location.pathname);
+    if (result.error) {
+      document.getElementById("title").textContent = "Google Drive wasn't connected";
+      document.getElementById("detail").textContent = "Close this tab and return to Ride the Wind.";
+    } else {
+      document.getElementById("title").textContent = "Connected";
+      document.getElementById("detail").textContent = "Return to Ride the Wind. You can close this tab.";
+    }
+    setTimeout(function () { window.close(); }, 300);
+  })();
+</script>
+</body>
+</html>

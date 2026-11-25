@@ -144,6 +144,9 @@ This saves you having to interpret a general weather forecast for your particula
           <p style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.55, margin: 0 }}>
             Ride the Wind gives estimates from weather forecasts provided by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer" style={lnk}>Open-Meteo</a>, a free, open-source forecast service. Ride the Wind is provided as is, with no warranty and no liability for lateness, wet socks, lightning strike or any other outcome. It's free and open source — made by <a href="https://github.com/cj-hilder/ride-the-wind" target="_blank" rel="noopener noreferrer" style={lnk}>Chris Hilder</a> and released under the MIT License.
           </p>
+          <p style={{ fontSize: 12.5, color: "rgba(255,255,255,0.55)", lineHeight: 1.55, margin: "10px 0 0" }}>
+            Full <a href="/terms.html" target="_blank" rel="noopener noreferrer" style={lnk}>Terms of Service</a> · <a href="/privacy.html" target="_blank" rel="noopener noreferrer" style={lnk}>Privacy Policy</a>
+          </p>
           <p style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", margin: "10px 0 0" }}>
             Made in New Zealand — works anywhere in the world.
           </p>

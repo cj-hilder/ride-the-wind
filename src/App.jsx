@@ -32,6 +32,8 @@ import { rangeTouchCommits, RANGE_MOUSE_AFTER_TOUCH_MS } from "./lib/rangeGestur
 import { DEFAULT_K } from "./lib/windModel.js";
 import { rideK as computeRideK } from "./lib/learning.js";
 import { installBackGuard, resolveBackAction, requestAppExit } from "./lib/backGuard.js";
+import { useDriveBackup } from "./driveSync.js";
+import DriveSection from "./DriveSection.jsx";
 
 /* Error boundary around the active screen. A render error in one screen (e.g. a
  * transient bad shape during a forecast refresh) must NOT tear down the whole
@@ -242,6 +244,9 @@ export default function App() {
   const controllerRef = useRef(null);
   if (!controllerRef.current) controllerRef.current = createAppController();
   const controller = controllerRef.current;
+  // Google Drive backup: one scheduler for the whole app, so automatic
+  // backups run whatever screen is showing.
+  const drive = useDriveBackup(controller);
 
   const [screen, setScreen] = useState("home"); // home | setup | capture
   // Restore the last-open tab across app restarts. Applied once, inside
@@ -591,6 +596,7 @@ export default function App() {
         ) : screen === "routes" ? (
           <Routes
             controller={controller}
+            drive={drive}
             routes={routes}
             onChanged={refresh}
             onAddNew={() => setScreen("setup")}
@@ -613,7 +619,7 @@ export default function App() {
         </ScreenBoundary>
       </div>
 
-      {!recording && <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} />}
+      {!recording && <TabBar screen={screen} setScreen={setScreen} hasRoutes={routes.length > 0} routesAttention={!!drive.status?.attention} />}
 
       {showHelp && <HelpPanel onClose={acceptHelp} />}
       {resumable && (
@@ -1184,7 +1190,7 @@ function DebugReadout({ debug }) {
  * ========================================================================== */
 const DAY_CODES = [["MO", "M"], ["TU", "T"], ["WE", "W"], ["TH", "T"], ["FR", "F"], ["SA", "S"], ["SU", "S"]];
 
-function Routes({ controller, routes, onChanged, onAddNew, onHelp, onSettings }) {
+function Routes({ controller, drive, routes, onChanged, onAddNew, onHelp, onSettings }) {
   const [editing, setEditing] = useState(null); // route id being edited
   const fileRef = useRef();
 
@@ -1335,8 +1341,9 @@ function Routes({ controller, routes, onChanged, onAddNew, onHelp, onSettings })
             onChange={(e) => e.target.files[0] && doImport(e.target.files[0])} />
         </div>
         <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.4)", marginTop: 8 }}>
-          Your routes and rides live only on this device. Export regularly to keep a backup.
+          Your routes and rides live only on this device. Connect Google Drive for automatic backups, or export a file regularly.
         </div>
+        <DriveSection drive={drive} onRestored={async (bundle) => { await controller.importAll(bundle, "replace"); await onChanged(); }} />
       </div>
 
       <div style={{ padding: "22px 22px 0" }}>
@@ -3764,7 +3771,9 @@ const adjBtn = {
 /* ============================================================================
  * Shared bits
  * ========================================================================== */
-function TabBar({ screen, setScreen, hasRoutes }) {
+// routesAttention: a dot on the Routes tab when Google Drive backup needs the
+// user (access lost, or a change has gone a day without backing up).
+function TabBar({ screen, setScreen, hasRoutes, routesAttention }) {
   const tabs = [["home", "Plan"], ["capture", "Ride"], ["routes", "Routes"]];
   return (
     <div style={{ display: "flex", background: "#16181d", borderTop: "1px solid rgba(255,255,255,0.06)", padding: "8px 8px calc(8px + env(safe-area-inset-bottom))" }}>
@@ -3777,7 +3786,12 @@ function TabBar({ screen, setScreen, hasRoutes }) {
             flex: 1, padding: "10px 0", border: "none", cursor: disabled ? "default" : "pointer", background: "transparent",
             fontFamily: "inherit", fontSize: 12.5, fontWeight: 600,
             color: disabled ? "rgba(255,255,255,0.2)" : isActive ? "#e0a45e" : "rgba(255,255,255,0.5)",
-          }}>{label}</button>
+          }}>
+            {label}
+            {k === "routes" && routesAttention && (
+              <span aria-label="backup needs attention" style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: "#d9534f", marginLeft: 5, verticalAlign: "top" }} />
+            )}
+          </button>
         );
       })}
     </div>

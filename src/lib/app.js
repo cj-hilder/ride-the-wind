@@ -2236,12 +2236,62 @@ export function createAppController(deps = {}) {
     await requestPersistence();
   }
 
+  // ---- Backup-worthy changes (Google Drive backup) ----
+  // Every user change to data that a backup holds goes through the functions
+  // wrapped below (or the settings listed in BACKUP_SETTING_KEYS), so the
+  // "a backup is owed" mark is made here, in one place, after the change is
+  // saved. Marking in the UI instead would mean one forgotten call site
+  // silently stops backups. Deliberately NOT triggers: restoring a backup
+  // (importAll), the model's own automatic bookkeeping (persistResolved's
+  // freeze transitions — they ride along in the next real backup), view state
+  // (lastScreen, lastOpenedRouteId …) and the example route, which is never
+  // stored. The listener is set late (setBackupListener) because the
+  // scheduler is built from this controller's own store.
+  let backupListener = deps.onBackupWorthyChange || null;
+  const setBackupListener = (fn) => { backupListener = fn; };
+  async function markBackupOwed() {
+    // A failure to mark must never fail the user's save: the change itself is
+    // already safely stored.
+    if (backupListener) {
+      try { await backupListener(); } catch (e) { console.warn("Drive backup: couldn't mark a change", e); }
+    }
+  }
+  const backupWorthy = (fn) => async (...args) => {
+    const result = await fn(...args);
+    if (!(result && result.isExample)) await markBackupOwed();
+    return result;
+  };
+  // Exported (backed-up) settings that are the rider's own choices.
+  const BACKUP_SETTING_KEYS = new Set(["cruiseSpeedKmh", "conservatismPct", "displayUnits", "globalAlertThresholdMin"]);
+  const rawSetSetting = store.setSetting.bind(store);
+  store.setSetting = async (key, value) => {
+    const result = await rawSetSetting(key, value);
+    if (BACKUP_SETTING_KEYS.has(key)) await markBackupOwed();
+    return result;
+  };
+
   return {
     store,
-    createRoute, createRouteFromProcessed, createReverseRoute, previewReverse, previewGpx, listRoutes, getRoute, updateRoute, resetRoute, deleteRoute, reorderRoutes,
+    setBackupListener,
+    createRoute: backupWorthy(createRoute),
+    createRouteFromProcessed: backupWorthy(createRouteFromProcessed),
+    createReverseRoute: backupWorthy(createReverseRoute),
+    previewReverse, previewGpx, listRoutes, getRoute,
+    updateRoute: backupWorthy(updateRoute),
+    resetRoute: backupWorthy(resetRoute),
+    deleteRoute: backupWorthy(deleteRoute),
+    reorderRoutes: backupWorthy(reorderRoutes),
     getHomeVerdict, listRoutesWithVerdict,
-    forecastStatus, recordRide, recordManualRide, listRides, startRide, recordRoute, previewTrace, finalizeRecordedRoute, estimateRecordedStillAir, distanceToStart, distanceToEnd, rideExpectation, ridePrediction, routeTuning, updateExampleSeeds,
-    updateRide, deleteRide, excludeRideAndEarlier, ridesForManager,
+    forecastStatus,
+    recordRide: backupWorthy(recordRide),
+    recordManualRide: backupWorthy(recordManualRide),
+    listRides, startRide, recordRoute, previewTrace,
+    finalizeRecordedRoute: backupWorthy(finalizeRecordedRoute),
+    estimateRecordedStillAir, distanceToStart, distanceToEnd, rideExpectation, ridePrediction, routeTuning, updateExampleSeeds,
+    updateRide: backupWorthy(updateRide),
+    deleteRide: backupWorthy(deleteRide),
+    excludeRideAndEarlier: backupWorthy(excludeRideAndEarlier),
+    ridesForManager,
     findResumableSession, discardSession,
     start,
     exportAll, importAll, requestPersistence,

@@ -1,13 +1,21 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "ride-the-wind",
+  // Server code is limited to /api/* (the Google token endpoint for Drive
+  // backup). See the run_worker_first comment below.
+  "main": "worker/index.js",
   "compatibility_date": "2026-06-19",
   "observability": {
     "enabled": true
   },
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    // Only /api/* runs the Worker. Everything else is served from dist/ as
+    // before. /api/* must be listed here, not left to fall through: with the
+    // SPA fallback above, a missing /api path would otherwise get index.html
+    // with a 200.
+    "run_worker_first": ["/api/*"]
   },
   "compatibility_flags": [
     "nodejs_compat"
