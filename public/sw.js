@@ -76,21 +76,25 @@ self.addEventListener("fetch", (event) => {
   // give two conflicting answers to "how old is this forecast?".
 
   if (url.origin === self.location.origin) {
-    // Standalone pages beside the app (oauth-callback.html, privacy.html,
-    // terms.html) and /api/*: straight to the network, never cached. The
-    // document route below stores whatever a navigation returns AS the app
-    // shell (index.html), so letting Google's sign-in popup land there would
-    // make the next offline launch open the "Returning to Ride the Wind…"
-    // page instead of the app.
-    const isStandalonePage = /\.html$/.test(url.pathname) && url.pathname !== BASE + "index.html";
-    if (isStandalonePage || url.pathname.startsWith(BASE + "api/")) return;
+    // /api/*: straight to the network, never cached.
+    if (url.pathname.startsWith(BASE + "api/")) return;
 
-    // The HTML document / SPA navigations: NETWORK-FIRST so a fresh deploy is
-    // seen at once; fall back to the cached shell only when offline.
-    if (event.request.mode === "navigate" || url.pathname === BASE || url.pathname === BASE + "index.html") {
+    // The app shell: NETWORK-FIRST so a fresh deploy is seen at once; fall
+    // back to the cached shell only when offline. ONLY the root counts as the
+    // app (the app has no path routes: screens are React state, and the back
+    // guard pushes entries on the same URL). Every other navigation — the
+    // standalone pages privacy, terms and the OAuth popup's oauth-callback —
+    // goes straight to the network and is never stored, because
+    // networkFirstDoc stores whatever it gets AS the shell: Google's sign-in
+    // popup landing there would make the next offline launch open "Returning
+    // to Ride the Wind…" instead of the app. The extension can't mark those
+    // pages: Cloudflare redirects /privacy.html to /privacy (html_handling),
+    // and each redirect hop of a navigation comes back through this worker.
+    if (url.pathname === BASE || url.pathname === BASE + "index.html") {
       event.respondWith(networkFirstDoc(event.request));
       return;
     }
+    if (event.request.mode === "navigate") return;
     // Hashed build assets (app-a1b2c3.js, *.css): safe to cache-first forever,
     // because Vite changes the filename when the content changes.
     event.respondWith(cacheFirst(event.request));
@@ -104,7 +108,14 @@ async function cacheFirst(request) {
   if (cached) return cached;
   try {
     const res = await fetch(request);
-    if (res.ok) {
+    // Never cache HTML as an asset. wrangler.jsonc's single-page-application
+    // fallback answers a request for ANY missing file — e.g. a hashed bundle
+    // from an earlier build, /assets/index-OLD.js — with index.html and a 200.
+    // Cached under the bundle's URL, that HTML can't run as a script, so a
+    // stale page would render blank on every launch. `ok` alone can't catch
+    // it; the content type can. (Found in Temperatura, same hosting.)
+    const type = (res.headers.get("content-type") || "").toLowerCase();
+    if (res.ok && !type.startsWith("text/html")) {
       const cache = await caches.open(SHELL_CACHE);
       cache.put(request, res.clone());
     }
