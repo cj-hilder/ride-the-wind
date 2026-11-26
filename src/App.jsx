@@ -29,6 +29,7 @@ import HelpPanel from "./HelpPanel.jsx";
 import { setFormatSettings, DEFAULT_UNITS, formatTemperature, formatTimeOfDay, formatElapsed, formatRideSpeed, formatWindSpeed, formatDistance, formatDistanceAdaptive, formatRainfall, formatClockString, formatElevation, exampleWindLabel, canonicalKmhToRideSpeed, rideSpeedToCanonicalKmh, rideSpeedUnitLabel, defaultCruiseSpeedKmh, formatDisplayNumber } from "./lib/format.js";
 import { effortNorm, V0_MIN, V0_MAX } from "./lib/windModel.js";
 import { rangeTouchCommits, RANGE_MOUSE_AFTER_TOUCH_MS } from "./lib/rangeGesture.js";
+import { useRideFullscreen } from "./lib/useRideFullscreen.js";
 import { DEFAULT_K } from "./lib/windModel.js";
 import { rideK as computeRideK } from "./lib/learning.js";
 import { installBackGuard, resolveBackAction, requestAppExit } from "./lib/backGuard.js";
@@ -2575,6 +2576,8 @@ const lbl = { display: "block", fontSize: 12.5, color: "rgba(255,255,255,0.6)", 
  * ========================================================================== */
 function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResumeHandled }) {
   const [state, setState] = useState("armed"); // armed | recording | blocked
+  // Hide Android's navigation buttons while recording (rain presses them).
+  useRideFullscreen(state === "recording");
   const [blocked, setBlocked] = useState(null); // gate-failure message
   const [gpsError, setGpsError] = useState(null); // {code,message} when geolocation fails
   const [confirmFinish, setConfirmFinish] = useState(false); // guard against an accidental Finish tap
@@ -3261,6 +3264,8 @@ function ProgressBar({ travelledM, totalM }) {
  * ========================================================================== */
 function Capture({ controller, route, onDone, onRecordingChange, resumeSession, onResumeHandled }) {
   const [state, setState] = useState("armed");
+  // Hide Android's navigation buttons while riding (rain presses them).
+  useRideFullscreen(state === "riding");
   const [elapsed, setElapsed] = useState(0);
   const [paused, setPaused] = useState(false);
   const [result, setResult] = useState(null);
