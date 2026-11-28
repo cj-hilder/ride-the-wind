@@ -205,7 +205,17 @@ export function needleTauMsFromSpeedAcc(speedAccPrev, speedAccNow) {
 // snappy τ and only a genuine degradation slows the needle; and cap τ lower.
 export const NEEDLE_BASELINE_WINDOW = 60;      // recent fixes the per-phone baseline is drawn from
 export const NEEDLE_BASELINE_PCTL = 0.2;       // percentile of that window taken as "typical good"
-export const NEEDLE_DOPPLER_TAU_MAX_MS = 8000; // cap (×NEEDLE_TAU_SCALE → ~10 s) for the Doppler path
+export const NEEDLE_DOPPLER_TAU_MAX_MS = 5000; // cap (×NEEDLE_TAU_SCALE → 6 s) for the Doppler path
+// Damping for the Doppler needle is deliberately GENTLE in degraded accuracy:
+// coords.speed comes from the satellites' Doppler shift, which holds up far
+// better than position against what inflates the accuracy figure (multipath,
+// fewer satellites, a wet jacket over the phone). Inverse-variance (squared)
+// growth suits position-DIFFERENCED speed, where position error feeds straight
+// into the speed; for Doppler it made the needle hit its ~10 s cap at only
+// 1.8× the phone's normal accuracy — e.g. a phone that normally reports 10 m
+// drifting to 18 m in rain. Reported accuracy also jitters (and some phones
+// round it up), so small swings shouldn't matter at all.
+export const NEEDLE_DOPPLER_DEADBAND = 1.5;     // up to this × the phone's normal accuracy: τ stays at min
 
 /** Fresh per-ride accuracy baseline tracker. */
 export function newAccBaseline() { return { recent: [] }; }
@@ -232,30 +242,50 @@ export function accBaseline(b) {
 }
 
 /**
- * τ for the Doppler needle when speedAccuracy is unavailable: position-accuracy
- * variance relative to the phone's own baseline (never a tighter reference than
- * NEEDLE_ACC_REF_M, so phones already at ~4 m behave as before), clamped to
- * [NEEDLE_TAU_MIN_MS, NEEDLE_DOPPLER_TAU_MAX_MS].
+ * τ for the Doppler needle when speedAccuracy is unavailable, from position
+ * accuracy relative to the phone's own baseline (never a tighter reference
+ * than NEEDLE_ACC_REF_M, so phones already at ~4 m behave as before). The
+ * degradation ratio is the RMS of the two fixes' accuracies over that
+ * reference. No extra damping up to NEEDLE_DOPPLER_DEADBAND; beyond it τ grows
+ * LINEARLY with the ratio (not squared — see NEEDLE_DOPPLER_DEADBAND), clamped
+ * to [NEEDLE_TAU_MIN_MS, NEEDLE_DOPPLER_TAU_MAX_MS].
  */
 export function needleTauMsDoppler(accPrev, accNow, baselineM) {
-  const ref = Math.max(NEEDLE_ACC_REF_M, (typeof baselineM === "number" && baselineM > 0) ? baselineM : NEEDLE_ACC_REF_M);
+  const ref = accReference(baselineM);
   const clamp = (a) => Math.max(NEEDLE_ACC_FLOOR_M, a);
   const ap = clamp((accPrev == null || Number.isNaN(accPrev)) ? ref : accPrev);
   const an = clamp((accNow == null || Number.isNaN(accNow)) ? ref : accNow);
-  const tau = NEEDLE_TAU_MIN_MS * ((ap * ap + an * an) / (2 * ref * ref));
+  const ratio = Math.sqrt((ap * ap + an * an) / 2) / ref;
+  const tau = NEEDLE_TAU_MIN_MS * Math.max(1, ratio / NEEDLE_DOPPLER_DEADBAND);
   return Math.max(NEEDLE_TAU_MIN_MS, Math.min(NEEDLE_DOPPLER_TAU_MAX_MS, tau));
 }
 
-export function needleTauMs(accPrev, accNow) {
+// The accuracy treated as "a good fix": this phone's own typical accuracy
+// (accBaseline), but never tighter than NEEDLE_ACC_REF_M. Phones estimate
+// accuracy differently (some report a conservative 10 m for fixes as good as
+// another phone's 5 m), so judging fixes against a fixed 4 m punished whole
+// devices, not bad fixes.
+function accReference(baselineM) {
+  return Math.max(NEEDLE_ACC_REF_M, (typeof baselineM === "number" && baselineM > 0) ? baselineM : NEEDLE_ACC_REF_M);
+}
+
+/**
+ * τ for the position-DIFFERENCED needle (no coords.speed). Squared growth is
+ * right here (position error feeds straight into the speed), but against the
+ * phone's own baseline (optional `baselineM`; omitted → the fixed 4 m
+ * reference), for the same reason as the Doppler path.
+ */
+export function needleTauMs(accPrev, accNow, baselineM) {
   // Clamp each reported accuracy UP to a realistic floor: consumer GPS is
   // essentially never truly sub-2.5 m, so a device claiming (or lying) better is
   // treated as no better than the floor — otherwise one over-optimistic fix
   // makes τ snap short and the needle jumps.
   const clamp = (a) => Math.max(NEEDLE_ACC_FLOOR_M, a);
-  const ap = clamp((accPrev == null || Number.isNaN(accPrev)) ? NEEDLE_ACC_REF_M : accPrev);
-  const an = clamp((accNow == null || Number.isNaN(accNow)) ? NEEDLE_ACC_REF_M : accNow);
+  const ref = accReference(baselineM);
+  const ap = clamp((accPrev == null || Number.isNaN(accPrev)) ? ref : accPrev);
+  const an = clamp((accNow == null || Number.isNaN(accNow)) ? ref : accNow);
   const variance = ap * ap + an * an;
-  const refVar = 2 * NEEDLE_ACC_REF_M * NEEDLE_ACC_REF_M;
+  const refVar = 2 * ref * ref;
   const tau = NEEDLE_TAU_MIN_MS * (variance / refVar);
   return Math.max(NEEDLE_TAU_MIN_MS, Math.min(NEEDLE_TAU_MAX_MS, tau));
 }

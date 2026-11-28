@@ -2675,7 +2675,7 @@ function RouteRecorder({ controller, onCancel, onRecorded, resumeSession, onResu
               ? ((speedAccMps != null || em.lastSpeedAccM != null)
                   ? needleTauMsFromSpeedAcc(em.lastSpeedAccM, speedAccMps)
                   : needleTauMsDoppler(em.lastAccM, accuracyM, accBaseline(em.accBase)))
-              : needleTauMs(em.lastAccM, accuracyM);
+              : needleTauMs(em.lastAccM, accuracyM, accBaseline(em.accBase));
             const tau = baseTau * em.tauScale;
             em.speedMps = emaStep(em.speedMps, instMps, Math.min(dt, NEEDLE_MAX_DT_MS), tau);
             em.lastSpeedAccM = speedAccMps != null ? speedAccMps : em.lastSpeedAccM;
@@ -3446,7 +3446,7 @@ function Capture({ controller, route, onDone, onRecordingChange, resumeSession, 
                   // no speedAccuracy (most browsers): position accuracy relative
                   // to this phone's own typical accuracy, capped — see needleTauMsDoppler
                   : needleTauMsDoppler(em.lastAccM, accuracyM, accBaseline(em.accBase)))
-              : needleTauMs(em.lastAccM, accuracyM);
+              : needleTauMs(em.lastAccM, accuracyM, accBaseline(em.accBase));
             const tau = baseTau * em.tauScale;
             const dtForAlpha = Math.min(dt, NEEDLE_MAX_DT_MS);
             em.speedMps = emaStep(em.speedMps, instMps, dtForAlpha, tau);

@@ -4,7 +4,7 @@ import {
   needleTauMs, NEEDLE_TAU_MIN_MS, NEEDLE_TAU_MAX_MS, NEEDLE_ACC_REF_M,
   SPEEDO_START_DEG, SPEEDO_SWEEP_DEG, SPEEDO_MAX_KMH,
   newGpsWarmup, gpsWarmupStep, recordedSpeedKmh,
-  needleTauMsDoppler, newAccBaseline, accBaselinePush, NEEDLE_DOPPLER_TAU_MAX_MS,
+  needleTauMsDoppler, newAccBaseline, accBaselinePush, NEEDLE_DOPPLER_TAU_MAX_MS, NEEDLE_DOPPLER_DEADBAND,
   clampNeedleAccel, NEEDLE_MAX_ACCEL_MPS2, NEEDLE_MAX_DECEL_MPS2, NEEDLE_TAU_SCALE,
   speedoTauScale, speedoResponseStep, speedoSettleSec, SPEEDO_RESPONSE_DEFAULT, SPEEDO_RESPONSE_SCALES, SPEEDO_RESPONSE_LABELS,
 } from './src/lib/rideReadout.js';
@@ -259,11 +259,21 @@ console.log('\nneedleTauMsDoppler (per-phone relative τ):');
 {
   ok('phone at its own 10 m baseline gets τ_min', near(needleTauMsDoppler(10, 10, 10), NEEDLE_TAU_MIN_MS));
   ok('old absolute rule would have been ~6× slower at 10 m', needleTauMs(10, 10) > 5 * NEEDLE_TAU_MIN_MS);
-  ok('4 m phone unchanged vs absolute rule', near(needleTauMsDoppler(4, 4, 4), needleTauMs(4, 4)));
-  ok('baseline never tighter than 4 m reference', near(needleTauMsDoppler(6, 6, 2), needleTauMs(6, 6)));
-  ok('degraded fix (2× baseline) slows needle', needleTauMsDoppler(20, 20, 10) > 3 * NEEDLE_TAU_MIN_MS);
+  ok('baseline never tighter than 4 m reference', near(needleTauMsDoppler(9, 9, 2), needleTauMsDoppler(9, 9, 4)));
+  ok('within the deadband (1.4× baseline) → τ_min', near(needleTauMsDoppler(14, 14, 10), NEEDLE_TAU_MIN_MS));
+  ok('at the deadband edge → τ_min', near(needleTauMsDoppler(15, 15, 10), NEEDLE_TAU_MIN_MS));
+  ok('2× baseline → linear, not squared (τ = min × 2/1.5)', near(needleTauMsDoppler(20, 20, 10), NEEDLE_TAU_MIN_MS * 2 / NEEDLE_DOPPLER_DEADBAND));
+  ok('3× baseline → τ = 2 × min', near(needleTauMsDoppler(30, 30, 10), 2 * NEEDLE_TAU_MIN_MS));
+  ok('τ monotonic in degradation', needleTauMsDoppler(25, 25, 10) > needleTauMsDoppler(20, 20, 10));
+  ok('one degraded fix counts by RMS (10 & 20 at 10 m base → within deadband)', near(needleTauMsDoppler(10, 20, 10), NEEDLE_TAU_MIN_MS * Math.sqrt(250) / 10 / NEEDLE_DOPPLER_DEADBAND));
   ok('capped at NEEDLE_DOPPLER_TAU_MAX_MS', near(needleTauMsDoppler(50, 50, 4), NEEDLE_DOPPLER_TAU_MAX_MS));
+  ok('cap × default scale ≈ 6 s', near(NEEDLE_DOPPLER_TAU_MAX_MS * NEEDLE_TAU_SCALE, 6000));
   ok('null baseline → absolute reference (capped)', near(needleTauMsDoppler(4, 4, null), NEEDLE_TAU_MIN_MS));
+  // Position-differenced fallback: squared growth, but against the phone's own baseline.
+  ok('fallback: phone at its own 10 m baseline gets τ_min', near(needleTauMs(10, 10, 10), NEEDLE_TAU_MIN_MS));
+  ok('fallback: no baseline → fixed 4 m reference (unchanged)', near(needleTauMs(10, 10), NEEDLE_TAU_MIN_MS * 100 / 16));
+  ok('fallback: 2× baseline still squared (4 × min)', near(needleTauMs(20, 20, 10), 4 * NEEDLE_TAU_MIN_MS));
+  ok('fallback: baseline never tighter than 4 m', near(needleTauMs(6, 6, 2), needleTauMs(6, 6)));
   const b = newAccBaseline();
   for (let i = 0; i < 50; i++) accBaselinePush(b, i % 5 === 0 ? 16 : 9.4);
   const base = accBaselinePush(b, 3); // one lucky fix shouldn't drag the baseline down
